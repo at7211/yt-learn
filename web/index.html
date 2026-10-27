@@ -1,1 +1,70 @@
-<!doctype html><title>yt-learn</title>placeholder
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>yt-learn</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  textarea { width: 100%; height: 8rem; box-sizing: border-box; }
+  pre { background: #f2f2f2; padding: .5rem; overflow-x: auto; }
+  .err { color: #b00020; }
+</style>
+</head>
+<body>
+<h1>yt-learn</h1>
+<h2>匯入字幕</h2>
+<p>把書籤小工具產生的 JSON 貼在這裡。</p>
+<textarea id="import" placeholder="貼上字幕 JSON"></textarea>
+<p><button id="go">匯入</button></p>
+<div id="result"></div>
+<h2>課程</h2>
+<ul id="lessons"><li>載入中…</li></ul>
+<script>
+const result = document.getElementById('result');
+const lessons = document.getElementById('lessons');
+
+function show(nodes) { result.replaceChildren(...nodes); }
+function el(tag, text, cls) {
+  const e = document.createElement(tag);
+  e.textContent = text;
+  if (cls) e.className = cls;
+  return e;
+}
+
+document.getElementById('go').onclick = async () => {
+  const text = document.getElementById('import').value.trim();
+  if (!text) { show([el('p', '請先貼上 JSON。', 'err')]); return; }
+  try {
+    const res = await fetch('/ingest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: text });
+    const out = await res.json();
+    if (out.ok) {
+      show([el('p', '已匯入 ' + out.videoId + '（' + out.events + ' 個事件）。請在終端機執行：'),
+            el('pre', out.next), el('p', '產課完成後重新整理此頁。')]);
+    } else {
+      show([el('p', '匯入失敗：', 'err'), ...(out.errors || ['未知錯誤']).map((m) => el('p', m, 'err'))]);
+    }
+  } catch (e) {
+    show([el('p', '無法連線到 server：' + e.message, 'err')]);
+  }
+};
+
+(async () => {
+  try {
+    const list = await (await fetch('/lessons')).json();
+    if (!list.length) { lessons.replaceChildren(el('li', '尚無課程。')); return; }
+    lessons.replaceChildren(...list.map((l) => {
+      const li = document.createElement('li');
+      const a = el('a', l.title || l.videoId);
+      a.href = 'index.html?v=' + encodeURIComponent(l.videoId);
+      const meta = [l.channel, l.vocabCount != null ? l.vocabCount + ' 個單字' : null].filter(Boolean).join('・');
+      li.append(a, meta ? document.createTextNode('　' + meta) : '');
+      return li;
+    }));
+  } catch (e) {
+    lessons.replaceChildren(el('li', '無法載入課程清單。', 'err'));
+  }
+})();
+</script>
+</body>
+</html>
