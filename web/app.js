@@ -523,16 +523,28 @@ function buildPanel() {
   $('panel-total').textContent = n;
   const rows = $('panel-rows');
   rows.replaceChildren();
-  for (let i = 0; i < Math.min(5, S.flat.length); i++) {
-    const r = el('div', null, 'prow');
+  // All occurrences are rendered once as a vertical track; renderPanel slides the track so the
+  // current occurrence sits in the middle slot. Rows never re-render, so the motion is one smooth scroll.
+  const track = el('div', null, 'ptrack');
+  track.id = 'panel-track';
+  S.flat.forEach((h, fi) => {
+    const v = S.vocabById.get(h.vocabId);
+    const r = el('div', null, 'prow future');
+    r.dataset.flat = fi;
     r.innerHTML = '<div class="l1"><span class="term"></span><span class="pos"></span><span class="ipa"></span><span class="times"></span></div>'
       + '<div class="l2"><span class="pzh"></span><span class="dots"></span></div>';
-    r.addEventListener('click', () => {
-      const fi = Number(r.dataset.flat);
-      if (!Number.isNaN(fi)) seekHit(S.flat[fi]);
-    });
-    rows.append(r);
-  }
+    r.querySelector('.term').textContent = v.term;
+    r.querySelector('.pos').textContent = v.pos || '';
+    r.querySelector('.ipa').textContent = v.ipa || '';
+    r.querySelector('.times').textContent = '\u00d7' + v.hits.length;
+    r.querySelector('.pzh').textContent = v.zh;
+    r.querySelector('.dots').replaceChildren(...v.hits.map((_, j) => el('i', null, j === h.hitIdx ? 'on' : '')));
+    r.addEventListener('click', () => seekHit(S.flat[fi]));
+    track.append(r);
+  });
+  rows.append(track);
+  S.keys.panel = null;
+  S.panelCurrent = -1;
 }
 
 function renderPanel(t) {
@@ -544,33 +556,21 @@ function renderPanel(t) {
   const live = S.flat.length > 0 && t >= S.flat[0].start - PANEL_LEAD;
   $('panel').classList.toggle('live', live);
   const ps = panelState(S.flat, words, t);
-  const key = ps.current + ':' + ps.rows.join(',');
-  if (key === S.keys.panel) return;
-  S.keys.panel = key;
-  const rowEls = $('panel-rows').children;
-  let entered = 0;
-  ps.rows.forEach((fi, i) => {
-    const r = rowEls[i];
-    const h = S.flat[fi];
-    const v = S.vocabById.get(h.vocabId);
-    if (r.dataset.flat !== String(fi)) {
-      // A new occurrence scrolled into this slot: replay the fade-in, staggered when several change at once.
-      r.classList.remove('enter');
-      void r.offsetWidth;
-      r.style.animationDelay = (entered++ * 70) + 'ms';
-      r.classList.add('enter');
-    }
-    r.dataset.flat = fi;
+  if (ps.current === S.keys.panel) return;
+  S.keys.panel = ps.current;
+  const track = $('panel-track');
+  if (!track) return;
+  const rowEls = track.children;
+  const n = rowEls.length;
+  // Slide so the current row is the 3rd of 5 visible rows; clamp at both ends (same window as panelState).
+  const first = ps.rows.length ? ps.rows[0] : 0;
+  const rowH = rowEls[0] ? rowEls[0].getBoundingClientRect().height : 0;
+  track.style.transform = 'translateY(' + (-first * rowH) + 'px)';
+  for (let fi = 0; fi < n; fi++) {
+    const r = rowEls[fi];
     r.classList.toggle('current', fi === ps.current);
     r.classList.toggle('future', ps.current < 0 || fi > ps.current);
-    r.querySelector('.term').textContent = v.term;
-    r.querySelector('.pos').textContent = v.pos || '';
-    r.querySelector('.ipa').textContent = v.ipa || '';
-    r.querySelector('.times').textContent = '×' + v.hits.length;
-    r.querySelector('.pzh').textContent = v.zh;
-    const dots = r.querySelector('.dots');
-    dots.replaceChildren(...v.hits.map((_, j) => el('i', null, j === h.hitIdx ? 'on' : '')));
-  });
+  }
 }
 
 // ---------------------------------------------------------------- review
@@ -712,7 +712,7 @@ function initControls() {
   $('review-prev').onclick = () => turnPage(-1);
   $('review-next').onclick = () => turnPage(1);
   $('review-again').onclick = () => seek(0);
-  window.addEventListener('resize', () => { if (S.lesson) fitSubtitle(); });
+  window.addEventListener('resize', () => { if (S.lesson) { fitSubtitle(); S.keys.panel = null; renderPanel(S.t || 0); } });
   document.addEventListener('fullscreenchange', () => {
     $('btn-fs').textContent = document.fullscreenElement ? '離開全螢幕' : '全螢幕';
     if (S.lesson) fitSubtitle();

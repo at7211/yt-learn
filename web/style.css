@@ -113,7 +113,8 @@ button { font: inherit; }
 .panel-head .rule, .eyebrow .rule { display: inline-block; width: 2.9cqw; height: 1px; background: var(--orange); }
 .panel-title { font: 500 clamp(9px, 1.2cqw, 22px)/1 var(--tc); letter-spacing: .38em; color: #d5d9e0; }
 .panel-count { margin-left: auto; font: 700 clamp(9px, 1.25cqw, 22px)/1 Inter, sans-serif; color: var(--orange); letter-spacing: .06em; }
-.panel-rows { margin-top: .5cqw; }
+.panel-rows { margin-top: .5cqw; overflow: hidden; height: calc(5 * (5.85cqw + .95cqw + 1px)); -webkit-mask-image: linear-gradient(180deg, #000 88%, transparent 100%); mask-image: linear-gradient(180deg, #000 88%, transparent 100%); }
+.ptrack { transition: transform .42s cubic-bezier(.22, .72, .2, 1); will-change: transform; }
 .prow {
   pointer-events: auto; cursor: pointer;
   height: 5.85cqw; padding: .55cqw .3cqw .4cqw 0;
@@ -132,9 +133,8 @@ button { font: inherit; }
 .prow .dots i.on { background: var(--orange); }
 .prow { --row-o: 1; opacity: var(--row-o); }
 .prow.future { --row-o: .5; }
-@keyframes prow-in { from { opacity: 0; transform: translateY(.7cqw); } }
-.prow.enter { animation: prow-in .45s ease-out both; }
-@media (prefers-reduced-motion: reduce) { .prow.enter { animation: none; } .panel { transition: none; } }
+.prow { transition: opacity .3s ease, background-color .3s ease; }
+@media (prefers-reduced-motion: reduce) { .ptrack { transition: none; } .prow { transition: none; } .panel { transition: none; } }
 .prow.current { background: linear-gradient(90deg, rgba(255, 236, 214, .16), rgba(255, 236, 214, .22)); margin-left: -.6cqw; padding-left: .6cqw; opacity: 1; }
 .prow.current .term { color: var(--orange); }
 .prow.current .pos, .prow.current .ipa { display: inline; }
