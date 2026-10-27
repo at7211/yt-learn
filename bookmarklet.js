@@ -77,10 +77,13 @@
     for (const e of evs) {
       if (!e.segs) continue;
       const segs = [];
+      // json3 encodes tOffsetMs=0 by omission: if any seg in the event has an offset,
+      // a missing one means 0; if none do (manual captions), there is no word timing.
+      const eventHasAnyOffset = e.segs.some((s) => typeof s.tOffsetMs === 'number');
       for (const s of e.segs) {
-        const text = (s.utf8 ?? '').replace(/\n/g, '');
-        if (!text.trim()) continue;
-        segs.push([s.tOffsetMs ?? null, text]);
+        const text = (s.utf8 ?? '').replace(/\n/g, '').trim();
+        if (!text) continue;
+        segs.push([s.tOffsetMs ?? (eventHasAnyOffset ? 0 : null), text]);
       }
       if (!segs.length) continue;
       events.push({ t: e.tStartMs ?? 0, d: e.dDurationMs ?? 0, segs });

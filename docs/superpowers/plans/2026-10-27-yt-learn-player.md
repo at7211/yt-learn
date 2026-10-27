@@ -282,6 +282,8 @@ yt-learn/
 
 （Task 1/6/8 完成後填：Chrome 版本與走通的擷取路徑、LLM 呼叫數、耗時、vocab 數）
 
+**Task 1 擷取端（Step 8 實測）**：Chrome 155。從 https://www.youtube.com 直接 POST 到 http://127.0.0.1:8765 從未抵達 server（log 沒有 preflight），5 秒後 abort → 出現保底面板 → 按「複製」→ 貼進匯入框 → `POST /ingest` 200 → `data/raw/CR94QQXO_4s.json`（144 events、1046 words）。結論：在此 Chrome 上保底路徑才是可行路徑；直接路徑需使用者授予本機網路權限。
+
 ## 9. v2 變更摘要（對 Codex review 的處置）
 
 採納：raw 保留 events/offset 並標 `timed`；手動字幕高亮退化為整句；直接 POST 降為可選 + textarea/匯入框保底；bookmarklet 驗證 `v=` 與非翻譯軌；segment 先驗結構再索引、整批壞 → 規則切句、provider 死 → vocab 空；快取 key 含 model/promptVersion；vocab 驗證同時比對原字與修正 token、不做詞形變化、expand 以 cue 為界；server 路徑用 resolve 包含檢查、ingest 走 schema 驗證；時間迴圈改狀態感知輪詢、不外推；高亮只在 active hit 區間；控制列保留區、`fs:0` + stage 全螢幕、快捷鍵焦點規則；`timing.js` 純函式 + `node --test`；CLI 失敗測試、live smoke opt-in；preview 不覆蓋完整 lesson、`coveredSeconds` 橫幅；匯入後顯示 build 指令；§2 範例 `b:6`；gap 公式明確化；複習模式方向鍵語義；「截圖存下來」只是提示語；砍開場鉤子與面板圓點。
