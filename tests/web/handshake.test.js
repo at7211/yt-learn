@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { waitForAck } from '../../web/handshake.js';
+import { waitForAck, shouldApplyLiveStatus } from '../../web/handshake.js';
 
 function rig() {
   const r = { handlers: new Set(), posts: 0, unsubs: 0 };
@@ -43,4 +43,10 @@ test('duplicate acks stay true, unsubscribe once', async () => {
   r.emit({ type: 'ytlearn:ack' });
   await new Promise((res) => setTimeout(res, 20));
   assert.equal(r.unsubs, 1);
+});
+
+test('shouldApplyLiveStatus only before the server leaves capturing', () => {
+  assert.equal(shouldApplyLiveStatus('queued'), true);
+  assert.equal(shouldApplyLiveStatus('capturing'), true);
+  for (const st of ['captured', 'building', 'done', 'error', undefined, null]) assert.equal(shouldApplyLiveStatus(st), false, String(st));
 });

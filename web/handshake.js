@@ -18,3 +18,9 @@ export function waitForAck({ post, listen, timeoutMs }) {
     try { post(); } catch (e) { /* a failed post just means no ack */ }
   });
 }
+
+// A live ytlearn:status from the extension is only meaningful while the server is still at
+// queued/capturing; once it has moved on (captured/building/done/error) the server is the truth.
+export function shouldApplyLiveStatus(serverState) {
+  return serverState === 'queued' || serverState === 'capturing';
+}

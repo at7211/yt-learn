@@ -2,7 +2,7 @@
 // render panel, review, lists, controls & keyboard, boot.
 import { cueIndexAt, flattenHits, activeHitAt, panelState, seenCount } from './timing.js';
 import { parseVideoId } from './ytid.js';
-import { waitForAck } from './handshake.js';
+import { waitForAck, shouldApplyLiveStatus } from './handshake.js';
 
 // ---------------------------------------------------------------- util
 const $ = (id) => document.getElementById(id);
@@ -68,7 +68,7 @@ function initHome(showList) {
 }
 
 // ---------------------------------------------------------------- progress card
-const EXT_ORIGIN = 'http://127.0.0.1:8765';
+const PAGE_ORIGIN = location.origin; // targetOrigin for the extension bridge and the message guard
 const POLL_MS = 2000;
 const ACK_MS = 3000;
 const STATE_TEXT = {
@@ -79,6 +79,7 @@ const STATE_TEXT = {
   done: '完成',
 };
 const STEP_NAMES = ['擷取字幕', '產生課程', '完成'];
+const BAD_RESPONSE = '本機 server 回應異常';
 const UNREACHABLE = '無法連線到本機 server，請確認 python3 server.py 正在執行';
 const stepOf = (state) => ({ queued: 0, capturing: 0, captured: 1, building: 1, done: 2 })[state];
 
@@ -95,14 +96,17 @@ function mountCard(container, id, opts = {}) {
   stopCard();
   if (CARD && CARD.container !== container) CARD.container.replaceChildren();
   CARD = { gen: ++genCounter, container, id, job: null, live: null, title: null, ext: 'unknown',
-           unreachable: false, lastStep: 0, timer: null, polling: false, onDone: opts.onDone || null, doneFired: false };
+           netText: null, lastStep: 0, timer: null, polling: false, onDone: opts.onDone || null, doneFired: false };
   return CARD;
 }
+
+class BadResponse extends Error {}
 
 async function postAdd(id) {
   const res = await fetch('/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url: 'https://www.youtube.com/watch?v=' + id }) });
-  const out = await res.json();
+  let out;
+  try { out = await res.json(); } catch (e) { throw new BadResponse(); }
   if (!res.ok || !out.job) throw new Error((out.errors && out.errors.join('；')) || '無法建立工作');
   return out.job;
 }
@@ -117,7 +121,8 @@ async function startJob(id, container, opts) {
     job = await postAdd(id);
   } catch (e) {
     if (card !== CARD) return;
-    if (e instanceof TypeError) card.unreachable = true;
+    if (e instanceof TypeError) card.netText = UNREACHABLE;
+    else if (e instanceof BadResponse) card.netText = BAD_RESPONSE;
     else card.job = { videoId: id, state: 'error', message: e.message };
     renderCard();
     return;
@@ -140,7 +145,7 @@ function applyJob(card, job) {
   const prev = card.job;
   if (!prev || prev.state !== job.state || prev.updatedAt !== job.updatedAt || prev.attempt !== job.attempt) card.live = null;
   card.job = job;
-  card.unreachable = false;
+  card.netText = null;
   const st = stepOf(job.state);
   if (st != null) card.lastStep = st;
   if (job.state === 'done') {
@@ -187,7 +192,7 @@ async function pollOnce(card) {
       renderCard();
     }
   } catch (e) {
-    if (card === CARD) { card.unreachable = true; renderCard(); }
+    if (card === CARD) { card.netText = e instanceof SyntaxError ? BAD_RESPONSE : UNREACHABLE; renderCard(); }
   } finally {
     card.polling = false;
   }
@@ -197,13 +202,13 @@ async function requestCapture(card) {
   card.ext = 'checking';
   renderCard();
   const ok = await waitForAck({
-    post: () => window.postMessage({ type: 'ytlearn:ping' }, EXT_ORIGIN),
+    post: () => window.postMessage({ type: 'ytlearn:ping' }, PAGE_ORIGIN),
     listen: (h) => { msgHandlers.add(h); return () => msgHandlers.delete(h); },
     timeoutMs: ACK_MS,
   });
   if (card !== CARD) return;
   card.ext = ok ? 'ok' : 'missing';
-  if (ok) window.postMessage({ type: 'ytlearn:capture', videoId: card.id }, EXT_ORIGIN);
+  if (ok) window.postMessage({ type: 'ytlearn:capture', videoId: card.id }, PAGE_ORIGIN);
   renderCard();
 }
 
@@ -237,9 +242,10 @@ function renderCard() {
   box.append(steps);
 
   let text, bad = false;
-  if (card.unreachable) { text = UNREACHABLE; bad = true; }
+  if (card.netText) { text = card.netText; bad = true; }
   else if (!job) text = '正在建立工作…';
   else if (isErr) { text = '失敗：' + (job.message || '未知錯誤'); bad = true; }
+  else if (job.state === 'done') text = STATE_TEXT.done;
   else if (card.live && card.live.state === 'error') { text = card.live.message || '擴充功能回報錯誤'; bad = true; }
   else if (card.live && card.live.message) text = card.live.message;
   else text = STATE_TEXT[job.state] || job.state;
@@ -251,7 +257,7 @@ function renderCard() {
     a.href = job.lessonUrl || 'index.html?v=' + encodeURIComponent(card.id);
     actions.append(a);
     box.append(actions);
-  } else if (isErr && !card.unreachable) {
+  } else if (isErr || (card.netText && !job)) {
     const b = el('button', '重試');
     b.type = 'button';
     b.onclick = retry;
@@ -260,7 +266,7 @@ function renderCard() {
     box.append(actions);
   }
 
-  if (card.ext === 'missing' && job && job.state === 'queued' && !card.unreachable) box.append(noExtBlock());
+  if (card.ext === 'missing' && job && job.state === 'queued' && !card.netText) box.append(noExtBlock());
   card.container.replaceChildren(box);
 }
 
@@ -277,12 +283,12 @@ function noExtBlock() {
 
 // The single window message listener: same window, same origin, ytlearn:* only.
 window.addEventListener('message', (event) => {
-  if (event.source !== window || event.origin !== location.origin) return;
+  if (event.source !== window || event.origin !== PAGE_ORIGIN) return;
   const data = event.data;
   if (!data || typeof data.type !== 'string' || !data.type.startsWith('ytlearn:')) return;
   if (data.type === 'ytlearn:accepted') return;
   [...msgHandlers].forEach((h) => h(data));
-  if (data.type === 'ytlearn:status' && CARD && CARD.job && data.videoId === CARD.id) {
+  if (data.type === 'ytlearn:status' && CARD && CARD.job && data.videoId === CARD.id && shouldApplyLiveStatus(CARD.job.state)) {
     CARD.live = { state: data.state, message: data.message };
     renderCard();
   }
@@ -366,15 +372,18 @@ function showMissing(id) {
     $('home').hidden = true;
     loadLesson(id);
   };
+  let clicked = false;
   $('missing-capture').onclick = () => {
+    clicked = true;
     $('missing-default').hidden = true;
     $('missing').querySelector('h1').textContent = '擷取影片';
     startJob(id, $('card-missing'), { onDone: inPlace });
   };
   // A job may already be running (e.g. the extension icon created it just before opening this page).
   fetch('/jobs/' + encodeURIComponent(id)).then(async (res) => {
-    if (!res.ok) return;
+    if (!res.ok || clicked) return;
     const body = await res.json();
+    if (clicked) return;
     const job = body.job || body;
     $('missing-default').hidden = true;
     $('missing').querySelector('h1').textContent = '正在產生課程';
