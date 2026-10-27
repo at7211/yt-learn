@@ -70,7 +70,9 @@ button { font: inherit; }
 .no-en .sub-en, .no-zh .sub-zh { display: none; }
 
 /* ---- vocab panel: x 60%–97%, y 4%–84% */
-.panel { left: 60%; width: 37%; top: 4%; height: 80%; font-family: var(--sans); }
+.panel { left: 60%; width: 37%; top: 4%; height: 80%; font-family: var(--sans); opacity: 0; transition: opacity .7s ease; }
+.panel.live { opacity: 1; }
+.panel:not(.live) .prow { pointer-events: none; }
 .panel::before { /* backdrop: transparent on the left, dark on the right (reaches past the panel edges) */
   content: ""; position: absolute; top: -5cqw; bottom: -2cqw; left: -22cqw; right: -3.3cqw; z-index: -1;
   background: linear-gradient(90deg, rgba(10, 12, 18, 0) 0%, rgba(10, 12, 18, .55) 38%, rgba(10, 12, 18, .85) 100%);
@@ -101,7 +103,11 @@ button { font: inherit; }
 .prow .dots { margin-left: auto; display: flex; gap: .3cqw; align-self: center; }
 .prow .dots i { width: .5cqw; height: .5cqw; border-radius: 50%; background: rgba(240, 168, 104, .3); }
 .prow .dots i.on { background: var(--orange); }
-.prow.future { opacity: .5; }
+.prow { --row-o: 1; opacity: var(--row-o); }
+.prow.future { --row-o: .5; }
+@keyframes prow-in { from { opacity: 0; transform: translateY(.7cqw); } }
+.prow.enter { animation: prow-in .45s ease-out both; }
+@media (prefers-reduced-motion: reduce) { .prow.enter { animation: none; } .panel { transition: none; } }
 .prow.current { background: linear-gradient(90deg, rgba(255, 236, 214, .16), rgba(255, 236, 214, .22)); margin-left: -.6cqw; padding-left: .6cqw; opacity: 1; }
 .prow.current .term { color: var(--orange); }
 .prow.current .pos, .prow.current .ipa { display: inline; }

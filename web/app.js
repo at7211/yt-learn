@@ -10,6 +10,7 @@ function el(tag, text, cls) {
   if (cls) e.className = cls;
   return e;
 }
+const PANEL_LEAD = 1.0; // seconds before the first vocab word that the panel fades in
 const PER_PAGE = 18; // review: 3 columns × 6 rows
 
 const S = {
@@ -272,15 +273,26 @@ function renderPanel(t) {
   const k = seenCount(S.flat, words, t);
   const countKey = k + '/' + S.lesson.vocab.length;
   if (countKey !== S.keys.count) { S.keys.count = countKey; $('panel-count').textContent = k + ' / ' + S.lesson.vocab.length; }
+  // The panel stays hidden until just before the first vocab word is spoken, then fades in.
+  const live = S.flat.length > 0 && t >= S.flat[0].start - PANEL_LEAD;
+  $('panel').classList.toggle('live', live);
   const ps = panelState(S.flat, words, t);
   const key = ps.current + ':' + ps.rows.join(',');
   if (key === S.keys.panel) return;
   S.keys.panel = key;
   const rowEls = $('panel-rows').children;
+  let entered = 0;
   ps.rows.forEach((fi, i) => {
     const r = rowEls[i];
     const h = S.flat[fi];
     const v = S.vocabById.get(h.vocabId);
+    if (r.dataset.flat !== String(fi)) {
+      // A new occurrence scrolled into this slot: replay the fade-in, staggered when several change at once.
+      r.classList.remove('enter');
+      void r.offsetWidth;
+      r.style.animationDelay = (entered++ * 70) + 'ms';
+      r.classList.add('enter');
+    }
     r.dataset.flat = fi;
     r.classList.toggle('current', fi === ps.current);
     r.classList.toggle('future', ps.current < 0 || fi > ps.current);
