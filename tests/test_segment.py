@@ -111,3 +111,8 @@ def test_finalize_requires_full_contiguous_coverage():
         finalize_cues([cue(0, 2), cue(4, 5)], words)
     with pytest.raises(ValueError):
         finalize_cues([cue(0, 2)], words)
+
+
+def test_segment_system_mentions_global_indices():
+    assert "全域索引" in SEGMENT_SYSTEM
+    assert "Hoffa" not in SEGMENT_SYSTEM

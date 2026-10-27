@@ -67,14 +67,49 @@ def test_cache_key_includes_model(monkeypatch, tmp_path):
     assert len(list(tmp_path.glob("*.json"))) == 2
 
 
+def _key_path(p, system, user, schema=None):
+    return p._cache_path(system, user, schema)
+
+
+def test_cache_mismatched_model_is_miss(monkeypatch, tmp_path):
+    calls = install(monkeypatch, [ok({"is_error": False, "result": '{"a": 1}'})])
+    p = ClaudeCliProvider(model="m", cache_dir=tmp_path)
+    _key_path(p, "s", "u").write_text(json.dumps({"model": "other", "promptVersion": 1, "response": {"a": 9}}))
+    assert p.complete_json("s", "u") == {"a": 1}
+    assert len(calls) == 1
+
+
+def test_cache_corrupt_file_is_miss(monkeypatch, tmp_path):
+    calls = install(monkeypatch, [ok({"is_error": False, "result": '{"a": 1}'})])
+    p = ClaudeCliProvider(model="m", cache_dir=tmp_path)
+    _key_path(p, "s", "u").write_bytes(b"\xff\x00garbage")
+    assert p.complete_json("s", "u") == {"a": 1}
+    assert len(calls) == 1
+
+
+def test_cache_write_failure_does_not_lose_response(monkeypatch, tmp_path):
+    install(monkeypatch, [ok({"is_error": False, "result": '{"a": 1}'})])
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    assert ClaudeCliProvider(cache_dir=blocker / "sub").complete_json("s", "u") == {"a": 1}
+    install(monkeypatch, [ok({"is_error": False, "result": '{"a": 2}'})])
+    def boom(*a, **k):
+        raise OSError("nope")
+    monkeypatch.setattr(os, "replace", boom)
+    d = tmp_path / "c"
+    assert ClaudeCliProvider(cache_dir=d).complete_json("s", "u") == {"a": 2}
+    assert list(d.glob("*")) == []
+
+
 def test_retries_once_on_invalid_json_then_succeeds(monkeypatch):
     calls = install(monkeypatch, [
         ok({"is_error": False, "result": "sorry, no json"}),
         ok({"is_error": False, "result": '{"a": 1}'}),
     ])
-    assert ClaudeCliProvider().complete_json("s", "u") == {"a": 1}
+    assert ClaudeCliProvider().complete_json("s", "u", {"type": "object"}) == {"a": 1}
     assert len(calls) == 2
     assert calls[0][1]["input"] == "u"
+    assert calls[1][0][calls[1][0].index("--json-schema") + 1] == calls[0][0][calls[0][0].index("--json-schema") + 1]
     assert calls[1][1]["input"] == "u\n\n(上一次輸出不是合法 JSON，請只輸出符合 schema 的 JSON。)"
 
 

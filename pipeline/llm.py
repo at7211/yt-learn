@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -66,6 +67,21 @@ class ClaudeCliProvider:
             return d["response"]
         return None
 
+    def _cache_put(self, path: Path, resp: dict) -> None:
+        tmp = None
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"model": self.model or "default", "promptVersion": self.prompt_version,
+                                       "response": resp}, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                if tmp is not None:
+                    tmp.unlink()
+            except OSError:
+                pass
+
     def complete_json(self, system: str, user: str, schema: dict | None = None) -> dict:
         path = None
         if self.cache_dir:
@@ -81,9 +97,7 @@ class ClaudeCliProvider:
         except _Failure as e:
             raise ProviderError(str(e)) from None
         if path:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"model": self.model or "default", "promptVersion": self.prompt_version,
-                                        "response": resp}, ensure_ascii=False), encoding="utf-8")
+            self._cache_put(path, resp)
         return resp
 
     def _call(self, system: str, user: str, schema: dict | None) -> dict:
