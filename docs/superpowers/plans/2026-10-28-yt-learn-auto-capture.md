@@ -145,6 +145,7 @@ queued ──claim──▶ capturing ──ingest──▶ captured ──worke
 
 ## 8. 實測記錄
 （Task 0 與 Task 4 後填）
+- Task 0 閘門（2026-10-28，Chrome 155）：使用者載入未封裝擴充功能後，由本機頁面以 externally_connectable 觸發探針（影片 CR94QQXO_4s）：`active:false` 靜音分頁導航 1657 ms、擷取 1754 ms（字幕請求確實出現）、POST /ingest 6 ms 回 200、總計 3456 ms、144 events。三項假設全部成立。
 
 ## 9. v2 變更摘要（對 Codex review 的處置）
 採納：Task 0 可行性閘門；capture 改輪詢到期限、三段各自上限、先靜音再導航、listener 頂層註冊、ownedTabs 記錄；狀態機補 `queued→captured`、`error→queued`、`error→captured`，ingest 冪等，只有 queued 觸發擷取，原子 claim + attempt token，stale 拒絕；store 加鎖、raw 暫存檔名唯一；build 子行程 cwd/逾時/關機處理、worker 容錯、exit 0 但壞檔 → error；握手改 ping/ack 3 秒、origin/source 檢查、「裝好後重新整理」；網址表與正規化、Shorts；done 僅限有效且非 preview；匯入框依 job 顯示；測試清單補齊；砍掉 Ruling A 產生器、持久化、`GET /jobs`、泛用 PATCH、CORS wildcard。
