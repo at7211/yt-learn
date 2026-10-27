@@ -10,11 +10,13 @@
 import json
 import os
 import sys
+import uuid
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
-from pipeline.schema import validate_raw
+from pipeline.jobs import BuildQueue, IllegalTransition, JobStore, parse_video_id
+from pipeline.schema import validate_lesson, validate_raw
 
 ROOT = Path(__file__).resolve().parent
 MAX_BODY = 20 * 1024 * 1024
@@ -22,6 +24,8 @@ MAX_BODY = 20 * 1024 * 1024
 
 class Handler(SimpleHTTPRequestHandler):
     root: Path = ROOT
+    jobs: JobStore = None
+    queue: BuildQueue = None
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(self.root / "web"), **kw)
@@ -50,6 +54,12 @@ class Handler(SimpleHTTPRequestHandler):
             return self._serve_data(path)
         if path == "/lessons":
             return self._json(self._lessons())
+        parts = path.strip("/").split("/")
+        if len(parts) == 2 and parts[0] == "jobs":
+            job = self.jobs.get(parts[1])
+            if job is None:
+                return self._json({"ok": False, "error": "no such job"}, 404)
+            return self._json({"job": JobStore.to_public(job)})
         super().do_GET()
 
     def _serve_data(self, path):
@@ -76,32 +86,106 @@ class Handler(SimpleHTTPRequestHandler):
                 out.append({"videoId": f.stem})
         return out
 
-    def do_POST(self):
-        if urlsplit(self.path).path != "/ingest":
-            return self.send_error(404)
+    def _read_json(self):
+        """Returns (obj, None) or (None, error-response-sent)."""
         try:
             n = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             n = -1
         if not 0 < n <= MAX_BODY:
-            return self._json({"ok": False, "errors": ["missing or oversized body"]}, 400)
+            self._json({"ok": False, "errors": ["missing or oversized body"]}, 400)
+            return None, True
         try:
-            obj = json.loads(self.rfile.read(n))
+            return json.loads(self.rfile.read(n)), None
         except ValueError as e:
-            return self._json({"ok": False, "errors": [f"invalid JSON: {e}"]}, 400)
+            self._json({"ok": False, "errors": [f"invalid JSON: {e}"]}, 400)
+            return None, True
+
+    def do_POST(self):
+        sp = urlsplit(self.path)
+        parts = sp.path.strip("/").split("/")
+        if sp.path == "/ingest":
+            return self._ingest(parse_qs(sp.query))
+        if sp.path == "/add":
+            return self._add()
+        if len(parts) == 3 and parts[0] == "jobs" and parts[2] in ("claim", "fail"):
+            return self._claim(parts[1]) if parts[2] == "claim" else self._fail(parts[1])
+        self.send_error(404)
+
+    def _lesson_ok(self, vid):
+        try:
+            lesson = json.loads((self.root / "data" / "lessons" / f"{vid}.json").read_text("utf-8"))
+            return (not validate_lesson(lesson)) and lesson["coveredSeconds"] >= lesson["duration"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
+    def _add(self):
+        obj, err = self._read_json()
+        if err:
+            return
+        vid = parse_video_id(obj.get("url") if isinstance(obj, dict) else None)
+        if vid is None:
+            return self._json({"ok": False, "errors": ["無法辨識的 YouTube 網址"]}, 400)
+        job = self.jobs.add(vid, self._lesson_ok(vid))
+        self._json({"job": JobStore.to_public(job)})
+
+    def _claim(self, vid):
+        if self.jobs.get(vid) is None:
+            return self._json({"ok": False, "error": "no such job"}, 404)
+        try:
+            self._json({"attempt": self.jobs.claim(vid)})
+        except IllegalTransition as e:
+            self._json({"ok": False, "error": str(e)}, 409)
+
+    def _fail(self, vid):
+        obj, err = self._read_json()
+        if err:
+            return
+        if not isinstance(obj, dict) or type(obj.get("attempt")) is not int:
+            return self._json({"ok": False, "errors": ["attempt (int) required"]}, 400)
+        if self.jobs.get(vid) is None:
+            return self._json({"ok": False, "error": "no such job"}, 404)
+        try:
+            self.jobs.fail(vid, obj["attempt"], str(obj.get("message", ""))[:500])
+        except IllegalTransition as e:
+            return self._json({"ok": False, "error": str(e)}, 409)
+        self._json({"ok": True})
+
+    def _ingest(self, query):
+        obj, err = self._read_json()
+        if err:
+            return
         errs = validate_raw(obj)
         if errs:
             return self._json({"ok": False, "errors": errs}, 400)
         vid = obj["videoId"]
+        attempt = None
+        if "attempt" in query:
+            try:
+                attempt = int(query["attempt"][0])
+            except ValueError:
+                return self._json({"ok": False, "errors": ["attempt must be an int"]}, 400)
+        enqueue = False
+        if self.jobs.get(vid) is not None or attempt is not None:
+            try:
+                enqueue = self.jobs.ingested(vid, attempt)
+            except IllegalTransition as e:
+                return self._json({"ok": False, "error": str(e)}, 409)
         raw_dir = self.root / "data" / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
         dest = raw_dir / f"{vid}.json"
-        tmp = dest.with_suffix(".json.tmp")
+        tmp = dest.with_suffix(f".json.{uuid.uuid4().hex}.tmp")
         tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, dest)
+        if enqueue:
+            self.queue.enqueue(vid)
         print(f"[ingest] {vid} {len(obj['events'])} events -> {dest}", flush=True)
-        self._json({"ok": True, "videoId": vid, "events": len(obj["events"]),
-                    "next": f"python3 -m pipeline.build {vid}"})
+        out = {"ok": True, "videoId": vid, "events": len(obj["events"]),
+               "next": f"python3 -m pipeline.build {vid}"}
+        job = self.jobs.get(vid)
+        if job is not None:
+            out["job"] = JobStore.to_public(job)
+        self._json(out)
 
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode()
@@ -115,9 +199,22 @@ class Handler(SimpleHTTPRequestHandler):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def server_close(self):
+        self.handler_class.queue.shutdown()
+        super().server_close()
+
+
 def make_server(root, port=8765) -> ThreadingHTTPServer:
-    handler = type("BoundHandler", (Handler,), {"root": Path(root).resolve()})
-    return ThreadingHTTPServer(("127.0.0.1", port), handler)
+    root = Path(root).resolve()
+    store = JobStore()
+    handler = type("BoundHandler", (Handler,), {"root": root, "jobs": store,
+                                                "queue": BuildQueue(store, root)})
+    srv = _Server(("127.0.0.1", port), handler)
+    srv.handler_class = handler
+    return srv
 
 
 if __name__ == "__main__":

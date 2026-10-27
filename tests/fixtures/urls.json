@@ -1,0 +1,32 @@
+{
+  "accept": [
+    ["https://www.youtube.com/watch?v=CR94QQXO_4s", "CR94QQXO_4s"],
+    ["http://youtube.com/watch?v=CR94QQXO_4s", "CR94QQXO_4s"],
+    ["https://m.youtube.com/watch?v=CR94QQXO_4s&t=30s", "CR94QQXO_4s"],
+    ["https://www.youtube.com/watch?list=PLabc&v=CR94QQXO_4s&index=2", "CR94QQXO_4s"],
+    ["https://youtu.be/CR94QQXO_4s", "CR94QQXO_4s"],
+    ["https://youtu.be/CR94QQXO_4s?si=abc123", "CR94QQXO_4s"],
+    ["https://www.youtube.com/shorts/abc-DEF_123", "abc-DEF_123"],
+    ["https://youtube.com/embed/CR94QQXO_4s", "CR94QQXO_4s"],
+    ["https://www.youtube.com/embed/CR94QQXO_4s?autoplay=1", "CR94QQXO_4s"],
+    ["CR94QQXO_4s", "CR94QQXO_4s"],
+    ["  CR94QQXO_4s \n", "CR94QQXO_4s"],
+    ["  https://youtu.be/CR94QQXO_4s  ", "CR94QQXO_4s"]
+  ],
+  "reject": [
+    "",
+    "   ",
+    "CR94QQXO_4",
+    "CR94QQXO_4sX",
+    "https://vimeo.com/watch?v=CR94QQXO_4s",
+    "https://evil.com/youtube.com/watch?v=CR94QQXO_4s",
+    "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv",
+    "https://www.youtube.com/watch?v=short",
+    "https://www.youtube.com/watch",
+    "https://youtu.be/",
+    "javascript:alert(1)",
+    "ftp://youtu.be/CR94QQXO_4s",
+    "https://www.youtube.com.evil.com/watch?v=CR94QQXO_4s",
+    "https://www.youtube.com/watch?v=CR94QQXO_4s%00"
+  ]
+}
