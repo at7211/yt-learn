@@ -22,8 +22,8 @@ def base(tmp_path):
     t.join()
 
 
-def req(url, data=None, method=None):
-    r = urllib.request.Request(url, data=data, method=method)
+def req(url, data=None, method=None, headers=None):
+    r = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     try:
         with urllib.request.urlopen(r) as resp:
             return resp.status, resp.read(), resp.headers
@@ -39,7 +39,7 @@ def test_ingest_writes_raw_file(base, tmp_path):
                    "next": "python3 -m pipeline.build CR94QQXO_4s"}
     saved = json.loads((tmp_path / "data" / "raw" / "CR94QQXO_4s.json").read_text("utf-8"))
     assert saved == GOOD
-    assert h["Access-Control-Allow-Origin"] == "*"
+    assert "Access-Control-Allow-Origin" not in h  # no Origin header sent
 
 
 def test_ingest_400_lists_errors(base, tmp_path):
@@ -54,11 +54,21 @@ def test_ingest_400_lists_errors(base, tmp_path):
 
 
 def test_options_preflight_headers(base):
-    code, _, h = req(base + "/ingest", method="OPTIONS")
+    code, _, h = req(base + "/ingest", method="OPTIONS", headers={"Origin": "https://www.youtube.com"})
     assert code == 204
-    assert h["Access-Control-Allow-Origin"] == "*"
+    assert h["Access-Control-Allow-Origin"] == "https://www.youtube.com"
+    assert h["Vary"] == "Origin"
     assert h["Access-Control-Allow-Private-Network"] == "true"
     assert "Content-Type" in h["Access-Control-Allow-Headers"]
+
+
+def test_cors_omitted_for_other_origin(base):
+    code, _, h = req(base + "/ingest", method="OPTIONS", headers={"Origin": "https://evil.example"})
+    assert code == 204
+    assert "Access-Control-Allow-Origin" not in h
+    assert h["Vary"] == "Origin" and h["Access-Control-Allow-Private-Network"] == "true"
+    _, _, h = req(base + "/ingest", method="OPTIONS", headers={"Origin": base})
+    assert h["Access-Control-Allow-Origin"] == base
 
 
 def test_data_path_traversal_sibling_blocked(base, tmp_path):

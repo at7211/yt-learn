@@ -26,8 +26,14 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(self.root / "web"), **kw)
 
+    def _allowed_origins(self):
+        port = self.server.server_address[1]
+        return {"https://www.youtube.com", f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
+
     def end_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        if self.headers.get("Origin") in self._allowed_origins():
+            self.send_header("Access-Control-Allow-Origin", self.headers["Origin"])
+        self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Cache-Control", "no-store")
