@@ -19,6 +19,7 @@ def make_words(n, gaps_after=(), gap=1.2):
 def assert_covers(ranges, n):
     assert ranges[0][0] == 0
     assert ranges[-1][1] == n - 1
+    assert all(a <= b for a, b in ranges)
     for (_, b), (a2, _) in zip(ranges, ranges[1:]):
         assert a2 == b + 1
 
@@ -68,3 +69,9 @@ def test_hard_max_forces_split_without_gap():
     assert ranges == [(0, 159), (160, 199)]
     assert all(b - a + 1 <= 160 for a, b in ranges)
     assert_covers(ranges, 200)
+
+
+def test_small_target_larger_window_terminates():
+    words = make_words(40, gaps_after=set(range(4, 40, 5)))
+    ranges = chunk_words(words, target=10, hard_max=20, window=30)
+    assert_covers(ranges, 40)

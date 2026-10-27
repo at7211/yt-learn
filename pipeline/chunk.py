@@ -16,7 +16,7 @@ def chunk_words(words, target=120, hard_max=160, gap=1.0, window=30):
     a = 0
     while a < n:
         goal = a + target
-        lo = goal - window
+        lo = max(a, goal - window)
         hi = min(goal + window, n - 2)
         best = None
         for i in range(lo, hi + 1):
