@@ -92,7 +92,7 @@ class ClaudeCliProvider:
             if hit is not None:
                 self.cache_hits += 1
                 return hit
-        self.calls += 1
+        self.calls += 1  # logical completions; a call with a retry counts once
         try:
             try:
                 resp = self._call(system, user, schema)

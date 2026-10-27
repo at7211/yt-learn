@@ -104,8 +104,12 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
         return 1
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(lesson, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(tmp, out_path)
+    try:
+        tmp.write_text(json.dumps(lesson, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, out_path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     print(f"cues={len(lesson['cues'])} vocab={len(lesson['vocab'])} "
           f"llm_calls={getattr(provider, 'calls', 0)} cache_hits={getattr(provider, 'cache_hits', 0)} "
           f"seconds={time.monotonic() - t0:.1f}")
