@@ -1,6 +1,7 @@
 """In-memory job state machine + serial auto-build queue for yt-learn."""
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -146,9 +147,7 @@ class JobStore:
                 return False
             if st == "capturing" and attempt is not None and attempt != job["attempt"]:
                 raise IllegalTransition(f"stale attempt {attempt}")
-            if st == "capturing" and attempt is None:
-                raise IllegalTransition("capturing job requires attempt")
-            self._set(job, "captured")  # queued / capturing(match) / error
+            self._set(job, "captured")  # queued / capturing(match or manual, no attempt) / error
             return True
 
     def set_building(self, vid):
@@ -211,13 +210,20 @@ class BuildQueue:
                 self._run(vid)
             except Exception as e:  # worker must survive anything
                 try:
-                    self.store.finish(vid, False, f"{type(e).__name__}: {e}")
+                    self._finish(vid, False, f"{type(e).__name__}: {e}")
                 except Exception:
                     pass
             finally:
                 with self._lock:
                     self._pending.discard(vid)
-                self._proc = None
+                    self._proc = None
+
+    def _finish(self, vid, ok, message, lesson_url=None):
+        # Release the dedupe slot BEFORE the terminal transition so a re-ingest
+        # (error -> captured) landing right after it can be enqueued.
+        with self._lock:
+            self._pending.discard(vid)
+        self.store.finish(vid, ok, message, lesson_url)
 
     def _tail(self, log: Path, n=5):
         try:
@@ -232,32 +238,37 @@ class BuildQueue:
         log = self.log_dir / f"{vid}.log"
         with open(log, "wb") as lf:
             proc = subprocess.Popen(self._cmd(vid), cwd=self.root, stdout=lf, stderr=subprocess.STDOUT)
-            self._proc = proc
+            with self._lock:
+                self._proc = proc
             try:
                 rc = proc.wait(timeout=self.timeout)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
-                return self.store.finish(vid, False, f"build timed out after {self.timeout:g}s")
+                return self._finish(vid, False, f"build 逾時 (timeout {self.timeout:g}s)")
         if self._stop.is_set():
-            return self.store.finish(vid, False, "server shutting down")
+            return self._finish(vid, False, "server shutting down")
         if rc != 0:
-            return self.store.finish(vid, False, self._tail(log) or f"build exited with code {rc}")
-        import json
+            return self._finish(vid, False, self._tail(log) or f"build exited with code {rc}")
         lesson = self.root / "data" / "lessons" / f"{vid}.json"
         try:
             errs = validate_lesson(json.loads(lesson.read_text("utf-8")))
         except (OSError, ValueError) as e:
             errs = [f"lesson unreadable: {e}"]
         if errs:
-            return self.store.finish(vid, False, "lesson invalid: " + "; ".join(errs[:3]))
-        self.store.finish(vid, True, "完成", f"index.html?v={vid}")
+            return self._finish(vid, False, "lesson invalid: " + "; ".join(errs[:3]))
+        self._finish(vid, True, "完成", f"index.html?v={vid}")
 
     def shutdown(self):
         self._stop.set()
-        proc = self._proc
+        with self._lock:
+            proc = self._proc
         if proc is not None and proc.poll() is None:
             proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
         self._q.put(None)
         t = self._thread
         if t is not None:

@@ -1,4 +1,5 @@
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -55,7 +56,7 @@ OPS = {
     "finish": lambda s: s.finish(V, True, "ok", "u"),
 }
 LEGAL = {
-    ("queued", "claim"), ("capturing", "fail"), ("capturing", "ingest"), ("captured", "building"),
+    ("queued", "claim"), ("capturing", "fail"), ("captured", "building"),
     ("building", "finish"),
 }
 
@@ -68,7 +69,7 @@ def test_transitions_legal_and_illegal(state, op):
         OPS[op](s)
     elif op == "ingest" and state in ("captured", "building", "done"):
         assert OPS[op](s) is False and s.get(V)["state"] == state
-    elif op == "ingest" and state in ("queued", "error"):
+    elif op == "ingest" and state in ("queued", "error", "capturing"):
         assert OPS[op](s) is True and s.get(V)["state"] == "captured"
     else:
         before = s.get(V)
@@ -159,3 +160,106 @@ def test_ingest_idempotent_in_captured_building_done(state):
     assert s.ingested(V, None) is False
     assert s.ingested(V, 1) is False
     assert s.get(V) == before
+
+
+def test_ingest_without_attempt_on_capturing_is_manual_fallback():
+    s = at("capturing")
+    assert s.ingested(V, None) is True
+    assert s.get(V)["state"] == "captured"
+    # a late extension ingest with the (matching) attempt is idempotent
+    assert s.ingested(V, 1) is False
+
+
+def test_requeue_after_error_is_not_dropped(tmp_path, monkeypatch):
+    stub = Path(__file__).parent / "fixtures" / "stub_build.py"
+    (tmp_path / "pipeline").symlink_to(Path(jobs.__file__).parent)
+    (tmp_path / "data" / "raw").mkdir(parents=True)
+    (tmp_path / "data" / "raw" / f"{V}.json").write_text("{}")
+    monkeypatch.setenv("STUB_MODE", "fail")
+    s = JobStore()
+    q = jobs.BuildQueue(s, tmp_path, cmd_factory=lambda v: [sys.executable, str(stub), v])
+    real, fired = s.finish, []
+
+    def finish(vid, ok, msg, url=None):
+        real(vid, ok, msg, url)
+        if not ok and not fired:
+            fired.append(1)
+            monkeypatch.setenv("STUB_MODE", "ok")
+            assert s.ingested(vid, None) is True  # manual re-ingest right after error
+            q.enqueue(vid)
+
+    s.finish = finish
+    s.add(V, False)
+    s.claim(V)
+    s.ingested(V, 1)
+    q.enqueue(V)
+    try:
+        end = time.time() + 10
+        while time.time() < end and s.get(V)["state"] != "done":
+            time.sleep(0.05)
+        assert s.get(V)["state"] == "done"
+    finally:
+        q.shutdown()
+
+
+def _slow_queue(tmp_path, monkeypatch, **kw):
+    stub = Path(__file__).parent / "fixtures" / "stub_build.py"
+    (tmp_path / "pipeline").symlink_to(Path(jobs.__file__).parent)
+    (tmp_path / "data" / "raw").mkdir(parents=True)
+    (tmp_path / "data" / "raw" / f"{V}.json").write_text("{}")
+    monkeypatch.setenv("STUB_MODE", "slow")
+    s = JobStore()
+    s.add(V, False)
+    s.claim(V)
+    s.ingested(V, 1)
+    spawned = []
+    orig = jobs.subprocess.Popen
+
+    def popen(*a, **k):
+        p = orig(*a, **k)
+        spawned.append(p)
+        return p
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", popen)
+    q = jobs.BuildQueue(s, tmp_path, cmd_factory=lambda v: [sys.executable, str(stub), v], **kw)
+    return s, q, spawned
+
+
+def _wait(pred, timeout=10):
+    end = time.time() + timeout
+    while time.time() < end and not pred():
+        time.sleep(0.05)
+    assert pred()
+
+
+def test_build_timeout_kills_child_and_errors(tmp_path, monkeypatch):
+    s, q, spawned = _slow_queue(tmp_path, monkeypatch, timeout=0.5)
+    q.enqueue(V)
+    try:
+        _wait(lambda: s.get(V)["state"] == "error")
+        assert "逾時" in s.get(V)["message"] or "timeout" in s.get(V)["message"]
+        assert spawned[0].poll() is not None
+    finally:
+        q.shutdown()
+
+
+def test_shutdown_terminates_running_child(tmp_path, monkeypatch):
+    s, q, spawned = _slow_queue(tmp_path, monkeypatch)
+    q.enqueue(V)
+    _wait(lambda: s.get(V)["state"] == "building" and spawned)
+    t0 = time.time()
+    q.shutdown()
+    assert time.time() - t0 < 3
+    assert spawned[0].poll() is not None
+    # documented behaviour: the interrupted job is set to error ("server shutting down")
+    assert s.get(V)["state"] == "error"
+
+
+def test_log_tail_tolerates_binary_and_empty(tmp_path):
+    q = jobs.BuildQueue(JobStore(), tmp_path)
+    f = tmp_path / "x.log"
+    f.write_bytes(b"\xff\xfe\nline2\n")
+    assert "line2" in q._tail(f)
+    f.write_bytes(b"")
+    assert q._tail(f) == ""
+    assert q._tail(tmp_path / "missing.log") == ""

@@ -203,3 +203,20 @@ def test_fail_requires_matching_attempt(env):
     assert req(f"{base}/jobs/{V}/fail", {"attempt": att, "message": "no captions"})[0] == 200
     job = req(f"{base}/jobs/{V}")[1]["job"]
     assert job["state"] == "error" and job["message"] == "no captions"
+
+
+def test_ingest_manual_fallback_while_capturing_builds(env):
+    base, root = env
+    start_capture(base)  # job now `capturing`, extension "died"
+    code, out = req(f"{base}/ingest", raw(V))  # bookmarklet: no attempt
+    assert code == 200 and out["job"]["state"] in ("captured", "building")
+    assert wait_state(base, V, {"done", "error"})["state"] == "done"
+    lesson = root / "data" / "lessons" / f"{V}.json"
+    mtime = lesson.stat().st_mtime_ns
+    log = root / "data" / "jobs" / f"{V}.log"
+    log_mtime = log.stat().st_mtime_ns
+    code, out = req(f"{base}/ingest?attempt=1", raw(V))  # late extension ingest
+    assert code == 200 and out["job"]["state"] == "done"
+    time.sleep(0.5)
+    assert lesson.stat().st_mtime_ns == mtime and log.stat().st_mtime_ns == log_mtime
+    assert len(list((root / "data" / "jobs").glob("*.log"))) == 1
