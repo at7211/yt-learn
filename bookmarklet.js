@@ -1,4 +1,4 @@
-// yt-learn capture. Paste into the DevTools console of a youtube.com/watch tab.
+/* yt-learn capture. Paste into the DevTools console of a youtube.com/watch tab (no // comments: also usable as a javascript: bookmark body). */
 (async () => {
   const SERVER = 'http://127.0.0.1:8765';
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -32,15 +32,19 @@
   }
 
   try {
-    // (1) video id + caption tracks
-    const pr = window.ytInitialPlayerResponse;
+    /* (1) video id + caption tracks; the player's own response survives in-page navigation, the global does not */
+    const pr = document.getElementById('movie_player')?.getPlayerResponse?.() || window.ytInitialPlayerResponse;
     const videoId = pr?.videoDetails?.videoId;
+    if (videoId && videoId !== new URL(location.href).searchParams.get('v')) {
+      console.warn('[yt-learn] 播放器資料與網址不一致，請重新整理頁面再執行');
+      return;
+    }
     const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
     if (!videoId || !tracks?.length) { console.warn('[yt-learn] 此影片沒有字幕軌，結束。'); return; }
     const track = tracks.find((t) => t.languageCode === 'en') || tracks[0];
     const duration = Number(pr.videoDetails.lengthSeconds) || 0;
 
-    // (2) turn CC on, play 2s, pause
+    /* (2) turn CC on, play 2s, pause */
     const video = document.querySelector('video');
     const ccBtn = document.querySelector('.ytp-subtitles-button');
     if (ccBtn && ccBtn.getAttribute('aria-pressed') !== 'true') ccBtn.click();
@@ -50,7 +54,7 @@
       video.pause();
     }
 
-    // (3) latest timedtext request for this video, not a translation
+    /* (3) latest timedtext request for this video, not a translation */
     const findUrl = () => {
       const hits = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => {
         if (!n.includes('/api/timedtext')) return false;
@@ -65,25 +69,26 @@
     if (!url) { await sleep(1000); url = findUrl(); }
     if (!url) { console.warn('[yt-learn] 請手動開啟 CC 再執行'); return; }
 
-    // (4) refetch as json3
+    /* (4) refetch as json3 */
     const u = new URL(url);
     u.searchParams.set('fmt', 'json3');
     const j3 = await (await fetch(u.toString())).json();
     const evs = j3.events;
     if (!Array.isArray(evs) || !evs.length) throw new Error('json3 events 為空');
 
-    // (5) build raw
+    /* (5) build raw */
+    const isAsr = (u.searchParams.get('kind') || track.kind) === 'asr';
     const events = [];
     for (const e of evs) {
       if (!e.segs) continue;
       const segs = [];
-      // json3 encodes tOffsetMs=0 by omission: if any seg in the event has an offset,
-      // a missing one means 0; if none do (manual captions), there is no word timing.
+      /* json3 encodes tOffsetMs=0 by omission. ASR track: a missing offset is always 0.
+         Other tracks: 0 only if some seg in the event has an offset; if none do, there is no word timing. */
       const eventHasAnyOffset = e.segs.some((s) => typeof s.tOffsetMs === 'number');
       for (const s of e.segs) {
         const text = (s.utf8 ?? '').replace(/\n/g, '').trim();
         if (!text) continue;
-        segs.push([s.tOffsetMs ?? (eventHasAnyOffset ? 0 : null), text]);
+        segs.push([s.tOffsetMs ?? (isAsr || eventHasAnyOffset ? 0 : null), text]);
       }
       if (!segs.length) continue;
       events.push({ t: e.tStartMs ?? 0, d: e.dDurationMs ?? 0, segs });
@@ -99,14 +104,14 @@
       channel: pr.videoDetails.author,
       duration,
       lang: u.searchParams.get('lang') || track.languageCode,
-      kind: (u.searchParams.get('kind') || track.kind) === 'asr' ? 'asr' : 'manual',
+      kind: isAsr ? 'asr' : 'manual',
       capturedAt: new Date().toISOString(),
       chrome: chromeBrand?.version || '',
       events,
     };
     if (!raw.chrome) delete raw.chrome;
 
-    // (6) POST with 5s timeout
+    /* (6) POST with 5s timeout */
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 5000);
     let res;
@@ -122,7 +127,7 @@
     const out = await res.json();
     log('OK', videoId, out.events, 'events. 下一步：', out.next);
   } catch (err) {
-    // (7) fallback panel
+    /* (7) fallback panel */
     if (raw) showPanel(JSON.stringify(raw), '無法送到本機 server（' + (err?.message || err) + '）。');
     else console.warn('[yt-learn] 擷取失敗：', err);
   }
