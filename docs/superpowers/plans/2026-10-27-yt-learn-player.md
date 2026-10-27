@@ -285,6 +285,7 @@ yt-learn/
 **Task 1 擷取端（Step 8 實測）**：Chrome 155。從 https://www.youtube.com 直接 POST 到 http://127.0.0.1:8765 從未抵達 server（log 沒有 preflight），5 秒後 abort → 出現保底面板 → 按「複製」→ 貼進匯入框 → `POST /ingest` 200 → `data/raw/CR94QQXO_4s.json`（144 events、1046 words）。結論：在此 Chrome 上保底路徑才是可行路徑；直接路徑需使用者授予本機網路權限。
 
 - **Task 6 build（全片實測）**：`python3 -m pipeline.build CR94QQXO_4s` → cues=142 vocab=42 llm_calls=9 cache_hits=1 seconds=160.6（模型 claude-sonnet-5-5，無 rule-cue fallback；60 秒 preview 第一次有一個 chunk 因模型跳號 fallback，prompt 加強索引連續性後解決）
+- Task 8 收尾（2026-10-28）：全新影片 `GqD0rhajhr0`（Howard Stern Show / Trevor Noah，166 s）從 bookmarklet 保底面板 → 匯入框 → `POST /ingest`（81 events、603 segs、0 個 null offset）→ `python3 -m pipeline.build`：cues=62 vocab=28 llm_calls=6 cache_hits=0 seconds=102.3，無規則切句退回 → 播放器 `?v=GqD0rhajhr0` 在 21.5 s 正確高亮 `fly on the radar`、面板 4 / 28。測試：pytest 74 passed / 1 skipped，node --test 10 pass。
 
 ## 9. v2 變更摘要（對 Codex review 的處置）
 
