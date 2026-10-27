@@ -6,6 +6,8 @@
 
 **Goal:** 使用者在 http://127.0.0.1:8765 貼上 YouTube 網址後不再做任何手動步驟：字幕自動擷取、課程自動產出、頁面顯示進度、完成後直接可點進播放器。
 
+**主要入口（v2 新增，使用者要求）：** 使用者在 YouTube 影片頁按擴充功能工具列圖示 → 擴充功能在**目前分頁**擷取字幕（不另開分頁）→ POST `/ingest` → 自動開新分頁 `http://127.0.0.1:8765/index.html?v=<id>`：有 job 進行中時顯示進度卡，完成後自動切換成播放器；lesson 已存在則直接開播放器。貼網址入口保留為第二入口。
+
 **Architecture:** (0) **可行性閘門**：最小擴充功能證明「背景分頁靜音播放會發出字幕請求」「MAIN world 注入能呼叫播放器 API」「worker 能 POST 到 127.0.0.1」。(1) **Server**：記憶體內 job 狀態機、`POST /add`、`GET /jobs/<id>`、窄的 `claim`/`fail` 動作、`/ingest` 觸發序列化的 build 子行程。(2) **擴充功能（MV3，未封裝）**：首頁 content script 橋接 → worker 開啟靜音背景分頁 → MAIN world 擷取 → POST `/ingest` → 關分頁。(3) **首頁**：網址輸入、握手偵測、進度卡、完成連結；無擴充功能時退回 v1 的 bookmarklet／匯入框。
 
 **Tech Stack:** 同 v1 + Chrome Extension Manifest V3（`scripting`、`tabs`、`storage`；host_permissions `https://www.youtube.com/*`、`http://127.0.0.1:8765/*`）。
@@ -34,6 +36,8 @@
 ---
 
 ## 1. 使用流程與畫面
+
+- **圖示入口（主要）**：在 `https://www.youtube.com/watch?v=<id>` 分頁按圖示 → worker 對該分頁 `POST /add {url}` 取得 job → 若 `done` → 直接開 `index.html?v=<id>`；若 `queued` → `claim` → 對目前分頁注入 `capture.js`（`expectVideoId` = 網址的 `v`；影片若在播就不改變播放狀態，只在需要時開 CC；若影片是暫停的，靜音播放最多 3 秒後恢復暫停）→ `POST /ingest?attempt=` → 開新分頁 `index.html?v=<id>` → 該分頁顯示進度卡直到 `done` 再自動載入播放器。在非 YouTube 影片頁按圖示 → 開 `index.html`（貼網址頁）。
 
 - 首頁最上方：「貼上 YouTube 網址」輸入框 + 「開始」。按下後：前端 `parseVideoId` → `POST /add` → 顯示**進度卡**（影片 id、三段狀態列「擷取字幕 → 產生課程 → 完成」、每 2 秒輪詢 `GET /jobs/<id>`）。
 - `/add` 回 `queued` 且握手成功 → 頁面 `postMessage` 請擴充功能擷取；回 `queued` 但無擴充功能 → 卡片顯示安裝說明 + 備援（bookmarklet 走完後卡片會自己變 building → done）。
@@ -114,18 +118,21 @@ queued ──claim──▶ capturing ──ingest──▶ captured ──worke
 - [ ] capture.js 依 §3 輪詢設計；錯誤訊息中文；成功回 raw（含 `chrome` 版本）。
 - [ ] background.js 依 §3；attempt 與 status 轉發；storage.session 記錄 ownedTabs；啟動清理。
 - [ ] bridge.js 依 §2 協定。
+- [ ] `chrome.action.onClicked`：圖示入口流程（§1），含 `/add` → done 直開、queued → 目前分頁擷取、擷取失敗時用 `chrome.notifications` 或在新開的 yt-learn 分頁顯示錯誤（job `fail`）。
 - [ ] Commit `feat(extension): bridge, attempts, bounded phases, polling capture`
 
 ### Task 3: 首頁網址輸入、握手、進度卡
 **Files:** Modify `web/index.html`, `web/app.js`, `web/style.css`；Create `web/ytid.js`, `web/handshake.js`, `tests/web/ytid.test.js`, `tests/web/handshake.test.js`。
 - [ ] `ytid.test.js` 讀同一份 `tests/fixtures/urls.json`；`handshake.test.js`：ack 在時限內 → true；逾時 → false；重複 ack 不炸。
 - [ ] 進度卡與匯入框行為依 §1；輪詢在 done/error 停止；離開頁面清掉 timer。
+- [ ] `index.html?v=<id>` 且 lesson 不存在：先 `GET /jobs/<id>`；有 job → 顯示進度卡並輪詢，`done` 後不重新整理直接載入播放器；無 job → v1 的「尚未產課」畫面加一顆「用擴充功能擷取」按鈕（走 `/add` + 握手）。
 - [ ] 手動驗證（無擴充功能）：貼網址 → 安裝說明；bookmarklet 備援走完 → 卡片自動 building → done。
 - [ ] Commit `feat(web): paste a URL, handshake, progress card`
 
 ### Task 4: 端到端驗收
 - [ ] 重新載入擴充功能（chrome://extensions 的重新整理）與本頁。
-- [ ] 成功路徑：貼一支新影片 → 不碰任何東西 → queued → capturing → building → done → 「開始學習」播放正常；記錄各階段秒數到 §8。
+- [ ] 圖示入口：在一支新影片的 YouTube 分頁按圖示 → 不碰任何東西 → 新分頁出現進度卡 → 自動變播放器；記錄秒數。再按一次圖示 → 直接開播放器。
+- [ ] 成功路徑（貼網址）：貼一支新影片 → 不碰任何東西 → queued → capturing → building → done → 「開始學習」播放正常；記錄各階段秒數到 §8。
 - [ ] 失敗路徑：無字幕影片 → error 訊息正確、分頁已關閉；server 沒開 → 卡片顯示連線錯誤。
 - [ ] 重複貼同一支 → 立即 done；擷取中再貼 → 同一 job、不開第二個分頁。
 - [ ] 慢速導航：在擷取中手動關掉該 YouTube 分頁 → job error、不卡住。
