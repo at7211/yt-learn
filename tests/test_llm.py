@@ -159,3 +159,12 @@ def test_live_cli_smoke():
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
     out = ClaudeCliProvider(model="claude-haiku-5-5").complete_json("Reply with JSON only.", 'Return {"ok": true}', schema)
     assert out == {"ok": True}
+
+
+def test_counts_calls_and_cache_hits(monkeypatch, tmp_path):
+    install(monkeypatch, [ok({"result": '{"x": 1}'})])
+    p = ClaudeCliProvider(cache_dir=tmp_path)
+    assert (p.calls, p.cache_hits) == (0, 0)
+    p.complete_json("s", "u")
+    p.complete_json("s", "u")
+    assert (p.calls, p.cache_hits) == (1, 1)

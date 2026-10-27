@@ -49,6 +49,8 @@ class ClaudeCliProvider:
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.prompt_version = prompt_version
         self.timeout = timeout
+        self.calls = 0
+        self.cache_hits = 0
 
     def _cache_path(self, system: str, user: str, schema: dict | None) -> Path:
         key = hashlib.sha256(json.dumps({
@@ -88,7 +90,9 @@ class ClaudeCliProvider:
             path = self._cache_path(system, user, schema)
             hit = self._cache_get(path)
             if hit is not None:
+                self.cache_hits += 1
                 return hit
+        self.calls += 1
         try:
             try:
                 resp = self._call(system, user, schema)

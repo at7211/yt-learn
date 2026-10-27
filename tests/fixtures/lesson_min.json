@@ -1,0 +1,88 @@
+{
+ "videoId": "CR94QQXO_4s",
+ "title": "'Stand your butt up': GOP Senator challenges union boss to fight",
+ "channel": "CTV News",
+ "duration": 344,
+ "lang": "en",
+ "generatedAt": "2026-10-27T23:00:00+08:00",
+ "model": "claude-sonnet-5-5",
+ "promptVersion": 1,
+ "coveredSeconds": 344,
+ "words": [
+  {
+   "t": 0.28,
+   "e": 0.68,
+   "w": "pretends",
+   "timed": true
+  },
+  {
+   "t": 0.68,
+   "e": 0.84,
+   "w": "like",
+   "timed": true
+  },
+  {
+   "t": 0.84,
+   "e": 1.12,
+   "w": "he's",
+   "timed": true
+  },
+  {
+   "t": 1.12,
+   "e": 1.84,
+   "w": "self-made",
+   "timed": true
+  },
+  {
+   "t": 1.84,
+   "e": 2.04,
+   "w": "what",
+   "timed": true
+  },
+  {
+   "t": 2.04,
+   "e": 2.3,
+   "w": "a",
+   "timed": true
+  },
+  {
+   "t": 2.3,
+   "e": 2.9,
+   "w": "clown",
+   "timed": true
+  }
+ ],
+ "cues": [
+  {
+   "a": 0,
+   "b": 6,
+   "en": "Pretends like he's self-made. What a clown.",
+   "tokens": [
+    "Pretends",
+    "like",
+    "he's",
+    "self-made.",
+    "What",
+    "a",
+    "clown."
+   ],
+   "zh": "假裝自己白手起家，真是個小丑。"
+  }
+ ],
+ "vocab": [
+  {
+   "id": 0,
+   "term": "like",
+   "pos": "adv.",
+   "ipa": "/laɪk/",
+   "zh": "好像、彷彿",
+   "hits": [
+    {
+     "cue": 0,
+     "a": 1,
+     "b": 1
+    }
+   ]
+  }
+ ]
+}

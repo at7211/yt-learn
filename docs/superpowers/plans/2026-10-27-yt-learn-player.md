@@ -289,3 +289,4 @@ yt-learn/
 採納：raw 保留 events/offset 並標 `timed`；手動字幕高亮退化為整句；直接 POST 降為可選 + textarea/匯入框保底；bookmarklet 驗證 `v=` 與非翻譯軌；segment 先驗結構再索引、整批壞 → 規則切句、provider 死 → vocab 空；快取 key 含 model/promptVersion；vocab 驗證同時比對原字與修正 token、不做詞形變化、expand 以 cue 為界；server 路徑用 resolve 包含檢查、ingest 走 schema 驗證；時間迴圈改狀態感知輪詢、不外推；高亮只在 active hit 區間；控制列保留區、`fs:0` + stage 全螢幕、快捷鍵焦點規則；`timing.js` 純函式 + `node --test`；CLI 失敗測試、live smoke opt-in；preview 不覆蓋完整 lesson、`coveredSeconds` 橫幅；匯入後顯示 build 指令；§2 範例 `b:6`；gap 公式明確化；複習模式方向鍵語義；「截圖存下來」只是提示語；砍開場鉤子與面板圓點。
 
 不採納：面板列改為不重複單字（參考影片就是依出現排平，保留並補定義）；五列置中面板延後（是辨識度核心，保留）；頁內切換 lesson 的清理（v1 換網址整頁重載，不存在此問題）。
+- **Task 6 build（全片實測）**：`python3 -m pipeline.build CR94QQXO_4s` → cues=142 vocab=42 llm_calls=9 cache_hits=1 seconds=160.6（模型 claude-sonnet-5-5，無 rule-cue fallback；60 秒 preview 第一次有一個 chunk 因模型跳號 fallback，prompt 加強索引連續性後解決）
