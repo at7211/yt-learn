@@ -77,24 +77,33 @@
     if (!Array.isArray(evs) || !evs.length) throw new Error('json3 events 為空');
 
     /* (5) build raw */
-    const isAsr = (u.searchParams.get('kind') || track.kind) === 'asr';
+    let isAsr = u.searchParams.get('kind') === 'asr';
     const events = [];
     for (const e of evs) {
       if (!e.segs) continue;
       const segs = [];
       /* json3 encodes tOffsetMs=0 by omission. ASR track: a missing offset is always 0.
-         Other tracks: 0 only if some seg in the event has an offset; if none do, there is no word timing. */
+         Other tracks: 0 only if some seg in the event has an offset; if none do, there is no word timing.
+         kind comes only from the timedtext URL actually used (kind=asr). Line breaks become spaces.
+         A seg with internal whitespace (a whole caption line) is never one timed word: offset null.
+         kind=asr but more than 20% of segs untimed -> downgraded to manual. */
       const eventHasAnyOffset = e.segs.some((s) => typeof s.tOffsetMs === 'number');
       for (const s of e.segs) {
-        const text = (s.utf8 ?? '').replace(/\n/g, '').trim();
+        const text = (s.utf8 ?? '').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
         if (!text) continue;
-        segs.push([s.tOffsetMs ?? (isAsr || eventHasAnyOffset ? 0 : null), text]);
+        if (/\s/.test(text)) segs.push([null, text]);
+        else segs.push([s.tOffsetMs ?? (isAsr || eventHasAnyOffset ? 0 : null), text]);
       }
       if (!segs.length) continue;
       events.push({ t: e.tStartMs ?? 0, d: e.dDurationMs ?? 0, segs });
     }
     if (!events.length) throw new Error('沒有可用的字幕片段');
     const last = events[events.length - 1];
+    if (isAsr) {
+      const all = events.reduce((n, e) => n + e.segs.length, 0);
+      const untimed = events.reduce((n, e) => n + e.segs.filter((sg) => sg[0] === null).length, 0);
+      if (untimed > all * 0.2) isAsr = false;
+    }
     if (duration && last.t > duration * 1000) throw new Error('字幕時間超出影片長度，可能抓到錯的軌');
     const brands = navigator.userAgentData?.brands || [];
     const chromeBrand = brands.find((b) => b.brand === 'Google Chrome') || brands.find((b) => b.brand === 'Chromium');

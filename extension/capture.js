@@ -179,23 +179,32 @@ globalThis.ytLearnCapture = async function (opts) {
     const u = got.u;
     const evs = got.evs;
 
-    /* (5) 組 raw；ASR 軌缺 tOffsetMs 一律為 0，其他軌僅在同事件有任一 offset 時為 0 */
-    const isAsr = (u.searchParams.get('kind') || track.kind) === 'asr';
+    /* (5) 組 raw。kind 只看實際使用的 timedtext 網址的 kind=asr。換行變空白。
+       含內部空白的 seg（整行字幕）一律 offset=null（pipeline 會拆字並依字長分配時間）；
+       單字 seg：有 tOffsetMs 照用；缺的話 ASR 軌或同事件有任一 offset → 0，否則 null。
+       kind=asr 但超過 20% 的 seg 無時間 → 降為 manual。 */
+    let isAsr = u.searchParams.get('kind') === 'asr';
     const events = [];
     for (const e of evs) {
       if (!e.segs) continue;
       const segs = [];
       const eventHasAnyOffset = e.segs.some((s) => typeof s.tOffsetMs === 'number');
       for (const s of e.segs) {
-        const text = (s.utf8 ?? '').replace(/\n/g, '').trim();
+        const text = (s.utf8 ?? '').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
         if (!text) continue;
-        segs.push([s.tOffsetMs ?? (isAsr || eventHasAnyOffset ? 0 : null), text]);
+        if (/\s/.test(text)) segs.push([null, text]);
+        else segs.push([s.tOffsetMs ?? (isAsr || eventHasAnyOffset ? 0 : null), text]);
       }
       if (!segs.length) continue;
       events.push({ t: e.tStartMs ?? 0, d: e.dDurationMs ?? 0, segs });
     }
     if (!events.length) throw new Error('字幕內容為空');
     const last = events[events.length - 1];
+    if (isAsr) {
+      const all = events.reduce((n, e) => n + e.segs.length, 0);
+      const untimed = events.reduce((n, e) => n + e.segs.filter((sg) => sg[0] === null).length, 0);
+      if (untimed > all * 0.2) isAsr = false;
+    }
     if (duration && last.t > duration * 1000) throw new Error('字幕時間超出影片長度');
     const brands = navigator.userAgentData?.brands || [];
     const chromeBrand = brands.find((b) => b.brand === 'Google Chrome') || brands.find((b) => b.brand === 'Chromium');

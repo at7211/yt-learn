@@ -324,3 +324,52 @@ test('inPlace timeout: muted, paused and CC restored', async () => {
   assert.equal(page.cc.pressed, 'false');
   assert.equal(page.active.size, 0);
 });
+
+const LINE_JSON3 = { events: [
+  { tStartMs: 0, dDurationMs: 3000, segs: [{ utf8: 'When I look at the sketches,\nI really appreciate' }] },
+  { tStartMs: 3000, dDurationMs: 2000, segs: [{ utf8: 'craggy  faces' }] },
+] };
+
+test('manual line track (no kind in URL, en-US): newline -> space, every seg untimed, kind manual', async () => {
+  const page = makePage({
+    entries: () => ['https://www.youtube.com/api/timedtext?v=' + VID + '&lang=en-US'],
+    pr: () => playerResponse({ captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ languageCode: 'en', kind: 'asr' }, { languageCode: 'en-US' }] } } }),
+    json3: LINE_JSON3,
+  });
+  const raw = JSON.parse(JSON.stringify(await page.run()));
+  assert.equal(raw.kind, 'manual', 'kind comes from the URL, not from tracks');
+  assert.equal(raw.lang, 'en-US');
+  assert.deepEqual(raw.events[0].segs, [[null, 'When I look at the sketches, I really appreciate']]);
+  assert.deepEqual(raw.events[1].segs, [[null, 'craggy faces']]);
+});
+
+test('kind=asr URL with single-word segs: offsets 0 / numbers as before', async () => {
+  const page = makePage({ entries: () => [TT('&kind=asr')] });
+  const raw = JSON.parse(JSON.stringify(await page.run()));
+  assert.equal(raw.kind, 'asr');
+  assert.deepEqual(raw.events.map((e) => e.segs), [[[0, 'hello'], [400, 'world']], [[0, 'again']]]);
+});
+
+test('ASR track: a seg with internal whitespace is untimed, single words keep timing', async () => {
+  const words = Array.from({ length: 9 }, (_, i) => ({ utf8: ' w' + i, tOffsetMs: i * 100 }));
+  const page = makePage({
+    entries: () => [TT('&kind=asr')],
+    json3: { events: [{ tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: 'two words', tOffsetMs: 0 }, ...words] }] },
+  });
+  const raw = JSON.parse(JSON.stringify(await page.run()));
+  assert.equal(raw.kind, 'asr', '1 of 10 untimed (10%) stays asr');
+  assert.deepEqual(raw.events[0].segs[0], [null, 'two words']);
+  assert.deepEqual(raw.events[0].segs[1], [0, 'w0']);
+  assert.deepEqual(raw.events[0].segs[9], [800, 'w8']);
+});
+
+test('kind=asr URL but more than 20% untimed segs -> downgraded to manual', async () => {
+  const page = makePage({ entries: () => [TT('&kind=asr')], json3: LINE_JSON3 });
+  const raw = JSON.parse(JSON.stringify(await page.run()));
+  assert.equal(raw.kind, 'manual');
+  const edge = makePage({
+    entries: () => [TT('&kind=asr')],
+    json3: { events: [{ tStartMs: 0, dDurationMs: 1000, segs: [{ utf8: 'a b' }, { utf8: 'c' }, { utf8: 'd' }, { utf8: 'e' }, { utf8: 'f' }] }] },
+  });
+  assert.equal((await edge.run()).kind, 'asr', 'exactly 20% untimed is not more than 20%');
+});
