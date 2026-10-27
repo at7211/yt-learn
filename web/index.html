@@ -4,67 +4,112 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>yt-learn</title>
-<style>
-  body { font: 16px/1.5 system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
-  textarea { width: 100%; height: 8rem; box-sizing: border-box; }
-  pre { background: #f2f2f2; padding: .5rem; overflow-x: auto; }
-  .err { color: #b00020; }
-</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Noto+Sans+TC:wght@400;500&family=Noto+Serif+TC:wght@500;700&display=swap">
+<link rel="stylesheet" href="style.css">
+<script>
+  // The IFrame API may become ready before the module below runs; park the signal in a promise.
+  window.ytReady = new Promise((resolve) => { window.onYouTubeIframeAPIReady = resolve; });
+</script>
+<script src="https://www.youtube.com/iframe_api"></script>
+<script type="module" src="app.js"></script>
 </head>
 <body>
-<h1>yt-learn</h1>
-<h2>匯入字幕</h2>
-<p>把書籤小工具產生的 JSON 貼在這裡。</p>
-<textarea id="import" placeholder="貼上字幕 JSON"></textarea>
-<p><button id="go">匯入</button></p>
-<div id="result"></div>
-<h2>課程</h2>
-<ul id="lessons"><li>載入中…</li></ul>
-<script>
-const result = document.getElementById('result');
-const lessons = document.getElementById('lessons');
 
-function show(nodes) { result.replaceChildren(...nodes); }
-function el(tag, text, cls) {
-  const e = document.createElement(tag);
-  e.textContent = text;
-  if (cls) e.className = cls;
-  return e;
-}
+<main id="player-view" hidden>
+  <div id="banner" class="banner" hidden></div>
+  <header class="lesson-head">
+    <a href="index.html" class="back">← 課程</a>
+    <h1 id="lesson-title"></h1>
+    <span id="lesson-meta" class="meta"></span>
+  </header>
 
-document.getElementById('go').onclick = async () => {
-  const text = document.getElementById('import').value.trim();
-  if (!text) { show([el('p', '請先貼上 JSON。', 'err')]); return; }
-  try {
-    const res = await fetch('/ingest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: text });
-    const out = await res.json();
-    if (out.ok) {
-      show([el('p', '已匯入 ' + out.videoId + '（' + out.events + ' 個事件）。請在終端機執行：'),
-            el('pre', out.next), el('p', '產課完成後重新整理此頁。')]);
-    } else {
-      show([el('p', '匯入失敗：', 'err'), ...(out.errors || ['未知錯誤']).map((m) => el('p', m, 'err'))]);
-    }
-  } catch (e) {
-    show([el('p', '無法連線到 server：' + e.message, 'err')]);
-  }
-};
+  <div id="stage" class="stage">
+    <div class="frame">
+      <div class="yt-wrap"><div id="yt"></div></div>
 
-(async () => {
-  try {
-    const list = await (await fetch('/lessons')).json();
-    if (!list.length) { lessons.replaceChildren(el('li', '尚無課程。')); return; }
-    lessons.replaceChildren(...list.map((l) => {
-      const li = document.createElement('li');
-      const a = el('a', l.title || l.videoId);
-      a.href = 'index.html?v=' + encodeURIComponent(l.videoId);
-      const meta = [l.channel, l.vocabCount != null ? l.vocabCount + ' 個單字' : null].filter(Boolean).join('・');
-      li.append(a, meta ? document.createTextNode('　' + meta) : '');
-      return li;
-    }));
-  } catch (e) {
-    lessons.replaceChildren(el('li', '無法載入課程清單。', 'err'));
-  }
-})();
-</script>
+      <div id="panel" class="layer panel">
+        <div class="panel-head">
+          <span class="rule"></span>
+          <span class="panel-title">本集精選 <span id="panel-total">0</span> 個字</span>
+          <span class="panel-count" id="panel-count">0 / 0</span>
+        </div>
+        <div class="panel-rows" id="panel-rows"></div>
+      </div>
+
+      <div id="subs" class="layer subs">
+        <div class="sub-en" id="sub-en"></div>
+        <div class="sub-zh" id="sub-zh"></div>
+      </div>
+
+      <section id="review" class="review" hidden>
+        <div class="review-head">
+          <div>
+            <div class="eyebrow"><span class="rule"></span>總複習</div>
+            <h2 class="review-title">本集精選 <em id="review-total">0</em> 個字</h2>
+          </div>
+          <div class="review-side">
+            <div class="snap">截圖存下來</div>
+            <div class="review-nav">
+              <span class="legend"><span class="pill">×N</span> 這集聽到 N 次，最該記</span>
+              <button type="button" class="pg" id="review-prev" aria-label="上一頁">‹</button>
+              <span class="pager" id="review-pager">1 / 1</span>
+              <button type="button" class="pg" id="review-next" aria-label="下一頁">›</button>
+            </div>
+          </div>
+        </div>
+        <div class="review-grid" id="review-grid"></div>
+        <button type="button" class="again" id="review-again">再看一次</button>
+      </section>
+    </div>
+  </div>
+
+  <div class="controls" id="controls">
+    <button type="button" id="btn-play">播放</button>
+    <button type="button" id="btn-replay">重播本句</button>
+    <button type="button" id="btn-prev">上一句</button>
+    <button type="button" id="btn-next">下一句</button>
+    <button type="button" id="btn-zh" aria-pressed="true">中文 on</button>
+    <button type="button" id="btn-en" aria-pressed="true">英文 on</button>
+    <button type="button" id="btn-fs">全螢幕</button>
+    <span class="hint">快捷鍵：Space 播放/暫停・←/→ 上/下一句・R 重播・Z 中文・E 英文</span>
+  </div>
+
+  <div class="lists">
+    <section class="list-block">
+      <h2>逐句</h2>
+      <ol id="transcript" class="transcript"></ol>
+    </section>
+    <section class="list-block">
+      <h2>單字總表</h2>
+      <table class="vocab-table">
+        <thead><tr><th>單字</th><th>詞性</th><th>音標</th><th>中文</th><th>次數</th></tr></thead>
+        <tbody id="vocab-body"></tbody>
+      </table>
+    </section>
+  </div>
+</main>
+
+<div id="missing" class="page missing" hidden>
+  <h1>尚未產課</h1>
+  <p>影片 <code id="missing-id"></code> 還沒有課程。請在終端機執行：</p>
+  <pre><code id="missing-cmd"></code></pre>
+  <p>產課完成後重新整理此頁。</p>
+</div>
+
+<div id="home" class="page home" hidden>
+  <h1>yt-learn</h1>
+  <h2>匯入字幕</h2>
+  <p>把書籤小工具產生的 JSON 貼在這裡。</p>
+  <textarea id="import" placeholder="貼上字幕 JSON"></textarea>
+  <p><button id="go" type="button">匯入</button></p>
+  <div id="result"></div>
+  <section id="lesson-list">
+    <h2>課程</h2>
+    <ul id="lessons"><li>載入中…</li></ul>
+  </section>
+</div>
+
 </body>
 </html>
