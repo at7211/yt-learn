@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "yt-learn 擷取",
+  "version": "1.1.0",
+  "minimum_chrome_version": "120",
+  "permissions": ["scripting", "tabs", "storage"],
+  "host_permissions": ["https://www.youtube.com/*", "http://127.0.0.1:8765/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_title": "yt-learn probe"}
+}
