@@ -3,3 +3,5 @@
 import './timing.test.js';
 import './capture.test.js';
 import './extension-ytid.test.js';
+import './ytid.test.js';
+import './handshake.test.js';

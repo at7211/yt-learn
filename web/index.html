@@ -93,18 +93,33 @@
 
 <div id="missing" class="page missing" hidden>
   <h1>尚未產課</h1>
-  <p>影片 <code id="missing-id"></code> 還沒有課程。請在終端機執行：</p>
-  <pre><code id="missing-cmd"></code></pre>
-  <p>產課完成後重新整理此頁。</p>
+  <div id="missing-default">
+    <p>影片 <code id="missing-id"></code> 還沒有課程。請在終端機執行：</p>
+    <pre><code id="missing-cmd"></code></pre>
+    <p>產課完成後重新整理此頁。</p>
+    <p><button id="missing-capture" type="button">用擴充功能擷取</button></p>
+  </div>
+  <div id="card-missing"></div>
 </div>
 
 <div id="home" class="page home" hidden>
   <h1>yt-learn</h1>
-  <h2>匯入字幕</h2>
-  <p>把書籤小工具產生的 JSON 貼在這裡。</p>
-  <textarea id="import" placeholder="貼上字幕 JSON"></textarea>
-  <p><button id="go" type="button">匯入</button></p>
-  <div id="result"></div>
+  <section class="add">
+    <h2>貼上 YouTube 網址</h2>
+    <form id="url-form" class="url-form" autocomplete="off">
+      <input id="url-input" type="text" inputmode="url" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…" aria-label="YouTube 網址">
+      <button id="url-go" type="submit">開始</button>
+    </form>
+    <p id="url-err" class="err" hidden></p>
+  </section>
+  <div id="card-home"></div>
+  <details class="fallback">
+    <summary>手動匯入（備援）</summary>
+    <p>把書籤小工具產生的 JSON 貼在這裡。</p>
+    <textarea id="import" placeholder="貼上字幕 JSON"></textarea>
+    <p><button id="go" type="button">匯入</button></p>
+    <div id="result"></div>
+  </details>
   <section id="lesson-list">
     <h2>課程</h2>
     <ul id="lessons"><li>載入中…</li></ul>
