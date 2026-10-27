@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from pipeline.words import normalize_words
 
 FIXTURE = Path(__file__).parent / "fixtures" / "raw_small.json"
@@ -21,9 +23,39 @@ def test_untimed_event_marks_words_untimed():
     ]
     words = normalize_words(ev, 10)
     assert [w["w"] for w in words] == ["we", "can", "go", "now"]
-    assert [w["t"] for w in words[:3]] == [1.0, 1.0, 1.0]
+    assert [w["t"] for w in words[:3]] == pytest.approx([1.0, 1.667, 2.556], abs=1e-3)
     assert [w["timed"] for w in words] == [False, False, False, True]
-    assert [w["e"] for w in words[:3]] == [3.0, 3.0, 3.0]
+    assert [w["e"] for w in words[:3]] == pytest.approx([1.667, 2.556, 3.0], abs=1e-3)
+
+
+def test_untimed_words_spread_by_char_length():
+    ev = [{"t": 0, "d": 10000, "segs": [[None, "aa bbbbbbbb c"]]}]  # 2 + 1 + 8 + 1 + 1 = 13 chars
+    words = normalize_words(ev, 20)
+    assert [w["t"] for w in words] == pytest.approx([0.0, 10 * 3 / 13, 10 * 12 / 13], abs=1e-3)
+    assert words[0]["e"] == words[1]["t"] and words[1]["e"] == words[2]["t"]
+    assert words[2]["e"] == 10.0
+    assert all(w["timed"] is False for w in words)
+
+
+def test_untimed_words_strictly_increasing_and_two_cues_in_one_event_distinct():
+    ev = [{"t": 1000, "d": 3000, "segs": [[None, "I went home. Then we"]]}]
+    words = normalize_words(ev, 10)
+    ts = [w["t"] for w in words]
+    assert all(b > a for a, b in zip(ts, ts[1:]))
+    # a cue boundary after "home." (index 2) gives distinct cue starts
+    assert words[3]["t"] > words[0]["t"]
+
+
+def test_untimed_tiny_event_still_strictly_increasing():
+    ev = [{"t": 1000, "d": 1, "segs": [[None, "a b c"]]}]
+    ts = [w["t"] for w in normalize_words(ev, 10)]
+    assert all(b > a for a, b in zip(ts, ts[1:]))
+
+
+def test_untimed_zero_duration_event_shares_start():
+    ev = [{"t": 4000, "d": 0, "segs": [[None, "x y"]]}]
+    words = normalize_words(ev, 10)
+    assert [(w["t"], w["e"]) for w in words] == [(4.0, 4.0), (4.0, 4.0)]
 
 
 def test_last_word_end_clamped_to_duration():

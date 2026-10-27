@@ -43,6 +43,16 @@ def test_token_count_mismatch_falls_back_to_raw():
     assert out[1]["tokens"] == ["W3", "W4", "W5"] and out[1]["zh"] == "好"
 
 
+def test_tokens_with_whitespace_fall_back_to_raw():
+    words = mk(6)
+    prov = FakeProvider([{"cues": [cue(0, 2, tokens=["A", "B C", "D"], zh="壞"),
+                                   cue(3, 5, tokens=["X", " ", "Z"], zh="空"),
+                                   ]}])
+    out = make_cues(words, (0, 5), prov)
+    assert out[0]["tokens"] == ["w0", "w1", "w2"] and out[0]["zh"] == "壞"
+    assert out[1]["tokens"] == ["w3", "w4", "w5"] and out[1]["zh"] == "空"
+
+
 def test_overlapping_cues_reject_batch_to_rule_cues(capsys):
     words = mk(6)
     prov = FakeProvider([{"cues": [cue(0, 3), cue(3, 5)]}])

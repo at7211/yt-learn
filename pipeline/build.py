@@ -20,7 +20,8 @@ DEFAULT_MODEL = "claude-sonnet-5-5"
 
 
 def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
-                 model_label: str = "default", prompt_version: int = 1) -> dict:
+                 model_label: str = "default", prompt_version: int = 1) -> tuple[dict, dict]:
+    """Return ``(lesson, stats)``; stats has chunks, fallback_chunks, vocab_failed."""
     errs = validate_raw(raw)
     if errs:
         raise ValueError("invalid raw capture: " + "; ".join(errs))
@@ -32,18 +33,21 @@ def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
         words = [w for w in words if w["t"] < limit_seconds]
     if not words:
         raise ValueError("no words to build (empty after time limit)")
+    stats = {"chunks": 0, "fallback_chunks": 0, "vocab_failed": 0}
     cues = []
     for chunk in chunk_words(words):
-        cues += make_cues(words, chunk, provider)
+        stats["chunks"] += 1
+        cues += make_cues(words, chunk, provider, stats)
     cues = finalize_cues(cues, words)
-    vocab = pick_vocab(cues, words, provider)
-    return {
+    vocab = pick_vocab(cues, words, provider, stats=stats)
+    lesson = {
         "videoId": raw["videoId"], "title": raw["title"], "channel": raw["channel"],
         "duration": duration, "lang": raw["lang"],
         "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "model": model_label, "promptVersion": prompt_version, "coveredSeconds": covered,
         "words": words, "cues": cues, "vocab": vocab,
     }
+    return lesson, stats
 
 
 def _read_json(path: Path):
@@ -93,10 +97,13 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
     t0 = time.monotonic()
     provider = provider_factory(args.model, data / "cache" / vid)
     try:
-        lesson = build_lesson(raw, provider, args.limit_seconds, model_label=args.model,
+        lesson, stats = build_lesson(raw, provider, args.limit_seconds, model_label=args.model,
                               prompt_version=getattr(provider, "prompt_version", 1))
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
+        return 1
+    if stats["chunks"] and stats["fallback_chunks"] == stats["chunks"]:
+        print("所有切句呼叫都失敗（請確認 claude CLI 已登入）；未寫入 lesson", file=sys.stderr)
         return 1
     errs = validate_lesson(lesson)
     if errs:
@@ -111,6 +118,8 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
         tmp.unlink(missing_ok=True)
         raise
     print(f"cues={len(lesson['cues'])} vocab={len(lesson['vocab'])} "
+          f"fallback_chunks={stats['fallback_chunks']}/{stats['chunks']} "
+          f"vocab_status={'skipped' if stats['vocab_failed'] else 'ok'} "
           f"llm_calls={getattr(provider, 'calls', 0)} cache_hits={getattr(provider, 'cache_hits', 0)} "
           f"seconds={time.monotonic() - t0:.1f}")
     return 0

@@ -88,20 +88,30 @@ def _warn(a: int, b: int, why: str) -> None:
     print(f"warning: segmentation of words {a}..{b} fell back to rule cues ({why})", file=sys.stderr)
 
 
-def make_cues(words: list[dict], chunk: tuple[int, int], provider) -> list[dict]:
+def make_cues(words: list[dict], chunk: tuple[int, int], provider,
+              stats: dict | None = None) -> list[dict]:
+    """Segment one chunk; on whole-chunk fallback, increments ``stats["fallback_chunks"]``."""
     a, b = chunk
+
+    def fell_back():
+        if stats is not None:
+            stats["fallback_chunks"] = stats.get("fallback_chunks", 0) + 1
+
     user = segment_user_prompt(words, a, b)
     try:
         resp = provider.complete_json(SEGMENT_SYSTEM, user, SEGMENT_SCHEMA)
     except ProviderError as e:
         _warn(a, b, str(e))
+        fell_back()
         return rule_cues(words, a, b)
     cues = validate_cues(resp, a, b)
     if cues is None:
         _warn(a, b, "invalid LLM response")
+        fell_back()
         return rule_cues(words, a, b)
     for c in cues:
-        if len(c["tokens"]) != c["b"] - c["a"] + 1:
+        if len(c["tokens"]) != c["b"] - c["a"] + 1 or any(
+                not t.strip() or len(t.split()) != 1 for t in c["tokens"]):
             c["tokens"] = [words[i]["w"] for i in range(c["a"], c["b"] + 1)]
     return cues
 

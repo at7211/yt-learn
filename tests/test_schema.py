@@ -58,3 +58,37 @@ def test_rejects_missing_meta():
 
 def test_rejects_non_object():
     assert schema.validate_raw([]) 
+
+
+def test_rejects_non_numeric_duration():
+    for bad in ("344", True, -1, [1], {"a": 1}):
+        assert schema.validate_raw(mod(duration=bad)), bad
+    assert schema.validate_raw(mod(duration=344.5)) == []
+
+
+def _lesson():
+    import json
+    from pathlib import Path
+    return json.loads((Path(__file__).parent / "fixtures" / "lesson_min.json").read_text(encoding="utf-8"))
+
+
+def test_lesson_rejects_non_monotonic_words():
+    les = _lesson()
+    assert schema.validate_lesson(les) == []
+    les["words"][1]["t"] = les["words"][0]["t"] - 0.1
+    les["words"][1]["e"] = les["words"][1]["t"] + 0.1
+    assert any("earlier" in e for e in schema.validate_lesson(les))
+
+
+def test_lesson_rejects_non_increasing_cue_starts():
+    les = _lesson()
+    c = les["cues"][0]
+    k = 4  # split the single fixture cue after word 3
+    c2 = {**c, "a": k, "tokens": c["tokens"][k:], "en": " ".join(c["tokens"][k:])}
+    c1 = {**c, "b": k - 1, "tokens": c["tokens"][:k], "en": " ".join(c["tokens"][:k])}
+    les["cues"] = [c1, c2]
+    les["vocab"] = []
+    assert schema.validate_lesson(les) == []
+    les["words"][k]["t"] = les["words"][0]["t"]
+    les["words"][k]["e"] = max(les["words"][k]["e"], les["words"][k]["t"])
+    assert any("cue" in e and "later" in e for e in schema.validate_lesson(les))

@@ -162,3 +162,34 @@ def test_provider_error_returns_empty(capsys):
 def test_bad_response_returns_empty(capsys):
     assert pick_vocab(CUES, WORDS, FakeProvider([{"vocab": "x"}])) == []
     assert capsys.readouterr().err.count("\n") == 1
+
+
+def _mk(raw_words, tokens):
+    words = [{"t": i * 0.5, "e": i * 0.5 + 0.2, "w": w, "timed": True} for i, w in enumerate(raw_words)]
+    cue = {"a": 0, "b": len(raw_words) - 1, "tokens": tokens, "zh": "", "en": " ".join(tokens)}
+    return cue, words
+
+
+def test_find_spans_does_not_resplit_tokens():
+    cue, words = _mk(["um", "gonna", "be", "a", "real", "thug"],
+                     ["Um,", "going to", "be", "a", "real", "thug."])
+    assert find_spans("real", cue, words) == [(4, 4)]
+    assert find_spans("thug", cue, words) == [(5, 5)]
+    assert find_spans("a real", cue, words) == [(3, 4)]
+    assert find_spans("going to", cue, words) == []
+
+
+def test_term_normalizing_to_empty_matches_nothing():
+    cue, words = _mk(["well", "...", "ok"], ["Well", "...", "ok"])
+    assert find_spans("...", cue, words) == []
+    assert find_spans("", cue, words) == []
+
+
+def test_term_longer_than_cue_no_match():
+    cue, words = _mk(["a", "b"], ["a", "b"])
+    assert find_spans("a b c", cue, words) == []
+
+
+def test_overlapping_repeats_each_counted():
+    cue, words = _mk(["very", "very", "very"], ["very", "very", "very"])
+    assert find_spans("very very", cue, words) == [(0, 1), (1, 2)]

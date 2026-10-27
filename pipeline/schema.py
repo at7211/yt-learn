@@ -9,6 +9,10 @@ def _is_int(v):
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+def _is_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
 def validate_raw(obj) -> list[str]:
     """Return a list of error messages; empty means valid."""
     if not isinstance(obj, dict):
@@ -20,6 +24,9 @@ def validate_raw(obj) -> list[str]:
     for k in REQUIRED_META:
         if obj.get(k) in (None, ""):
             errs.append(f"missing required field: {k}")
+    dur = obj.get("duration")
+    if dur not in (None, "") and not (_is_num(dur) and dur >= 0):
+        errs.append("duration must be a non-negative number")
     events = obj.get("events")
     if not isinstance(events, list) or not events:
         errs.append("events must be a non-empty list")
@@ -57,10 +64,6 @@ def validate_raw(obj) -> list[str]:
     return errs
 
 
-def _is_num(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
-
-
 def validate_lesson(obj) -> list[str]:
     """Return a list of error messages for a lesson (data/lessons/<id>.json); empty means valid."""
     if not isinstance(obj, dict):
@@ -94,6 +97,9 @@ def validate_lesson(obj) -> list[str]:
                 errs.append(f"words[{i}] must be {{t, e, w, timed}} with numeric t/e")
             elif not 0 <= w["t"] <= w["e"]:
                 errs.append(f"words[{i}] needs 0 <= t <= e")
+            elif i and isinstance(words[i - 1], dict) and _is_num(words[i - 1].get("t")) \
+                    and w["t"] < words[i - 1]["t"]:
+                errs.append(f"words[{i}].t is earlier than words[{i - 1}].t")
             if len(errs) > 50:
                 errs.append("too many errors, stopping")
                 return errs
@@ -104,6 +110,7 @@ def validate_lesson(obj) -> list[str]:
         cues = None
     else:
         expect = 0
+        prev_start = None
         for i, c in enumerate(cues):
             if not (isinstance(c, dict) and _is_int(c.get("a")) and _is_int(c.get("b"))
                     and isinstance(c.get("tokens"), list) and isinstance(c.get("en"), str)
@@ -115,6 +122,13 @@ def validate_lesson(obj) -> list[str]:
             elif len(c["tokens"]) != c["b"] - c["a"] + 1:
                 errs.append(f"cues[{i}] tokens length must equal b-a+1")
             expect = c["b"] + 1
+            if words is not None and 0 <= c["a"] < len(words) and prev_start is not None:
+                start = words[c["a"]].get("t") if isinstance(words[c["a"]], dict) else None
+                if _is_num(start) and start <= prev_start:
+                    errs.append(f"cues[{i}] start time must be later than the previous cue's")
+            if words is not None and 0 <= c["a"] < len(words) and isinstance(words[c["a"]], dict) \
+                    and _is_num(words[c["a"]].get("t")):
+                prev_start = words[c["a"]]["t"]
             if len(errs) > 50:
                 errs.append("too many errors, stopping")
                 return errs

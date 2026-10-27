@@ -59,14 +59,20 @@ def norm(s: str) -> str:
     return " ".join(t for t in _norm_tokens(s) if t)
 
 
+def _norm_slot(tok: str) -> str | None:
+    """Normalize ONE token. Empty or whitespace-containing results can never match (None)."""
+    n = _EDGE.sub("", tok.strip()).lower()
+    return n if n and not any(ch.isspace() for ch in n) else None
+
+
 def find_spans(term: str, cue: dict, words: list[dict]) -> list[tuple[int, int]]:
     seq = norm(term).split()
     n = len(seq)
     if n == 0:
         return []
     a, b = cue["a"], cue["b"]
-    toks = _norm_tokens(" ".join(cue["tokens"]))
-    raw = [norm(words[i]["w"]) for i in range(a, b + 1)]
+    toks = [_norm_slot(t) for t in cue["tokens"][: b - a + 1]]
+    raw = [_norm_slot(words[i]["w"]) for i in range(a, b + 1)]
     spans = set()
     for seen in (toks, raw):
         for k in range(min(len(seen), b - a + 1) - n + 1):
@@ -126,16 +132,24 @@ def _warn(why: str) -> None:
     print(f"warning: vocabulary selection skipped ({why})", file=sys.stderr)
 
 
-def pick_vocab(cues: list[dict], words: list[dict], provider, max_items: int = 120) -> list[dict]:
+def _failed(stats: dict | None) -> None:
+    if stats is not None:
+        stats["vocab_failed"] = stats.get("vocab_failed", 0) + 1
+
+
+def pick_vocab(cues: list[dict], words: list[dict], provider, max_items: int = 120,
+               stats: dict | None = None) -> list[dict]:
     target = min(max(5, round(len(words) / 10)), max_items)
     try:
         resp = provider.complete_json(VOCAB_SYSTEM, vocab_user_prompt(cues, words, target), VOCAB_SCHEMA)
     except ProviderError as e:
         _warn(str(e))
+        _failed(stats)
         return []
     raw = resp.get("vocab") if isinstance(resp, dict) else None
     if not isinstance(raw, list):
         _warn("invalid LLM response")
+        _failed(stats)
         return []
     items = expand_hits(validate_hits(raw, cues, words), cues, words)
     merged: dict[str, dict] = {}
