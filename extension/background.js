@@ -7,6 +7,7 @@ const FETCH_TIMEOUT_MS = 5000;
 const SERVER_DOWN = '本機 server 沒有回應（請確認 python3 server.py 正在執行）';
 const BUSY = '已有一支影片在處理中';
 const TAB_CLOSED = '擷取用的分頁已被關閉';
+const DEFAULT_TITLE = 'yt-learn：把這支影片變成課程';
 
 const log = (stage, ...a) => console.log('[yt-learn]', stage, ...a);
 const errMsg = (e) => String((e && e.message) || e);
@@ -54,6 +55,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
+  const fromLocal = sender.origin === SERVER || (typeof sender.url === 'string' && sender.url.startsWith(SERVER + '/'));
+  if (!fromLocal) {
+    log('external:rejected', sender.origin, sender.url);
+    return false;
+  }
   if (msg && (msg.type === 'probe' || msg.type === 'ytlearn:capture') && typeof msg.videoId === 'string') {
     const videoId = ytLearnParseVideoId(msg.videoId);
     if (!videoId) {
@@ -91,7 +97,19 @@ async function onIconClicked(tab) {
     ? { mode: 'inplace', tabId: tab.id, onAdded: openPage }
     : { mode: 'background', onAdded: openPage });
   log('icon:result', JSON.stringify(result));
+  if (!result.ok && result.attempt === undefined) showBadgeError(result.error);
   openPage();
+}
+
+function showBadgeError(message) {
+  chrome.action.setBadgeText({ text: '!' }).catch((e) => log('ignored', errMsg(e)));
+  chrome.action.setBadgeBackgroundColor({ color: '#d93025' }).catch((e) => log('ignored', errMsg(e)));
+  chrome.action.setTitle({ title: 'yt-learn：' + message }).catch((e) => log('ignored', errMsg(e)));
+}
+
+function clearBadge() {
+  chrome.action.setBadgeText({ text: '' }).catch((e) => log('ignored', errMsg(e)));
+  chrome.action.setTitle({ title: DEFAULT_TITLE }).catch((e) => log('ignored', errMsg(e)));
 }
 
 async function onPageCapture(videoId, pageTabId) {
@@ -121,14 +139,20 @@ function runJob(videoId, opts) {
     log('busy', videoId);
     return Promise.resolve({ ok: false, error: BUSY });
   }
-  busy = runJobInner(videoId, opts || {}).catch((e) => ({ ok: false, error: errMsg(e) })).finally(() => { busy = null; });
+  busy = runJobInner(videoId, opts || {})
+    .catch((e) => ({ ok: false, error: errMsg(e) }))
+    .then((result) => {
+      if (result.ok) clearBadge();
+      return result;
+    })
+    .finally(() => { busy = null; });
   return busy;
 }
 
 async function runJobInner(videoId, opts) {
   await startup;
   const mode = opts.mode === 'inplace' ? 'inplace' : 'background';
-  const emit = (s) => { try { if (opts.onStatus) opts.onStatus(s); } catch (e) { } };
+  const emit = (s) => { try { if (opts.onStatus) opts.onStatus(s); } catch (e) { log('ignored', errMsg(e)); } };
   const canonical = ytLearnCanonicalUrl(videoId);
 
   log('add', videoId, mode);
@@ -136,7 +160,7 @@ async function runJobInner(videoId, opts) {
   const job = add.json && add.json.job;
   if (add.status !== 200 || !job) return { ok: false, error: '加入工作失敗：' + serverError(add) };
   log('add:job', JSON.stringify(job));
-  try { if (opts.onAdded) opts.onAdded(job); } catch (e) { }
+  try { if (opts.onAdded) opts.onAdded(job); } catch (e) { log('ignored', errMsg(e)); }
   if (job.state === 'done') return { ok: true, done: true, lessonUrl: SERVER + '/index.html?v=' + videoId, job };
   if (job.state !== 'queued') return { ok: true, inProgress: true, job };
 
@@ -272,7 +296,7 @@ async function api(path, { method = 'GET', body } = {}) {
     throw new Error(SERVER_DOWN);
   }
   let json = null;
-  try { json = await res.json(); } catch (e) { }
+  try { json = await res.json(); } catch (e) { log('api:non-json', method, path, res.status); }
   return { status: res.status, json };
 }
 

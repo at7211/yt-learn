@@ -33,7 +33,7 @@ function makePage({
   timedtextAfter = 0, entries = () => [TT('&kind=asr')], json3 = JSON3,
   videoPaused = false, videoMuted = false, ccPressed = 'false', playRejects = false,
 } = {}) {
-  const calls = { play: 0, pause: 0, cc: 0, fetched: [], mutedAtPlay: null, prPolls: 0, perfPolls: 0 };
+  const calls = { play: 0, pause: 0, cc: 0, fetched: [], mutedAtPlay: null, prPolls: 0, perfPolls: 0, cleared: 0 };
   const active = new Set();
   const video = {
     paused: videoPaused,
@@ -54,7 +54,7 @@ function makePage({
     },
   };
   const ctx = {
-    URL, AbortController, Promise, Date, console,
+    URL, AbortController, Promise, Date, console: { log() {} },
     setTimeout: (fn, ms) => { const id = setTimeout(() => { active.delete(id); fn(); }, ms); active.add(id); return id; },
     clearTimeout: (id) => { active.delete(id); clearTimeout(id); },
     location: { href: 'https://www.youtube.com/watch?v=' + VID },
@@ -68,10 +68,15 @@ function makePage({
         if (t !== 'resource') return [];
         calls.perfPolls++;
         const base = [{ name: 'https://www.youtube.com/s/player/base.js' }];
-        return calls.perfPolls > timedtextAfter ? base.concat(entries().map((name) => ({ name }))) : base;
+        return calls.perfPolls > timedtextAfter ? base.concat(entries(calls).map((name) => ({ name }))) : base;
       },
+      clearResourceTimings() { calls.cleared++; },
     },
-    fetch: async (url) => { calls.fetched.push(url); return { ok: true, status: 200, json: async () => json3 }; },
+    fetch: async (url) => {
+      calls.fetched.push(url);
+      const body = typeof json3 === 'function' ? json3(calls.fetched.length, url) : json3;
+      return body === 404 ? { ok: false, status: 404, json: async () => ({}) } : { ok: true, status: 200, json: async () => body };
+    },
   };
   ctx.globalThis = ctx;
   vm.createContext(ctx);
@@ -233,4 +238,89 @@ test('inPlace: CC already on stays on; CC off is turned back off', async () => {
   await off.run({ inPlace: true });
   assert.equal(off.calls.cc, 2);
   assert.equal(off.cc.pressed, 'false');
+});
+
+const FRESH = TT('&kind=asr&sig=fresh');
+const STALE = TT('&kind=asr&sig=stale');
+
+test('CC already on, entry evicted: forced CC toggle -> fresh request -> success, CC still on', async () => {
+  const page = makePage({ ccPressed: 'true', entries: (c) => (c.cc >= 2 ? [FRESH] : []) });
+  const raw = await page.run({ inPlace: true, timeoutMs: 2000, forceMs: 100 });
+  assert.equal(raw.videoId, VID);
+  assert.equal(page.calls.cleared, 1);
+  assert.equal(page.calls.cc, 2);
+  assert.equal(page.cc.pressed, 'true');
+  assert.equal(new URL(page.calls.fetched[0]).searchParams.get('sig'), 'fresh');
+  assert.equal(page.active.size, 0);
+});
+
+test('CC off initially, request late: forced refresh, CC off again after success', async () => {
+  const page = makePage({ ccPressed: 'false', entries: (c) => (c.cleared ? [FRESH] : []) });
+  await page.run({ forceMs: 100 });
+  assert.equal(page.calls.cleared, 1);
+  assert.equal(page.cc.pressed, 'false');
+});
+
+test('forced refresh happens at most once; CC restored to original on timeout', async () => {
+  for (const pressed of ['true', 'false']) {
+    const page = makePage({ ccPressed: pressed, entries: () => [] });
+    assert.match(await rejection(page.run({ timeoutMs: 500, pollMs: 20, forceMs: 50 })), /^逾時/);
+    assert.equal(page.calls.cleared, 1, 'cleared once');
+    assert.equal(page.calls.cc, pressed === 'true' ? 2 : 4, 'clicks for ' + pressed);
+    assert.equal(page.cc.pressed, pressed);
+    assert.equal(page.active.size, 0);
+  }
+});
+
+test('stale entry gives empty json3: forced refresh, new entry, second fetch succeeds', async () => {
+  const page = makePage({
+    entries: (c) => (c.cleared ? [FRESH] : [STALE]),
+    json3: (n) => (n === 1 ? { events: [] } : JSON3),
+  });
+  const raw = await page.run({ inPlace: true });
+  assert.equal(raw.events.length, 2);
+  assert.equal(page.calls.fetched.length, 2);
+  assert.equal(new URL(page.calls.fetched[0]).searchParams.get('sig'), 'stale');
+  assert.equal(new URL(page.calls.fetched[1]).searchParams.get('sig'), 'fresh');
+  assert.equal(page.calls.cleared, 1);
+  assert.equal(page.cc.pressed, 'false');
+});
+
+test('stale entry gives HTTP error: retried once after refresh', async () => {
+  const page = makePage({ entries: (c) => (c.cleared ? [FRESH] : [STALE]), json3: (n) => (n === 1 ? 404 : JSON3) });
+  await page.run();
+  assert.equal(page.calls.fetched.length, 2);
+});
+
+test('empty json3 twice -> 字幕內容為空 after exactly one retry; HTTP error twice -> HTTP message', async () => {
+  const a = makePage({ json3: { events: [] } });
+  assert.equal(await rejection(a.run()), '字幕內容為空');
+  assert.equal(a.calls.fetched.length, 2);
+  assert.equal(a.calls.cleared, 1);
+  const b = makePage({ json3: 404 });
+  assert.equal(await rejection(b.run()), '字幕下載失敗（HTTP 404）');
+  assert.equal(b.calls.fetched.length, 2);
+});
+
+test('inPlace: user navigates to another video mid-capture -> 播放器資料與網址不一致 immediately', async () => {
+  const page = makePage({ timedtextAfter: 1e9, videoPaused: true });
+  const p = page.run({ inPlace: true, timeoutMs: 5000 });
+  setTimeout(() => { page.ctx.location.href = 'https://www.youtube.com/watch?v=zzzzzzzzzzz'; }, 60);
+  const t0 = Date.now();
+  assert.equal(await rejection(p), '播放器資料與網址不一致');
+  assert.ok(Date.now() - t0 < 1000);
+  assert.equal(page.video.paused, true);
+  assert.equal(page.cc.pressed, 'false');
+  assert.equal(page.active.size, 0);
+});
+
+test('inPlace timeout: muted, paused and CC restored', async () => {
+  const page = makePage({ timedtextAfter: 1e9, videoPaused: true, videoMuted: false, ccPressed: 'false' });
+  assert.match(await rejection(page.run({ inPlace: true, timeoutMs: 400, pollMs: 20, forceMs: 50 })), /^逾時/);
+  assert.equal(page.calls.play, 1);
+  assert.equal(page.calls.mutedAtPlay, true);
+  assert.equal(page.video.muted, false);
+  assert.equal(page.video.paused, true);
+  assert.equal(page.cc.pressed, 'false');
+  assert.equal(page.active.size, 0);
 });

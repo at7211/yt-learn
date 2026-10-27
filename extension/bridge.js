@@ -3,7 +3,7 @@
   const ORIGIN = 'http://127.0.0.1:8765';
   const UNREACHABLE = '擴充功能未回應，請重新載入擴充功能與本頁';
   let version = '';
-  try { version = chrome.runtime.getManifest().version; } catch (e) { }
+  try { version = chrome.runtime.getManifest().version; } catch (e) { console.log('[yt-learn]', 'ignored', e); }
 
   const mark = () => {
     if (!document.documentElement) return false;
