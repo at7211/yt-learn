@@ -15,8 +15,19 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1:8765/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
   "action": {
-    "default_title": "yt-learn probe"
+    "default_title": "yt-learn：把這支影片變成課程"
   },
   "externally_connectable": {
     "matches": [

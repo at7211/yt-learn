@@ -1,0 +1,236 @@
+// Runs extension/capture.js in a fresh vm context with a fake YouTube page.
+// Mismatch policy (documented in capture.js): a player response for another
+// video is treated as "not ready"; at the deadline the error is
+// 播放器資料與網址不一致 if another id was seen, otherwise 逾時.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+
+const SRC = readFileSync(new URL('../../extension/capture.js', import.meta.url), 'utf8');
+const VID = 'CR94QQXO_4s';
+const TT = (q) => `https://www.youtube.com/api/timedtext?v=${VID}&lang=en${q || ''}`;
+
+function playerResponse(over = {}) {
+  return {
+    videoDetails: { videoId: VID, title: 'T', author: 'A', lengthSeconds: '120' },
+    captions: { playerCaptionsTracklistRenderer: { captionTracks: [
+      { languageCode: 'fr', kind: '' }, { languageCode: 'en', kind: 'asr' },
+    ] } },
+    ...over,
+  };
+}
+
+const JSON3 = { events: [
+  { tStartMs: 0, dDurationMs: 1000, segs: [{ utf8: 'hello' }, { utf8: ' world', tOffsetMs: 400 }] },
+  { tStartMs: 1000, dDurationMs: 500 },
+  { tStartMs: 1500, dDurationMs: 800, segs: [{ utf8: '\n' }] },
+  { tStartMs: 2000, dDurationMs: 900, segs: [{ utf8: 'again' }] },
+] };
+
+function makePage({
+  readyAfter = 0, pr = () => playerResponse(), otherIdUntilReady = false,
+  timedtextAfter = 0, entries = () => [TT('&kind=asr')], json3 = JSON3,
+  videoPaused = false, videoMuted = false, ccPressed = 'false', playRejects = false,
+} = {}) {
+  const calls = { play: 0, pause: 0, cc: 0, fetched: [], mutedAtPlay: null, prPolls: 0, perfPolls: 0 };
+  const active = new Set();
+  const video = {
+    paused: videoPaused,
+    muted: videoMuted,
+    play() { calls.play++; calls.mutedAtPlay = this.muted; this.paused = false; return playRejects ? Promise.reject(new Error('no')) : Promise.resolve(); },
+    pause() { calls.pause++; this.paused = true; },
+  };
+  const cc = {
+    pressed: ccPressed,
+    getAttribute(n) { return n === 'aria-pressed' ? this.pressed : null; },
+    click() { calls.cc++; this.pressed = this.pressed === 'true' ? 'false' : 'true'; },
+  };
+  const player = {
+    getPlayerResponse() {
+      calls.prPolls++;
+      if (calls.prPolls > readyAfter) return pr();
+      return otherIdUntilReady ? playerResponse({ videoDetails: { videoId: 'zzzzzzzzzzz' } }) : undefined;
+    },
+  };
+  const ctx = {
+    URL, AbortController, Promise, Date, console,
+    setTimeout: (fn, ms) => { const id = setTimeout(() => { active.delete(id); fn(); }, ms); active.add(id); return id; },
+    clearTimeout: (id) => { active.delete(id); clearTimeout(id); },
+    location: { href: 'https://www.youtube.com/watch?v=' + VID },
+    navigator: { userAgentData: { brands: [{ brand: 'Google Chrome', version: '155' }] } },
+    document: {
+      getElementById: (id) => (id === 'movie_player' ? player : null),
+      querySelector: (s) => (s === 'video' ? video : s === '.ytp-subtitles-button' ? cc : null),
+    },
+    performance: {
+      getEntriesByType(t) {
+        if (t !== 'resource') return [];
+        calls.perfPolls++;
+        const base = [{ name: 'https://www.youtube.com/s/player/base.js' }];
+        return calls.perfPolls > timedtextAfter ? base.concat(entries().map((name) => ({ name }))) : base;
+      },
+    },
+    fetch: async (url) => { calls.fetched.push(url); return { ok: true, status: 200, json: async () => json3 }; },
+  };
+  ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(SRC, ctx);
+  return { ctx, calls, video, cc, active, run: (opts) => ctx.ytLearnCapture({ expectVideoId: VID, pollMs: 10, timeoutMs: 2000, ...opts }) };
+}
+
+async function rejection(p) {
+  try { await p; } catch (e) { return String(e && e.message); }
+  assert.fail('expected rejection');
+}
+
+test('success after delayed readiness: raw shape, ASR missing offset -> 0', async () => {
+  const page = makePage({ readyAfter: 3, timedtextAfter: 2 });
+  const raw = JSON.parse(JSON.stringify(await page.run()));
+  assert.equal(raw.videoId, VID);
+  assert.equal(raw.title, 'T');
+  assert.equal(raw.channel, 'A');
+  assert.equal(raw.duration, 120);
+  assert.equal(raw.lang, 'en');
+  assert.equal(raw.kind, 'asr');
+  assert.equal(raw.chrome, '155');
+  assert.match(raw.capturedAt, /^\d{4}-\d\d-\d\dT/);
+  assert.equal(raw.events.length, 2);
+  assert.deepEqual(raw.events[0], { t: 0, d: 1000, segs: [[0, 'hello'], [400, 'world']] });
+  assert.deepEqual(raw.events[1], { t: 2000, d: 900, segs: [[0, 'again']] });
+  assert.ok(page.calls.prPolls > 3);
+  assert.equal(page.calls.fetched.length, 1);
+  assert.equal(new URL(page.calls.fetched[0]).searchParams.get('fmt'), 'json3');
+  assert.equal(page.active.size, 0, 'no timers left');
+});
+
+test('background mode: mutes, plays, pauses at end; CC turned back off', async () => {
+  const page = makePage({ videoPaused: true });
+  await page.run({ inPlace: false });
+  assert.equal(page.calls.play, 1);
+  assert.equal(page.calls.mutedAtPlay, true);
+  assert.equal(page.calls.pause, 1);
+  assert.equal(page.cc.pressed, 'false');
+  assert.equal(page.calls.cc, 2);
+});
+
+test('manual track: missing offset is null unless the event has some offset', async () => {
+  const page = makePage({
+    entries: () => [TT('')],
+    pr: () => playerResponse({ captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ languageCode: 'en' }] } } }),
+    json3: { events: [
+      { tStartMs: 0, dDurationMs: 10, segs: [{ utf8: 'a' }, { utf8: 'b', tOffsetMs: 5 }] },
+      { tStartMs: 20, dDurationMs: 10, segs: [{ utf8: 'c' }] },
+    ] },
+  });
+  const raw = JSON.parse(JSON.stringify(await page.run()));
+  assert.equal(raw.kind, 'manual');
+  assert.deepEqual(raw.events[0].segs, [[0, 'a'], [5, 'b']]);
+  assert.deepEqual(raw.events[1].segs, [[null, 'c']]);
+});
+
+test('player keeps reporting another video id -> 播放器資料與網址不一致', async () => {
+  const page = makePage({ readyAfter: 1e9, otherIdUntilReady: true });
+  assert.equal(await rejection(page.run({ timeoutMs: 200 })), '播放器資料與網址不一致');
+  assert.equal(page.active.size, 0);
+  assert.equal(page.calls.play, 0);
+});
+
+test('player never ready (no id at all) -> 逾時', async () => {
+  const page = makePage({ readyAfter: 1e9 });
+  assert.match(await rejection(page.run({ timeoutMs: 200 })), /^逾時：0\.2 秒內沒有取得字幕$/);
+  assert.equal(page.active.size, 0);
+});
+
+test('other id first, then the right one -> success', async () => {
+  const page = makePage({ readyAfter: 4, otherIdUntilReady: true });
+  const raw = await page.run();
+  assert.equal(raw.videoId, VID);
+});
+
+test('no caption tracks -> 此影片沒有字幕軌', async () => {
+  const page = makePage({ pr: () => playerResponse({ captions: undefined }) });
+  assert.equal(await rejection(page.run()), '此影片沒有字幕軌');
+  assert.equal(page.calls.play, 0);
+  assert.equal(page.active.size, 0);
+});
+
+test('translated (tlang) entry ignored, non-tlang used', async () => {
+  const page = makePage({ entries: () => [TT('&kind=asr&fmt=srv3'), TT('&kind=asr&tlang=zh-Hant')] });
+  await page.run();
+  const u = new URL(page.calls.fetched[0]);
+  assert.equal(u.searchParams.has('tlang'), false);
+  assert.equal(u.searchParams.get('fmt'), 'json3');
+});
+
+test('only a translated entry -> keeps polling -> 逾時', async () => {
+  const page = makePage({ entries: () => [TT('&tlang=zh-Hant')] });
+  assert.match(await rejection(page.run({ timeoutMs: 300, pollMs: 50 })), /^逾時/);
+  assert.equal(page.calls.fetched.length, 0);
+});
+
+test('timedtext never appears -> 逾時, no timers left, playback stopped', async () => {
+  const page = makePage({ timedtextAfter: 1e9, videoPaused: true });
+  const t0 = Date.now();
+  assert.match(await rejection(page.run({ timeoutMs: 300, pollMs: 50 })), /^逾時：0\.3 秒內沒有取得字幕$/);
+  assert.ok(Date.now() - t0 < 1000);
+  assert.equal(page.active.size, 0, 'no timers left');
+  const polls = page.calls.perfPolls;
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(page.calls.perfPolls, polls, 'polling stopped');
+  assert.equal(page.calls.pause, 1);
+  assert.equal(page.cc.pressed, 'false');
+});
+
+test('json3 with empty events -> 字幕內容為空', async () => {
+  const page = makePage({ json3: { events: [] } });
+  assert.equal(await rejection(page.run()), '字幕內容為空');
+  assert.equal(page.active.size, 0);
+});
+
+test('json3 events with no usable text -> 字幕內容為空', async () => {
+  const page = makePage({ json3: { events: [{ tStartMs: 0, segs: [{ utf8: '\n' }] }] } });
+  assert.equal(await rejection(page.run()), '字幕內容為空');
+});
+
+test('caption time beyond duration -> 字幕時間超出影片長度', async () => {
+  const page = makePage({ json3: { events: [{ tStartMs: 999999, segs: [{ utf8: 'x' }] }] } });
+  assert.equal(await rejection(page.run()), '字幕時間超出影片長度');
+});
+
+test('inPlace + paused video: muted play, then pause and restore muted', async () => {
+  const page = makePage({ videoPaused: true, videoMuted: false, timedtextAfter: 3 });
+  await page.run({ inPlace: true });
+  assert.equal(page.calls.play, 1);
+  assert.equal(page.calls.mutedAtPlay, true);
+  assert.equal(page.calls.pause, 1);
+  assert.equal(page.video.muted, false);
+  assert.equal(page.video.paused, true);
+  assert.equal(page.active.size, 0);
+});
+
+test('inPlace + paused video whose play() rejects: still restored', async () => {
+  const page = makePage({ videoPaused: true, videoMuted: true, playRejects: true });
+  await page.run({ inPlace: true });
+  assert.equal(page.calls.pause, 1);
+  assert.equal(page.video.muted, true);
+});
+
+test('inPlace + playing video: play()/pause() not called, muted untouched', async () => {
+  const page = makePage({ videoPaused: false, videoMuted: false });
+  await page.run({ inPlace: true });
+  assert.equal(page.calls.play, 0);
+  assert.equal(page.calls.pause, 0);
+  assert.equal(page.video.muted, false);
+});
+
+test('inPlace: CC already on stays on; CC off is turned back off', async () => {
+  const on = makePage({ ccPressed: 'true' });
+  await on.run({ inPlace: true });
+  assert.equal(on.calls.cc, 0);
+  assert.equal(on.cc.pressed, 'true');
+  const off = makePage({ ccPressed: 'false' });
+  await off.run({ inPlace: true });
+  assert.equal(off.calls.cc, 2);
+  assert.equal(off.cc.pressed, 'false');
+});
