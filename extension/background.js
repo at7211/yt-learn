@@ -16,6 +16,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return false;
 });
 
+/* Spike only: let the local yt-learn page (externally_connectable) trigger a probe and receive the result. */
+chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.type === 'probe' && typeof msg.videoId === 'string') {
+    probe(msg.videoId).then(sendResponse, (e) => sendResponse({ ok: false, stage: 'internal', error: String(e && e.message || e) }));
+    return true;
+  }
+  return false;
+});
+
 chrome.action.onClicked.addListener(() => {
   probe(TEST_ID);
 });
