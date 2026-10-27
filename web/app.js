@@ -80,6 +80,23 @@ async function loadLesson(id) {
     showMissing(id);
     return;
   }
+  try {
+    setupLesson(lesson, id);
+  } catch (e) {
+    showMalformed(id, e);
+  }
+}
+
+function showMalformed(id, e) {
+  $('player-view').hidden = true;
+  $('missing').hidden = false;
+  $('missing').querySelector('h1').textContent = '課程檔格式錯誤：' + e.message;
+  $('missing').querySelector('p').replaceChildren('影片 ', el('code', id), ' 的課程檔無法使用。可重新產課：');
+  $('missing-cmd').textContent = 'python3 -m pipeline.build ' + id;
+  initHome(false);
+}
+
+function setupLesson(lesson, id) {
   lesson.vocab = lesson.vocab || [];
   S.lesson = lesson;
   S.flat = flattenHits(lesson.vocab, lesson.words);
@@ -200,7 +217,7 @@ function renderSubtitle(t) {
   if (key === S.keys.sub) return;
   S.keys.sub = key;
   const en = $('sub-en'), zh = $('sub-zh');
-  if (ci < 0) { en.replaceChildren(); zh.replaceChildren(); return; }
+  if (ci < 0) { en.replaceChildren(); zh.replaceChildren(); en.dataset.cue = ''; return; }
   const cue = cues[ci];
   const parts = [];
   cue.tokens.forEach((tok, k) => {
@@ -223,8 +240,10 @@ function fitSubtitle() {
   en.classList.remove('long');
   zh.classList.remove('long');
   if (en.textContent) {
+    en.classList.add('measuring'); // lift the 2-line clamp while measuring
     const lh = parseFloat(getComputedStyle(en).lineHeight);
     if (en.scrollHeight > lh * 2.3) en.classList.add('long');
+    en.classList.remove('measuring');
   }
   if (zh.textContent && zh.scrollWidth > zh.clientWidth + 1) zh.classList.add('long');
 }
@@ -342,9 +361,11 @@ function renderTranscriptCurrent(t) {
   const li = list.children[ci];
   li.classList.add('current');
   // "nearest" scroll inside the list box only, so the page itself never jumps.
-  const top = li.offsetTop - list.offsetTop, bottom = top + li.offsetHeight;
-  if (top < list.scrollTop) list.scrollTop = top;
-  else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+  // (.transcript is position:relative, so it is the li's offsetParent.)
+  const top = li.offsetTop, bottom = top + li.offsetHeight;
+  if (top < list.scrollTop || bottom > list.scrollTop + list.clientHeight) {
+    list.scrollTop = top - list.clientHeight / 2 + li.offsetHeight / 2;
+  }
 }
 
 function buildVocabTable() {
@@ -385,12 +406,14 @@ function toggleZh() {
   $('stage').classList.toggle('no-zh', !S.showZh);
   $('btn-zh').textContent = '中文 ' + (S.showZh ? 'on' : 'off');
   $('btn-zh').setAttribute('aria-pressed', String(S.showZh));
+  if (S.showZh) fitSubtitle();
 }
 function toggleEn() {
   S.showEn = !S.showEn;
   $('stage').classList.toggle('no-en', !S.showEn);
   $('btn-en').textContent = '英文 ' + (S.showEn ? 'on' : 'off');
   $('btn-en').setAttribute('aria-pressed', String(S.showEn));
+  if (S.showEn) fitSubtitle(); // a cue fitted while hidden measured 0 height
 }
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen();
@@ -419,7 +442,7 @@ function initControls() {
 }
 
 function onKey(e) {
-  if (!S.lesson || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!S.lesson || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   if (S.review) {

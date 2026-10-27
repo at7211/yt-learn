@@ -54,6 +54,7 @@ button { font: inherit; }
   text-shadow: 0 0 .12em rgba(0, 0, 0, .95), 0 .05em .2em rgba(0, 0, 0, .9), 0 0 .5em rgba(0, 0, 0, .6);
   max-width: 88cqw; margin: 0 auto;
 }
+.sub-en:not(.measuring) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .sub-en.long { font-size: clamp(12px, 2.66cqw, 46px); }
 .sub-en .kw { color: var(--orange); }
 .sub-zh {
