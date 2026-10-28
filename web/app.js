@@ -4,6 +4,7 @@ import { cueIndexAt, flattenHits, activeHitAt, panelState, seenCount } from './t
 import { parseVideoId } from './ytid.js';
 import { waitForAck, shouldApplyLiveStatus } from './handshake.js';
 import { introRows } from './intro.js';
+import { barState } from './progress.js';
 
 // ---------------------------------------------------------------- util
 const $ = (id) => document.getElementById(id);
@@ -100,7 +101,8 @@ function mountCard(container, id, opts = {}) {
   stopCard();
   if (CARD && CARD.container !== container) CARD.container.replaceChildren();
   CARD = { gen: ++genCounter, container, id, job: null, live: null, title: null, ext: 'unknown',
-           netText: null, lastStep: 0, timer: null, polling: false, onDone: opts.onDone || null, doneFired: false };
+           netText: null, lastStep: 0, lastPct: 0, startedAt: Date.now(), timer: null, polling: false,
+           onDone: opts.onDone || null, doneFired: false };
   return CARD;
 }
 
@@ -152,6 +154,7 @@ function applyJob(card, job) {
   card.netText = null;
   const st = stepOf(job.state);
   if (st != null) card.lastStep = st;
+  if (job.progress) card.lastPct = barState(job, 0).pct; // kept so an error bar freezes where the build stopped
   if (job.state === 'done') {
     if (card.title == null) fetchTitle(card);
     if (card.doneFired === false) {
@@ -244,6 +247,15 @@ function renderCard() {
     steps.append(el('li', (i + 1) + '. ' + name, cls));
   });
   box.append(steps);
+
+  const bs = barState(card.netText ? null : job, (Date.now() - card.startedAt) / 1000, card.lastPct);
+  const bar = el('div', null, 'bar ' + bs.mode);
+  const fill = el('div', null, 'bar-fill');
+  if (bs.mode === 'indet') fill.style.animationDelay = (-(Date.now() % 1300)) + 'ms'; // phase survives the redraw
+  else fill.style.width = bs.pct + '%';
+  bar.append(fill);
+  box.append(bar);
+  if (bs.label) box.append(el('p', bs.label, 'bar-label'));
 
   let text, bad = false;
   if (card.netText) { text = card.netText; bad = true; }

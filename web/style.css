@@ -46,6 +46,14 @@ button { font: inherit; }
 .steps li.cur { color: var(--ink); border-color: var(--orange); background: #2a2217; }
 .steps li.done { color: #0b0d12; background: var(--mint); font-weight: 600; }
 .steps li.bad { color: #ff7a7a; border-color: #ff7a7a; background: #2a1517; }
+.bar { height: 6px; background: #1c222d; border-radius: 3px; overflow: hidden; margin: .5rem 0 .25rem; }
+.bar-fill { height: 100%; width: 0; background: var(--orange); border-radius: 3px; }
+.bar.done .bar-fill { background: var(--mint); }
+.bar.error .bar-fill { background: #ff7a7a; }
+.bar.indet .bar-fill { width: 35%; animation: bar-slide 1.3s ease-in-out infinite; }
+@keyframes bar-slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+.bar-label { margin: 0 0 .4rem; color: var(--muted); font-size: 13px; }
+@media (prefers-reduced-motion: reduce) { .bar.indet .bar-fill { animation: none; width: 100%; opacity: .35; } }
 .cstate { margin: .3rem 0; }
 .cstate.bad { color: #ff7a7a; }
 .card .actions { margin: .7rem 0 0; display: flex; gap: .6rem; align-items: center; }
