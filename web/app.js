@@ -24,6 +24,7 @@ const S = {
   t: 0,
   showZh: true,
   showEn: true,
+  showVocab: true,
   review: false,
   page: 0,
   keys: { sub: null, panel: null, cue: null, count: null },
@@ -694,6 +695,13 @@ function toggleEn() {
   $('btn-en').setAttribute('aria-pressed', String(S.showEn));
   if (S.showEn) fitSubtitle(); // a cue fitted while hidden measured 0 height
 }
+function toggleVocab() {
+  S.showVocab = !S.showVocab;
+  $('stage').classList.toggle('no-vocab', !S.showVocab);
+  $('btn-vocab').textContent = '單字 ' + (S.showVocab ? 'on' : 'off');
+  $('btn-vocab').setAttribute('aria-pressed', String(S.showVocab));
+  if (S.showVocab && S.lesson) { S.keys.panel = null; renderPanel(S.t || 0); } // rows measured 0 height while hidden
+}
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen();
   else $('stage').requestFullscreen?.();
@@ -706,6 +714,7 @@ function initControls() {
   $('btn-next').onclick = () => stepCue(1);
   $('btn-zh').onclick = toggleZh;
   $('btn-en').onclick = toggleEn;
+  $('btn-vocab').onclick = toggleVocab;
   $('btn-fs').onclick = toggleFullscreen;
   // Keep focus off the buttons so Space never double-fires (button click + our handler).
   document.querySelectorAll('#controls button').forEach((b) => b.addEventListener('mousedown', (e) => e.preventDefault()));
@@ -736,6 +745,8 @@ function onKey(e) {
     case 'r': case 'R': replayCue(); break;
     case 'z': case 'Z': toggleZh(); break;
     case 'e': case 'E': toggleEn(); break;
+    case 'v': case 'V': toggleVocab(); break;
+    case 'f': case 'F': toggleFullscreen(); break;
     default: return;
   }
   e.preventDefault();
