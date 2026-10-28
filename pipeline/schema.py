@@ -157,4 +157,7 @@ def validate_lesson(obj) -> list[str]:
         if len(errs) > 50:
             errs.append("too many errors, stopping")
             break
+    if "intro" in obj:  # optional card; absent on lessons built before it existed
+        from .intro import validate_intro
+        errs += ["intro: " + e for e in validate_intro(obj["intro"])]
     return errs
