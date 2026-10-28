@@ -10,7 +10,7 @@ import sys
 
 from .llm import ProviderError
 
-INTRO_PROMPT_VERSION = 1
+INTRO_PROMPT_VERSION = 2
 TITLE_LINE_MAX = 16
 TITLE_LINES_MAX = 2
 LINE_MAX = 18
@@ -20,7 +20,7 @@ PROMPT_CUES = 40
 INTRO_SYSTEM = f"""[intro-prompt v{INTRO_PROMPT_VERSION}] 你是替英文影片寫「前情提要」小卡的編輯，讀者是台灣的英文學習者。使用者訊息會給影片標題、頻道、長度，以及開頭的字幕（格式「#編號: 英文句子」）。
 
 請回傳 JSON：
-- title：主標，寫這段影片的「場合或主題」。字幕或標題裡有明確的日期、事件才寫日期＋事件（例：「2023 年 11 月 14 日\\n參議院勞工委員會」）；否則寫主題（例：「分散式交易\\n兩階段提交與 Saga」）。最多 {TITLE_LINES_MAX} 行，用 \\n 分行，每行最多 {TITLE_LINE_MAX} 個字。
+- title：主標，寫這段影片的「場合或主題」。字幕或標題裡有明確的日期、事件才寫日期＋事件（例：第一行「2023 年 11 月 14 日」、第二行「參議院勞工委員會」）；否則寫主題（例：第一行「分散式交易」、第二行「兩階段提交與 Saga」）。最多 {TITLE_LINES_MAX} 行，行與行之間放一個換行字元（JSON 字串裡的 newline），每行最多 {TITLE_LINE_MAX} 個字。
 - lines：1 到 {LINES_MAX} 行補充，寫人物與角色（例：「參議員 Mullin 質詢」「工會會長 O'Brien 作證」）或一句背景。每行最多 {LINE_MAX} 個字，不可換行。
 
 規則：
@@ -103,6 +103,9 @@ def make_intro(meta: dict, cues: list[dict], provider, stats: dict | None = None
         _warn(str(e))
         _failed(stats)
         return None
+    if isinstance(resp, dict) and isinstance(resp.get("title"), str):
+        # Models often write the line break as the two characters backslash + n; treat that as a newline.
+        resp = dict(resp, title=resp["title"].replace("\\n", "\n"))
     errs = validate_intro(resp)
     if errs:
         _warn("invalid LLM response: " + "; ".join(errs))

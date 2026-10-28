@@ -24,6 +24,11 @@ def test_make_intro_returns_trimmed_card_and_uses_schema():
     assert "影片標題：Hearing" in user and "頻道：CNBC" in user and "長度：1:38" in user
 
 
+def test_make_intro_accepts_literal_backslash_n_as_line_break():
+    prov = FakeProvider([{"title": "參議院聽證會\\n雙方言語交鋒", "lines": ["x"]}])
+    assert make_intro(META, CUES, prov, {}) == {"title": "參議院聽證會\n雙方言語交鋒", "lines": ["x"]}
+
+
 def test_make_intro_invalid_shapes_fail_softly():
     bad = [
         {"title": "a\nb\nc", "lines": ["x"]},            # three title lines
