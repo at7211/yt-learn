@@ -51,3 +51,16 @@
 3. Codex 可能在 stdout 印出非 JSON 的事件文字（`--json` 未開時應只有最後訊息）；只信 `-o` 檔，stdout 是退路。
 4. `--sandbox read-only` 下 Codex 仍可能嘗試執行指令讀檔；`-C` 指到空暫存目錄，讀不到專案。
 5. 佇列（server）啟動的 build 透過 `YTLEARN_PROVIDER` 切換，server 本身不需要改；README 註明。
+
+## 結果（2026-10-28 實跑，x0ae-Mhz1AI，1:38，317 字）
+| | Claude（claude-sonnet-5-5） | Codex（gpt-6-astra，reasoning low） |
+|---|---|---|
+| 秒數（無 cache） | ≈52 | 131 |
+| 句數 / 單字數 / 前情提要 | 50 / 27 / 有 | 44 / 16 / 有 |
+| fallback chunks | 0/3 | 0/3 |
+| 切句風格 | 短句、常把一句拆成兩段 | 整句、較長 |
+| 單字選法 | 偏多、含單字 | 偏少、偏片語，釋義較口語 |
+
+- 第一次實跑全部失敗：OpenAI 嚴格 schema 要求每個物件都有 `additionalProperties: false`，`strict_schema()` 補上後三種呼叫都成功。
+- Codex 的 `-c features.hooks=false` 必要：使用者的 SessionStart hook 會在每次呼叫跑一次。
+- 預設仍是 Claude；要整站用 Codex：`YTLEARN_PROVIDER=codex python3 server.py`。
