@@ -244,7 +244,7 @@ function renderCard() {
     else if (isErr && i === cur) cls = 'bad';
     else if (i < cur) cls = 'past';
     else if (i === cur && job) cls = 'cur';
-    steps.append(el('li', (i + 1) + '. ' + name, cls));
+    steps.append(el('li', name, cls));
   });
   box.append(steps);
 
@@ -269,7 +269,7 @@ function renderCard() {
 
   if (job && job.state === 'done') {
     const actions = el('p', null, 'actions');
-    const a = el('a', '開始學習', 'btn');
+    const a = el('a', '開始學習', 'btn primary');
     a.href = job.lessonUrl || 'index.html?v=' + encodeURIComponent(card.id);
     actions.append(a);
     box.append(actions);
@@ -312,20 +312,39 @@ window.addEventListener('message', (event) => {
 window.addEventListener('pagehide', stopCard);
 
 async function loadLessonList() {
+  markNav(true);
+  setScreen('課程', '載入中…', { form: true });
   const lessons = $('lessons');
+  const meta = $('screen-meta');
   try {
     const list = await (await fetch('/lessons')).json();
-    if (!list.length) { lessons.replaceChildren(el('li', '尚無課程。')); return; }
+    if (!list.length) {
+      if (meta) meta.textContent = '還沒有課程';
+      lessons.replaceChildren(el('li', '還沒有課程。貼上第一支影片的網址，擷取字幕後就會出現在這裡。', 'lrow-empty'));
+      return;
+    }
+    const words = list.reduce((n, l) => n + (l.vocabCount || 0), 0);
+    if (meta) meta.textContent = list.length + ' 堂課・' + words + ' 個單字';
     lessons.replaceChildren(...list.map((l) => {
-      const li = document.createElement('li');
-      const a = el('a', l.title || l.videoId);
+      const li = el('li', null, 'lrow');
+      const a = el('a', null, 'lrow-link');
       a.href = 'index.html?v=' + encodeURIComponent(l.videoId);
-      const meta = [l.channel, l.vocabCount != null ? l.vocabCount + ' 個單字' : null].filter(Boolean).join('・');
-      li.append(a, meta ? document.createTextNode('　' + meta) : '');
+      const text = el('div', null, 'lrow-text');
+      text.append(el('div', l.title || l.videoId, 'lrow-title'));
+      const sub = [l.channel, l.duration ? fmtTime(l.duration) : null].filter(Boolean).join('・');
+      if (sub) text.append(el('div', sub, 'lrow-sub'));
+      a.append(text);
+      if (l.vocabCount != null) {
+        const n = el('div', null, 'lrow-num num');
+        n.append(el('b', String(l.vocabCount)), el('span', ' 個單字'));
+        a.append(n);
+      }
+      li.append(a);
       return li;
     }));
   } catch (e) {
-    lessons.replaceChildren(el('li', '無法載入課程清單。', 'err'));
+    if (meta) meta.textContent = '';
+    lessons.replaceChildren(el('li', '無法載入課程清單。', 'lrow-empty err'));
   }
 }
 
@@ -378,15 +397,28 @@ function showIntro() {
   setTimeout(() => box.classList.remove('show'), INTRO_SECONDS * 1000);
 }
 
+// The title row is shared chrome: every route names itself in the one h1.
+function setScreen(title, meta, { form = false } = {}) {
+  $('title-row').hidden = false;
+  $('screen-title').textContent = title;
+  $('screen-meta').textContent = meta || '';
+  $('url-form').hidden = !form;
+}
+
+function markNav(onHome) {
+  const n = $('nav-home');
+  if (n) { n.classList.toggle('current', onHome); if (onHome) n.setAttribute('aria-current', 'page'); else n.removeAttribute('aria-current'); }
+}
+
 function setupLesson(lesson, id) {
+  markNav(false);
   lesson.vocab = lesson.vocab || [];
   S.lesson = lesson;
   S.flat = flattenHits(lesson.vocab, lesson.words);
   S.vocabById = new Map(lesson.vocab.map((v) => [v.id, v]));
   document.title = (lesson.title || id) + ' · yt-learn';
   $('player-view').hidden = false;
-  $('lesson-title').textContent = lesson.title || id;
-  $('lesson-meta').textContent = [lesson.channel, fmtTime(lesson.duration), lesson.vocab.length + ' 個單字'].filter(Boolean).join('・');
+  setScreen(lesson.title || id, [lesson.channel, fmtTime(lesson.duration), lesson.vocab.length + ' 個單字'].filter(Boolean).join('・'));
   renderIntro(lesson.intro);
   if (lesson.coveredSeconds != null && lesson.duration != null && lesson.coveredSeconds < lesson.duration) {
     $('banner').hidden = false;
@@ -401,6 +433,7 @@ function setupLesson(lesson, id) {
 
 function showMissing(id) {
   $('missing').hidden = false;
+  setScreen('尚未產課', id);
   $('missing-id').textContent = id;
   $('missing-cmd').textContent = 'python3 -m pipeline.build ' + id;
   initHome(false);
@@ -690,7 +723,10 @@ function renderTranscriptCurrent(t) {
 function buildVocabTable() {
   $('vocab-body').replaceChildren(...reviewItems().map((v) => {
     const tr = document.createElement('tr');
-    tr.append(el('td', v.term, 'vt'), el('td', v.pos || ''), el('td', v.ipa || '', 'vi'), el('td', v.zh), el('td', '×' + v.hits.length, 'vn'));
+    const term = el('td', null, 'vt');
+    term.append(el('div', v.term));
+    if (v.ipa) term.append(el('div', v.ipa, 'vi')); // the IPA stacks under the term: one identity column, no empty 音標 column
+    tr.append(term, el('td', v.pos || ''), el('td', v.zh), el('td', '×' + v.hits.length, 'vn num'));
     tr.addEventListener('click', () => {
       const first = S.flat.find((h) => h.vocabId === v.id);
       if (first) seekHit(first);
