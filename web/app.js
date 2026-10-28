@@ -780,20 +780,23 @@ function onKey(e) {
   if (!S.lesson || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  // Match on the physical key (e.code): with a Chinese IME active, letter keys arrive with
+  // e.key === 'Process' and would never match 'e' / 'z' / 'v'.
+  const code = e.code || e.key;
   if (S.review) {
-    if (e.key === 'ArrowLeft') { turnPage(-1); e.preventDefault(); }
-    else if (e.key === 'ArrowRight') { turnPage(1); e.preventDefault(); }
+    if (code === 'ArrowLeft') { turnPage(-1); e.preventDefault(); }
+    else if (code === 'ArrowRight') { turnPage(1); e.preventDefault(); }
     return;
   }
-  switch (e.key) {
-    case ' ': togglePlay(); break;
+  switch (code) {
+    case 'Space': case ' ': togglePlay(); break;
     case 'ArrowLeft': stepCue(-1); break;
     case 'ArrowRight': stepCue(1); break;
-    case 'r': case 'R': replayCue(); break;
-    case 'z': case 'Z': toggleZh(); break;
-    case 'e': case 'E': toggleEn(); break;
-    case 'v': case 'V': toggleVocab(); break;
-    case 'f': case 'F': toggleFullscreen(); break;
+    case 'KeyR': replayCue(); break;
+    case 'KeyZ': toggleZh(); break;
+    case 'KeyE': toggleEn(); break;
+    case 'KeyV': toggleVocab(); break;
+    case 'KeyF': toggleFullscreen(); break;
     default: return;
   }
   e.preventDefault();
