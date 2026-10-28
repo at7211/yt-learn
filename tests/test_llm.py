@@ -6,7 +6,7 @@ import types
 import pytest
 
 from pipeline import llm
-from pipeline.llm import ClaudeCliProvider, FakeProvider, ProviderError
+from pipeline.llm import ClaudeCliProvider, CodexCliProvider, FakeProvider, ProviderError
 
 
 def ok(stdout_obj, returncode=0):
@@ -168,3 +168,83 @@ def test_counts_calls_and_cache_hits(monkeypatch, tmp_path):
     p.complete_json("s", "u")
     p.complete_json("s", "u")
     assert (p.calls, p.cache_hits) == (1, 1)
+
+
+# ---------------------------------------------------------------- codex
+
+
+def codex_run(monkeypatch, answers):
+    """Fake `codex exec`: each answer is a dict (written to the -o file), a str (stdout only), or an Exception."""
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        if isinstance(a, dict):
+            (lambda p: open(p, "w", encoding="utf-8").write(json.dumps(a, ensure_ascii=False)))(argv[argv.index("-o") + 1])
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="banner")
+        return types.SimpleNamespace(returncode=0, stdout=a, stderr="banner")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
+
+
+def test_codex_argv_schema_file_and_prompt(monkeypatch):
+    seen = {}
+
+    def spy(argv, **kwargs):
+        sp = argv[argv.index("--output-schema") + 1]
+        seen["schema"] = json.loads(open(sp, encoding="utf-8").read())
+        seen["argv"], seen["kw"] = argv, kwargs
+        open(argv[argv.index("-o") + 1], "w").write('{"a": 1}')
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    assert CodexCliProvider().complete_json("sys", "usr", {"type": "object"}) == {"a": 1}
+    argv, kw = seen["argv"], seen["kw"]
+    assert argv[:2] == ["codex", "exec"] and argv[-1] == "-"
+    assert argv[argv.index("--sandbox") + 1] == "read-only" and "--ephemeral" in argv and "--skip-git-repo-check" in argv
+    assert "-m" not in argv and seen["schema"] == {"type": "object"}
+    assert kw["input"].startswith("sys") and kw["input"].endswith("usr") and kw["timeout"] == 300.0
+
+
+def test_codex_model_flag_and_no_schema(monkeypatch):
+    calls = codex_run(monkeypatch, [{"a": 2}])
+    assert CodexCliProvider(model="gpt-6-astra").complete_json("s", "u") == {"a": 2}
+    argv = calls[0][0]
+    assert argv[argv.index("-m") + 1] == "gpt-6-astra" and "--output-schema" not in argv
+
+
+def test_codex_falls_back_to_last_stdout_line_and_strips_fence(monkeypatch):
+    codex_run(monkeypatch, ["OpenAI Codex v0\nworkdir: x\n```json\n{\"a\": 3}\n```"])
+    assert CodexCliProvider().complete_json("s", "u") == {"a": 3}
+
+
+def test_codex_retries_then_fails(monkeypatch):
+    calls = codex_run(monkeypatch, [types.SimpleNamespace(returncode=1, stdout="", stderr="boom") if False else "not json", {"a": 4}])
+    assert CodexCliProvider().complete_json("s", "u") == {"a": 4}
+    assert calls[1][1]["input"].endswith(llm.RETRY_SUFFIX)
+    codex_run(monkeypatch, ["junk", "junk"])
+    with pytest.raises(ProviderError):
+        CodexCliProvider().complete_json("s", "u")
+    codex_run(monkeypatch, [FileNotFoundError()])
+    with pytest.raises(ProviderError, match="codex"):
+        CodexCliProvider().complete_json("s", "u")
+
+
+def test_codex_nonzero_exit_reports_stderr_tail(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda argv, **k: types.SimpleNamespace(returncode=2, stdout="", stderr="x" * 300 + "TAIL"))
+    with pytest.raises(ProviderError, match="TAIL"):
+        CodexCliProvider().complete_json("s", "u")
+
+
+def test_cache_keys_differ_by_provider_and_claude_key_is_unchanged(tmp_path):
+    c = ClaudeCliProvider(model="m", cache_dir=tmp_path)
+    x = CodexCliProvider(model="m", cache_dir=tmp_path)
+    assert c._cache_path("s", "u", None) != x._cache_path("s", "u", None)
+    import hashlib
+    legacy = hashlib.sha256(json.dumps({"model": "m", "promptVersion": 1, "system": "s", "user": "u", "schema": None},
+                                       sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    assert c._cache_path("s", "u", None).name == legacy + ".json"
