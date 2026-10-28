@@ -158,3 +158,22 @@ def test_build_invalid_intro_is_omitted_but_lesson_still_builds():
     lesson, stats = build_lesson(load("raw_small.json"), prov)
     assert "intro" not in lesson and stats["intro_failed"] == 1 and len(prov.calls) == 5
     assert validate_lesson(lesson) == []
+
+
+def test_build_reports_weighted_progress():
+    calls = []
+    build_lesson(load("raw_small.json"), fake_provider(), progress=lambda phase, done, total: calls.append((phase, done, total)))
+    assert calls == [("segment", 1, 5), ("segment", 2, 5), ("vocab", 2, 5), ("intro", 4, 5), ("finish", 5, 5)]
+
+
+def test_progress_file_written_by_cli(tmp_path, monkeypatch):
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw" / "CR94QQXO_4s.json").write_text(json.dumps(load("raw_small.json")), "utf-8")
+    prog = tmp_path / "jobs" / "CR94QQXO_4s.progress.json"
+    assert main(["CR94QQXO_4s", "--progress-file", str(prog)], data_dir=tmp_path, provider_factory=lambda m, c: fake_provider()) == 0
+    assert json.loads(prog.read_text("utf-8")) == {"phase": "finish", "done": 5, "total": 5}
+    assert not list(prog.parent.glob("*.tmp"))
+    # the env var is the default for the flag
+    monkeypatch.setenv("YTLEARN_PROGRESS_FILE", str(tmp_path / "env.json"))
+    assert main(["CR94QQXO_4s", "--force"], data_dir=tmp_path, provider_factory=lambda m, c: fake_provider()) == 0
+    assert json.loads((tmp_path / "env.json").read_text("utf-8"))["phase"] == "finish"

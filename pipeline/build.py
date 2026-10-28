@@ -20,9 +20,19 @@ from pipeline.words import normalize_words
 DEFAULT_MODEL = "claude-sonnet-5-5"
 
 
+# Progress is reported in weighted work units: one per segmentation chunk, VOCAB_UNITS for the
+# vocabulary call, INTRO_UNITS for the intro card. web/progress.js derives the chunk count from these.
+VOCAB_UNITS = 2
+INTRO_UNITS = 1
+
+
 def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
-                 model_label: str = "default", prompt_version: int = 1) -> tuple[dict, dict]:
-    """Return ``(lesson, stats)``; stats has chunks, fallback_chunks, vocab_failed, intro_failed."""
+                 model_label: str = "default", prompt_version: int = 1,
+                 progress=None) -> tuple[dict, dict]:
+    """Return ``(lesson, stats)``; stats has chunks, fallback_chunks, vocab_failed, intro_failed.
+
+    ``progress(phase, done, total)`` is called after each chunk ("segment"), when the vocabulary
+    call starts ("vocab"), when the intro call starts ("intro") and at the end ("finish")."""
     errs = validate_raw(raw)
     if errs:
         raise ValueError("invalid raw capture: " + "; ".join(errs))
@@ -35,13 +45,20 @@ def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
     if not words:
         raise ValueError("no words to build (empty after time limit)")
     stats = {"chunks": 0, "fallback_chunks": 0, "vocab_failed": 0, "intro_failed": 0}
+    chunks = list(chunk_words(words))
+    total = len(chunks) + VOCAB_UNITS + INTRO_UNITS
+    report = progress or (lambda phase, done, total: None)
     cues = []
-    for chunk in chunk_words(words):
+    for chunk in chunks:
         stats["chunks"] += 1
         cues += make_cues(words, chunk, provider, stats)
+        report("segment", stats["chunks"], total)
     cues = finalize_cues(cues, words)
+    report("vocab", len(chunks), total)
     vocab = pick_vocab(cues, words, provider, stats=stats)
+    report("intro", len(chunks) + VOCAB_UNITS, total)
     intro = make_intro({"title": raw["title"], "channel": raw["channel"], "duration": duration}, cues, provider, stats)
+    report("finish", total, total)
     lesson = {
         "videoId": raw["videoId"], "title": raw["title"], "channel": raw["channel"],
         "duration": duration, "lang": raw["lang"],
@@ -62,12 +79,29 @@ def _default_provider(model, cache_dir):
     return ClaudeCliProvider(model=model, cache_dir=cache_dir)
 
 
+def progress_writer(path: Path):
+    """Return a progress callback that atomically rewrites ``path`` as JSON; write errors are ignored."""
+    path = Path(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+
+    def write(phase, done, total):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps({"phase": phase, "done": done, "total": total}), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+    return write
+
+
 def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_provider) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m pipeline.build")
     ap.add_argument("video_id")
     ap.add_argument("--limit-seconds", type=float, default=None)
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--progress-file", default=os.environ.get("YTLEARN_PROGRESS_FILE") or None,
+                    help="write {phase, done, total} JSON here as the build advances (env YTLEARN_PROGRESS_FILE)")
     args = ap.parse_args(argv)
     data = Path(data_dir)
     vid = args.video_id
@@ -102,7 +136,8 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
     provider = provider_factory(args.model, data / "cache" / vid)
     try:
         lesson, stats = build_lesson(raw, provider, args.limit_seconds, model_label=args.model,
-                              prompt_version=getattr(provider, "prompt_version", 1))
+                                     prompt_version=getattr(provider, "prompt_version", 1),
+                                     progress=progress_writer(args.progress_file) if args.progress_file else None)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
