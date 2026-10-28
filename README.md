@@ -80,7 +80,7 @@ node --test tests/web/                           # 播放器純函式
 
 ## 素材出處
 
-截圖與介紹片裡的影片畫面來自 UC Berkeley 上傳的〈Berkeley's 2016 University Medalist Kaavya Veliveti Commencement Speech〉（<https://www.youtube.com/watch?v=h3oSkfUGw5c>），YouTube 標示為「創用 CC 姓名標示」授權。播放器本身只嵌入 YouTube 播放器，不複製任何影片內容。
+截圖與介紹片裡的影片畫面來自 dotconferences 上傳的〈Agents for production engineering - Alex Palcuie - Anthropic〉（<https://www.youtube.com/watch?v=puh91fohvTA>），YouTube 標示為「創用 CC 姓名標示」授權（CC BY）。播放器本身只嵌入 YouTube 播放器，不複製任何影片內容。
 
 ## 開發紀錄
 
