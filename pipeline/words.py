@@ -1,8 +1,10 @@
 """Normalize raw caption events into a flat, timed word list."""
 import html
+import re
 
 _TIMED_CAP = 1.5
 _NO_SUCCESSOR_SPAN = 1.0
+_SPEAKER_MARKER = re.compile(r">+")  # YouTube ASR writes ">>" at speaker changes; it is not a word
 
 
 def _spread_untimed(words, idx, ev_start, ev_end, duration, fixed_e):
@@ -31,12 +33,15 @@ def normalize_words(events: list[dict], duration: float) -> list[dict]:
     greater than this word's ``t``, capped at ``t + 1.5``. A timed word with no
     later greater ``t`` (not only the last word overall) gets
     ``e = min(t + 1.0, duration)``.
-    Untimed words (no per-word offsets) are spread across their caption event by
-    cumulative character length (single spaces between words counted), so cues
-    that start mid-event get distinct, increasing start times; they stay
-    ``timed=False``. Each untimed word's ``e`` is the next untimed word's ``t``;
-    the event's last word gets ``min(event end, duration)``. A zero-length event
-    puts all its words at the event start.
+    Untimed words (no per-word offsets) are spread by cumulative character length
+    (single spaces between words counted) across the window between their timed
+    neighbours inside the event: from the event start (or just after the previous
+    timed word) to the next timed word's ``t`` (or the event end). So cues that
+    start mid-event get distinct, increasing start times and a leading untimed
+    run never overtakes the timed words that follow it; they stay ``timed=False``.
+    Each untimed word's ``e`` is the next untimed word's ``t``; the run's last word
+    gets ``min(window end, duration)``. A zero-length window puts all its words at
+    the window start. ``>>`` speaker-change markers are dropped.
     ``e`` is never less than ``t``.
     """
     words = []
@@ -44,16 +49,28 @@ def normalize_words(events: list[dict], duration: float) -> list[dict]:
     for ev in events:
         ev_start = ev["t"] / 1000
         ev_end = (ev["t"] + ev["d"]) / 1000
-        untimed = []  # indices of this event's untimed words
+        toks = []  # (t or None, token) for this event, in order
         for offset, text in ev["segs"]:
             text = html.unescape(text)
             if offset is None:
-                for token in text.split():
-                    untimed.append(len(words))
-                    words.append({"t": ev_start, "w": token, "timed": False})
-            elif text.strip():
-                words.append({"t": (ev["t"] + offset) / 1000, "w": text.strip(), "timed": True})
-        _spread_untimed(words, untimed, ev_start, ev_end, duration, fixed_e)
+                toks += [(None, tok) for tok in text.split() if not _SPEAKER_MARKER.fullmatch(tok)]
+            elif text.strip() and not _SPEAKER_MARKER.fullmatch(text.strip()):
+                toks.append(((ev["t"] + offset) / 1000, text.strip()))
+        base = len(words)
+        for t, tok in toks:
+            words.append({"t": ev_start if t is None else t, "w": tok, "timed": t is not None})
+        i = 0
+        while i < len(toks):
+            if toks[i][0] is not None:
+                i += 1
+                continue
+            j = i
+            while j < len(toks) and toks[j][0] is None:
+                j += 1
+            lo = ev_start if i == 0 else min(ev_end, toks[i - 1][0] + 0.001)
+            hi = ev_end if j == len(toks) else max(lo, toks[j][0])
+            _spread_untimed(words, list(range(base + i, base + j)), lo, hi, duration, fixed_e)
+            i = j
 
     # Next-strictly-greater t, one reverse pass with a monotonic stack (O(n)).
     successors = [None] * len(words)

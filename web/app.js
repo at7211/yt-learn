@@ -236,7 +236,7 @@ function renderCard() {
   box.append(head);
 
   const isErr = job && job.state === 'error';
-  const cur = job && !isErr ? stepOf(job.state) : card.lastStep;
+  const cur = job && !isErr ? stepOf(job.state) : (isErr && stepOf(job.failedIn) != null ? stepOf(job.failedIn) : card.lastStep);
   const steps = el('ol', null, 'steps');
   STEP_NAMES.forEach((name, i) => {
     let cls = '';

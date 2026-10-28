@@ -105,3 +105,22 @@ def test_unescapes_amp_and_drops_whitespace_only_untimed_seg():
     ev = [{"t": 0, "d": 1000, "segs": [[0, "a&amp;b"], [None, "&#32;&#32;"], [500, "z"]]}]
     words = normalize_words(ev, 10)
     assert [w["w"] for w in words] == ["a&b", "z"]
+
+
+def test_leading_untimed_run_stops_at_the_next_timed_word_and_drops_speaker_marker():
+    # Real ASR event: ">> I" untimed, then timed words 200/360/520 ms into the event.
+    ev = [{"t": 40200, "d": 2520, "segs": [[None, ">> I"], [200, "can"], [360, "go"], [520, "lower."]]},
+          {"t": 42720, "d": 1000, "segs": [[0, "next"]]}]
+    w = normalize_words(ev, 60)
+    assert [x["w"] for x in w] == ["I", "can", "go", "lower.", "next"]
+    assert w[0] == {"t": 40.2, "e": 40.4, "w": "I", "timed": False}
+    assert w[1]["t"] == 40.4
+    assert all(w[i]["t"] >= w[i - 1]["t"] for i in range(1, len(w)))
+
+
+def test_untimed_run_after_timed_words_starts_just_after_them():
+    ev = [{"t": 1000, "d": 2000, "segs": [[0, "a"], [500, "b"], [None, "c dd"]]}]
+    w = normalize_words(ev, 60)
+    assert [x["w"] for x in w] == ["a", "b", "c", "dd"]
+    assert w[1]["t"] == 1.5 and w[2]["t"] == 1.501 and w[2]["t"] < w[3]["t"] <= 3.0
+    assert w[3]["e"] == 3.0

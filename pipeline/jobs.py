@@ -68,6 +68,8 @@ class JobStore:
         self._jobs: dict[str, dict] = {}
 
     def _set(self, job, state, message=""):
+        if state == "error":
+            job["failedIn"] = job.get("state")  # which step broke: capturing (extension) or building
         job["state"] = state
         job["message"] = message
         job["updatedAt"] = time.time()
@@ -90,6 +92,8 @@ class JobStore:
         out["updatedAt"] = _iso(job["updatedAt"])
         if job.get("lessonUrl"):
             out["lessonUrl"] = job["lessonUrl"]
+        if job["state"] == "error" and job.get("failedIn"):
+            out["failedIn"] = job["failedIn"]
         return out
 
     def get(self, vid):

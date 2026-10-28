@@ -280,3 +280,20 @@ def test_progress_file_is_read_while_building_and_removed_after(tmp_path, monkey
         assert q.progress(V) is None and not q.progress_path(V).exists()
     finally:
         q.shutdown()
+
+
+def test_error_reports_the_step_it_failed_in():
+    s = JobStore()
+    s.add(V, False)
+    att = s.claim(V)
+    s.fail(V, att, "no captions")
+    pub = JobStore.to_public(s.get(V))
+    assert pub["state"] == "error" and pub["failedIn"] == "capturing"
+    s2 = JobStore()
+    s2.add(V, False)
+    s2.claim(V)
+    s2.ingested(V, 1)
+    s2.set_building(V)
+    s2.finish(V, False, "boom")
+    assert JobStore.to_public(s2.get(V))["failedIn"] == "building"
+    assert "failedIn" not in JobStore.to_public(JobStore()._new(V, 1))
