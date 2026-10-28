@@ -263,3 +263,20 @@ def test_log_tail_tolerates_binary_and_empty(tmp_path):
     f.write_bytes(b"")
     assert q._tail(f) == ""
     assert q._tail(tmp_path / "missing.log") == ""
+
+
+def test_progress_file_is_read_while_building_and_removed_after(tmp_path, monkeypatch):
+    s, q, spawned = _slow_queue(tmp_path, monkeypatch)
+    assert q.progress(V) is None  # no file yet
+    q.progress_path(V).parent.mkdir(parents=True, exist_ok=True)
+    q.progress_path(V).write_text("stale", "utf-8")  # leftover from an earlier run: unreadable -> None
+    assert q.progress(V) is None
+    q.progress_path(V).write_text(json.dumps({"phase": "vocab", "done": 9, "total": 12}), "utf-8")
+    assert q.progress(V) == {"phase": "vocab", "done": 9, "total": 12}
+    q.enqueue(V)
+    try:
+        _wait(lambda: s.get(V)["state"] == "building" and q.progress(V) == {"phase": "segment", "done": 1, "total": 4})
+        _wait(lambda: s.get(V)["state"] == "done")
+        assert q.progress(V) is None and not q.progress_path(V).exists()
+    finally:
+        q.shutdown()

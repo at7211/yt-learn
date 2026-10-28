@@ -220,3 +220,22 @@ def test_ingest_manual_fallback_while_capturing_builds(env):
     time.sleep(0.5)
     assert lesson.stat().st_mtime_ns == mtime and log.stat().st_mtime_ns == log_mtime
     assert len(list((root / "data" / "jobs").glob("*.log"))) == 1
+
+
+def test_jobs_get_carries_progress_only_while_building(env, monkeypatch):
+    base, root = env
+    monkeypatch.setenv("STUB_MODE", "slow")
+    att = start_capture(base)
+    req(f"{base}/ingest?attempt={att}", raw(V))
+    end = time.time() + 2.5
+    seen = None
+    while time.time() < end:
+        job = req(f"{base}/jobs/{V}")[1]["job"]
+        if job["state"] == "building" and "progress" in job:
+            seen = job["progress"]
+            break
+        time.sleep(0.05)
+    assert seen == {"phase": "segment", "done": 1, "total": 4}
+    job = wait_state(base, V, {"done", "error"})
+    assert job["state"] == "done" and "progress" not in job
+    assert not (root / "data" / "jobs" / f"{V}.progress.json").exists()

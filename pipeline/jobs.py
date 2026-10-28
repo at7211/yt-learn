@@ -219,6 +219,7 @@ class BuildQueue:
                     self._proc = None
 
     def _finish(self, vid, ok, message, lesson_url=None):
+        self._clear_progress(vid)
         # Release the dedupe slot BEFORE the terminal transition so a re-ingest
         # (error -> captured) landing right after it can be enqueued.
         with self._lock:
@@ -232,12 +233,34 @@ class BuildQueue:
             return ""
         return "\n".join(lines[-n:])
 
+    def progress_path(self, vid) -> Path:
+        return self.log_dir / f"{vid}.progress.json"
+
+    def progress(self, vid) -> dict | None:
+        """The build's latest {phase, done, total}, or None (no file yet, already cleaned up, or unreadable)."""
+        try:
+            d = json.loads(self.progress_path(vid).read_text("utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not (isinstance(d, dict) and isinstance(d.get("phase"), str)
+                and isinstance(d.get("done"), int) and isinstance(d.get("total"), int)):
+            return None
+        return {"phase": d["phase"], "done": d["done"], "total": d["total"]}
+
+    def _clear_progress(self, vid):
+        try:
+            self.progress_path(vid).unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def _run(self, vid):
+        self._clear_progress(vid)  # before "building" is visible, so a GET never shows the last run's bar
         self.store.set_building(vid)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         log = self.log_dir / f"{vid}.log"
+        env = {**os.environ, "YTLEARN_PROGRESS_FILE": str(self.progress_path(vid))}
         with open(log, "wb") as lf:
-            proc = subprocess.Popen(self._cmd(vid), cwd=self.root, stdout=lf, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(self._cmd(vid), cwd=self.root, stdout=lf, stderr=subprocess.STDOUT, env=env)
             with self._lock:
                 self._proc = proc
             try:

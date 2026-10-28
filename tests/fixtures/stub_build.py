@@ -17,6 +17,10 @@ if mode == "fail":
         print(f"stub line {i + 1}", flush=True)
     sys.exit(1)
 if mode == "slow":
+    prog = os.environ.get("YTLEARN_PROGRESS_FILE")
+    if prog:
+        Path(prog).parent.mkdir(parents=True, exist_ok=True)
+        Path(prog).write_text(json.dumps({"phase": "segment", "done": 1, "total": 4}), "utf-8")
     time.sleep(3)
 if not (cwd / "data" / "raw" / f"{vid}.json").is_file():
     print("raw missing", file=sys.stderr)

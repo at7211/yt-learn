@@ -59,7 +59,12 @@ class Handler(SimpleHTTPRequestHandler):
             job = self.jobs.get(parts[1])
             if job is None:
                 return self._json({"ok": False, "error": "no such job"}, 404)
-            return self._json({"job": JobStore.to_public(job)})
+            pub = JobStore.to_public(job)
+            if job["state"] == "building":
+                prog = self.queue.progress(parts[1])
+                if prog is not None:
+                    pub["progress"] = prog
+            return self._json({"job": pub})
         super().do_GET()
 
     def _serve_data(self, path):
