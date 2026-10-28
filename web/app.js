@@ -766,6 +766,14 @@ function initControls() {
     if (S.lesson) fitSubtitle();
   });
   document.addEventListener('keydown', onKey);
+  // Key events never reach this page while the YouTube iframe has focus, which it takes on any click
+  // on the video. Pull focus back as soon as it lands there so the shortcuts keep working.
+  window.addEventListener('blur', () => {
+    setTimeout(() => {
+      const a = document.activeElement;
+      if (a && a.tagName === 'IFRAME' && $('stage').contains(a)) { a.blur(); window.focus(); }
+    }, 0);
+  });
 }
 
 function onKey(e) {
