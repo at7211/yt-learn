@@ -124,3 +124,20 @@ def test_untimed_run_after_timed_words_starts_just_after_them():
     assert [x["w"] for x in w] == ["a", "b", "c", "dd"]
     assert w[1]["t"] == 1.5 and w[2]["t"] == 1.501 and w[2]["t"] < w[3]["t"] <= 3.0
     assert w[3]["e"] == 3.0
+
+
+def test_trailing_untimed_run_stops_at_the_next_event_start():
+    # Real ASR: event 1 ends after event 2 starts; its trailing untimed run must not overtake event 2's words.
+    ev = [{"t": 218760, "d": 2920, "segs": [[0, "a"], [None, "um er"]]},
+          {"t": 219440, "d": 1000, "segs": [[0, "an"], [120, "application"]]}]
+    w = normalize_words(ev, 300)
+    assert [x["w"] for x in w] == ["a", "um", "er", "an", "application"]
+    assert all(w[i]["t"] >= w[i - 1]["t"] for i in range(1, len(w)))
+    assert w[2]["e"] <= 219.44
+
+
+def test_bracketed_sound_tags_are_dropped():
+    ev = [{"t": 1000, "d": 2000, "segs": [[0, "a"], [None, "[clears throat]"]]},
+          {"t": 3000, "d": 1000, "segs": [[None, ">> [Music]"], [100, "b"], [300, "[Applause]"]]}]
+    w = normalize_words(ev, 60)
+    assert [x["w"] for x in w] == ["a", "b"]

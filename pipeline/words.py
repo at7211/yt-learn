@@ -5,6 +5,13 @@ import re
 _TIMED_CAP = 1.5
 _NO_SUCCESSOR_SPAN = 1.0
 _SPEAKER_MARKER = re.compile(r">+")  # YouTube ASR writes ">>" at speaker changes; it is not a word
+_SOUND_TAG = re.compile(r"\[[^\]]*\]")  # "[Music]", "[clears throat]": non-speech annotations, not words
+
+
+def _tokens(text):
+    """Split an untimed seg into words, dropping speaker markers and bracketed sound tags."""
+    text = _SOUND_TAG.sub(" ", text)
+    return [tok for tok in text.split() if not _SPEAKER_MARKER.fullmatch(tok)]
 
 
 def _spread_untimed(words, idx, ev_start, ev_end, duration, fixed_e):
@@ -46,15 +53,17 @@ def normalize_words(events: list[dict], duration: float) -> list[dict]:
     """
     words = []
     fixed_e = {}  # index -> end for untimed words (set when their event is flushed)
-    for ev in events:
+    for n, ev in enumerate(events):
         ev_start = ev["t"] / 1000
         ev_end = (ev["t"] + ev["d"]) / 1000
+        if n + 1 < len(events):
+            ev_end = max(ev_start, min(ev_end, events[n + 1]["t"] / 1000))
         toks = []  # (t or None, token) for this event, in order
         for offset, text in ev["segs"]:
             text = html.unescape(text)
             if offset is None:
-                toks += [(None, tok) for tok in text.split() if not _SPEAKER_MARKER.fullmatch(tok)]
-            elif text.strip() and not _SPEAKER_MARKER.fullmatch(text.strip()):
+                toks += [(None, tok) for tok in _tokens(text)]
+            elif text.strip() and not _SPEAKER_MARKER.fullmatch(text.strip()) and not _SOUND_TAG.fullmatch(text.strip()):
                 toks.append(((ev["t"] + offset) / 1000, text.strip()))
         base = len(words)
         for t, tok in toks:
@@ -68,7 +77,7 @@ def normalize_words(events: list[dict], duration: float) -> list[dict]:
             while j < len(toks) and toks[j][0] is None:
                 j += 1
             lo = ev_start if i == 0 else min(ev_end, toks[i - 1][0] + 0.001)
-            hi = ev_end if j == len(toks) else max(lo, toks[j][0])
+            hi = max(lo, ev_end if j == len(toks) else toks[j][0])
             _spread_untimed(words, list(range(base + i, base + j)), lo, hi, duration, fixed_e)
             i = j
 
