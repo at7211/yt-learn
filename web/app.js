@@ -3,6 +3,7 @@
 import { cueIndexAt, flattenHits, activeHitAt, panelState, seenCount } from './timing.js';
 import { parseVideoId } from './ytid.js';
 import { waitForAck, shouldApplyLiveStatus } from './handshake.js';
+import { introRows } from './intro.js';
 
 // ---------------------------------------------------------------- util
 const $ = (id) => document.getElementById(id);
@@ -350,9 +351,10 @@ function renderIntro(intro) {
   box.hidden = true;
   box.classList.remove('show');
   try {
-    if (!intro || typeof intro.title !== 'string' || !Array.isArray(intro.lines)) return;
-    $('intro-title').replaceChildren(...intro.title.split('\n').map((r) => el('div', r)));
-    $('intro-lines').replaceChildren(...intro.lines.map((r) => el('div', String(r))));
+    const rows = introRows(intro);
+    if (!rows) return;
+    $('intro-title').replaceChildren(...rows.title.map((r) => el('div', r)));
+    $('intro-lines').replaceChildren(...rows.lines.map((r) => el('div', r)));
     box.hidden = false;
   } catch (e) { box.hidden = true; }
 }

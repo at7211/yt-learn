@@ -94,19 +94,31 @@ def _failed(stats: dict | None) -> None:
         stats["intro_failed"] = stats.get("intro_failed", 0) + 1
 
 
-def make_intro(meta: dict, cues: list[dict], provider, stats: dict | None = None) -> dict | None:
-    """Return ``{"title", "lines"}`` (whitespace-trimmed) or None when anything goes wrong."""
-    user = intro_user_prompt(meta.get("title", ""), meta.get("channel", ""), meta.get("duration", 0), cues)
+RETRY_NOTE = "\n\n（上一次的回答超過字數或格式不符，被系統拒絕。請更精簡，嚴格遵守每行字數上限與行數。）"
+
+
+def _ask(user: str, provider) -> tuple[dict | None, list[str]]:
+    """One provider call: return (normalized response, errors)."""
     try:
         resp = provider.complete_json(INTRO_SYSTEM, user, INTRO_SCHEMA)
     except ProviderError as e:
-        _warn(str(e))
-        _failed(stats)
-        return None
+        return None, ["provider: " + str(e)]
     if isinstance(resp, dict) and isinstance(resp.get("title"), str):
         # Models often write the line break as the two characters backslash + n; treat that as a newline.
         resp = dict(resp, title=resp["title"].replace("\\n", "\n"))
-    errs = validate_intro(resp)
+    return resp, validate_intro(resp)
+
+
+def make_intro(meta: dict, cues: list[dict], provider, stats: dict | None = None) -> dict | None:
+    """Return ``{"title", "lines"}`` (whitespace-trimmed) or None when anything goes wrong.
+
+    A rejected reply is retried once with a note appended to the user message: the provider caches
+    replies by prompt, so re-sending the identical prompt would only return the same bad answer.
+    """
+    user = intro_user_prompt(meta.get("title", ""), meta.get("channel", ""), meta.get("duration", 0), cues)
+    resp, errs = _ask(user, provider)
+    if errs and not errs[0].startswith("provider:"):
+        resp, errs = _ask(user + RETRY_NOTE, provider)
     if errs:
         _warn("invalid LLM response: " + "; ".join(errs))
         _failed(stats)

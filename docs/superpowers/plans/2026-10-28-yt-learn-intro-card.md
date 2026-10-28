@@ -24,11 +24,13 @@
 
 ## LLM 呼叫（`pipeline/intro.py`）
 - `INTRO_SYSTEM`：角色＝替英文影片寫「前情提要」卡的編輯；要求：主標寫**場合或主題**（字幕或標題裡有明確日期、事件才寫日期＋事件；否則寫主題），補充行寫**人物與角色**或**背景一句**；**只能用字幕、標題、頻道名裡出現的事實，不得補上任何未出現的日期、地點、人名、職稱；不確定講者是誰時寫主題，不要把頻道名當講者**；不要劇透結論；不要出現「本影片」字樣；嚴格遵守字數。system prompt 開頭含 `[intro-prompt v1]` 版本標記：修 prompt 或驗證時 bump 它，讓舊的（可能無效的）cache 失效。
-- `intro_user_prompt(title, channel, cues, duration)`：影片標題、頻道、長度，以及**前 40 句**字幕英文（`#編號: 句子`），加一行「全片共 N 句」。
+- `intro_user_prompt(title, channel, duration, cues)`：影片標題、頻道、長度，以及**前 40 句**字幕英文（`#編號: 句子`），加一行「全片共 N 句」。
 - `INTRO_SCHEMA`：`{"type":"object","properties":{"title":{"type":"string"},"lines":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":2}},"required":["title","lines"]}`。
 - `make_intro(meta: dict, cues: list[dict], provider, stats: dict | None = None) -> dict | None`
   - `meta` 取 `title / channel / duration`。
   - 回傳驗證後的 `{"title","lines"}`，或 `None`（並 `stats["intro_failed"] = 1`，印一行 warning 到 stderr，風格同 `vocab._warn`）。
+  - 回答被驗證拒絕時**重試一次**，user message 尾端加 `RETRY_NOTE`（prompt 不同 → cache key 不同，避免壞答案卡在 cache）；provider 錯誤不重試。
+  - 模型常把換行寫成字面的「反斜線 n」兩個字元：驗證前先轉成真正換行。
   - 驗證函式獨立：`validate_intro(obj) -> list[str]`，供 `schema.validate_lesson` 重用。
 
 ## 任務
@@ -36,7 +38,7 @@
 ### Task 1: `pipeline/intro.py` ＋ schema
 **Files:** Create `pipeline/intro.py`; Modify `pipeline/schema.py`（`validate_lesson` 內：有 `intro` 時呼叫 `validate_intro`，錯誤前綴 `intro: `）; Test `tests/test_intro.py`。
 - [ ] 測試：`FakeProvider([{"title":"主題","lines":["講者 A"]}])` → `make_intro` 回傳同值；`stats` 無 `intro_failed`。
-- [ ] 測試：`title` 三行、`title` 單行 15 字、`lines` 為空、`lines` 3 個、`lines` 含空字串 → 各回 `None` 且 `stats["intro_failed"] == 1`。
+- [ ] 測試：`title` 三行、`title` 單行 17 字、`lines` 為空、`lines` 3 個、`lines` 含空字串 → 各回 `None` 且 `stats["intro_failed"] == 1`。
 - [ ] 測試：provider 丟 `ProviderError` → `None`，不拋例外。
 - [ ] 測試：`intro_user_prompt` 只含前 40 句、含「全片共 N 句」。
 - [ ] 測試：`validate_lesson(lesson_min)` 仍通過；加合法 `intro` 通過；`intro` 為 `null`、`intro.lines` 為字串、`title` 只有空白、`lines` 含換行、含 `\t` → 各回錯誤。
@@ -47,7 +49,7 @@
 **Files:** Modify `pipeline/build.py`; Test `tests/test_build.py`。
 - [ ] 測試：provider 依序回 segment×chunks / vocab / intro 的 Fake 回應時，`lesson["intro"]` 存在；intro 回應不合法時 `"intro" not in lesson` 且 `stats["intro_failed"] == 1`、build 回傳正常。
 - [ ] **既有 `tests/test_build.py` 全部 fake provider 補第 4 個回應**（合法 intro 或 `ProviderError`），精確比對 `stats` 的斷言加 `"intro_failed"`；`FakeProvider` 用完會丟 `AssertionError`，不是 `ProviderError`。
-- [ ] 實作：`pick_vocab` 之後呼叫 `make_intro({"title":..,"channel":..,"duration":..}, cues, provider, stats)`；`stats` 初始值加 `"intro_failed": 0`；結果非 `None` 才寫入 `lesson["intro"]`。CLI 總結行加印 `intro: ok|failed`。
+- [ ] 實作：`pick_vocab` 之後呼叫 `make_intro({"title":..,"channel":..,"duration":..}, cues, provider, stats)`；`stats` 初始值加 `"intro_failed": 0`；結果非 `None` 才寫入 `lesson["intro"]`。CLI 總結行加印 `intro=ok|failed`。
 - [ ] 跑全部 pytest。Commit: `feat(pipeline): build writes intro card`
 
 ### Task 3: 播放器顯示

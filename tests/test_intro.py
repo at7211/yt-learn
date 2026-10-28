@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from pipeline import schema
-from pipeline.intro import INTRO_SCHEMA, INTRO_SYSTEM, intro_user_prompt, make_intro, validate_intro
+from pipeline.intro import INTRO_SCHEMA, INTRO_SYSTEM, RETRY_NOTE, intro_user_prompt, make_intro, validate_intro
 from pipeline.llm import FakeProvider, ProviderError
 
 GOOD = {"title": "2023 年 11 月 14 日\n參議院勞工委員會", "lines": ["參議員 Mullin 質詢", "工會會長 O'Brien 作證"]}
@@ -44,14 +44,33 @@ def test_make_intro_invalid_shapes_fail_softly():
     ]
     for resp in bad:
         stats = {}
-        assert make_intro(META, CUES, FakeProvider([resp]), stats) is None, resp
+        prov = FakeProvider([resp, resp])  # rejected twice: the retry gets the same bad answer
+        assert make_intro(META, CUES, prov, stats) is None, resp
         assert stats == {"intro_failed": 1}, resp
+        assert len(prov.calls) == 2 and prov.calls[1][1].endswith(RETRY_NOTE)
 
 
-def test_make_intro_provider_error_returns_none():
+def test_make_intro_retries_once_with_a_changed_prompt():
+    prov = FakeProvider([{"title": "a\nb\nc", "lines": ["x"]}, {"title": "ok", "lines": ["y"]}])
     stats = {}
-    assert make_intro(META, CUES, FakeProvider([ProviderError("boom")]), stats) is None
-    assert stats["intro_failed"] == 1
+    assert make_intro(META, CUES, prov, stats) == {"title": "ok", "lines": ["y"]}
+    assert "intro_failed" not in stats
+    assert prov.calls[0][1] != prov.calls[1][1]  # a different user message -> a different cache key
+
+
+def test_length_limits_are_inclusive():
+    t16, t17 = "字" * 16, "字" * 17
+    l18, l19 = "字" * 18, "字" * 19
+    assert validate_intro({"title": t16 + "\n" + t16, "lines": [l18, l18]}) == []
+    assert validate_intro({"title": t17, "lines": [l18]}) == ["title line longer than 16 chars"]
+    assert validate_intro({"title": t16, "lines": [l19]}) == ["lines item longer than 18 chars"]
+
+
+def test_make_intro_provider_error_returns_none_without_retry():
+    stats = {}
+    prov = FakeProvider([ProviderError("boom")])
+    assert make_intro(META, CUES, prov, stats) is None
+    assert stats["intro_failed"] == 1 and len(prov.calls) == 1
 
 
 def test_user_prompt_limits_to_first_40_cues():
@@ -76,3 +95,6 @@ def test_validate_lesson_intro_optional_and_checked():
     assert schema.validate_lesson(les) == ["intro: intro must be an object"]
     les["intro"] = {"title": "ok", "lines": "x"}
     assert any(e.startswith("intro: lines") for e in schema.validate_lesson(les))
+    for bad in ({"title": "   ", "lines": ["x"]}, {"title": "ok", "lines": ["a\nb"]}, {"title": "ok\t", "lines": ["x"]}):
+        les["intro"] = bad
+        assert schema.validate_lesson(les) and all(e.startswith("intro: ") for e in schema.validate_lesson(les)), bad

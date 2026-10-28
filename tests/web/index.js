@@ -5,3 +5,4 @@ import './capture.test.js';
 import './extension-ytid.test.js';
 import './ytid.test.js';
 import './handshake.test.js';
+import './intro.test.js';

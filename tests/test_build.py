@@ -122,7 +122,7 @@ def test_build_survives_dead_provider_via_build_lesson():
 
 
 def test_build_survives_garbage_responses():
-    lesson, stats = build_lesson(load("raw_small.json"), FakeProvider([{"x": 1}, "junk", {"vocab": 3}, {"title": "", "lines": []}]))
+    lesson, stats = build_lesson(load("raw_small.json"), FakeProvider([{"x": 1}, "junk", {"vocab": 3}, {"title": "", "lines": []}, "junk"]))
     assert validate_lesson(lesson) == []
     assert lesson["vocab"] == [] and stats["fallback_chunks"] == 2
 
@@ -153,7 +153,8 @@ def test_manual_caption_lesson_has_addressable_cues():
 def test_build_invalid_intro_is_omitted_but_lesson_still_builds():
     words = normalize_words(load("raw_small.json")["events"], 344)
     seg = {"cues": [{"a": 0, "b": 172, "tokens": [w["w"] for w in words], "zh": "譯文"}]}
-    prov = FakeProvider([seg, seg, {"vocab": []}, {"title": "a\nb\nc", "lines": ["x"]}])
+    bad = {"title": "a\nb\nc", "lines": ["x"]}
+    prov = FakeProvider([seg, seg, {"vocab": []}, bad, bad])  # rejected, retried once, rejected again
     lesson, stats = build_lesson(load("raw_small.json"), prov)
-    assert "intro" not in lesson and stats["intro_failed"] == 1
+    assert "intro" not in lesson and stats["intro_failed"] == 1 and len(prov.calls) == 5
     assert validate_lesson(lesson) == []
