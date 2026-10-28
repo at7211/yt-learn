@@ -68,15 +68,19 @@ button { font: inherit; }
 .stage:fullscreen { display: flex; align-items: center; justify-content: center; width: 100vw; height: 100vh; }
 .frame { position: relative; width: 100%; aspect-ratio: 16 / 9; container-type: inline-size; overflow: hidden; }
 .stage:fullscreen .frame { width: min(100vw, calc(100vh * 16 / 9)); }
-/* The video sits small at the top-left; the vocab panel lives on the black to its right and the
-   subtitles on the black band below it, so no overlay ever covers the picture. */
-.yt-wrap { position: absolute; left: 2.5cqw; top: 2.5cqw; width: 60cqw; aspect-ratio: 16 / 9; }
-.yt-wrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+/* Full-frame video, like the reference: a horizontal shade darkens the right ~30% (black from ~72%)
+   for the vocab panel, and a vertical fog rises from the bottom behind the subtitles. */
+.yt-wrap, .yt-wrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.shade { position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: linear-gradient(90deg, rgba(10, 12, 18, 0) 48%, rgba(10, 12, 18, .55) 58%, rgba(10, 12, 18, .92) 72%, rgba(10, 12, 18, .96) 100%),
+              linear-gradient(180deg, rgba(10, 12, 18, 0) 60%, rgba(10, 12, 18, .6) 82%, rgba(10, 12, 18, .9) 100%); }
+.stage:not(.started) .shade { display: none; }
+.no-vocab .shade { background: linear-gradient(180deg, rgba(10, 12, 18, 0) 60%, rgba(10, 12, 18, .6) 82%, rgba(10, 12, 18, .9) 100%); } /* panel off: keep only the subtitle fog */
 .layer { position: absolute; pointer-events: none; z-index: 2; }
 .subs { z-index: 3; }
 
-/* ---- subtitles: centred on the black band below the video (video bottom edge at 36.25cqw) */
-.subs { left: 5%; right: 5%; bottom: 4%; text-align: center; }
+/* ---- subtitles: bottom centre over the fog; Chinese baseline ends ~7% above the bottom */
+.subs { left: 5%; right: 5%; bottom: 7%; text-align: center; }
 .sub-en {
   font: 700 clamp(15px, 3.44cqw, 60px)/1.2 Inter, system-ui, sans-serif;
   color: #fff;
@@ -101,8 +105,8 @@ button { font: inherit; }
 .no-vocab .panel { display: none; }
 .stage:not(.started) .subs, .stage:not(.started) .panel { visibility: hidden; } /* nothing over the video until it has started playing */
 
-/* ---- vocab panel: on the black to the right of the video (video right edge at 62.5cqw) */
-.panel { left: 65.5%; width: 31.5%; top: 4%; height: 80%; font-family: var(--sans); opacity: 0; transition: opacity .7s ease; }
+/* ---- vocab panel: x 58%–97%, on the shaded right side */
+.panel { left: 58%; width: 39%; top: 4%; height: 80%; font-family: var(--sans); opacity: 0; transition: opacity .7s ease; }
 .panel.live { opacity: 1; }
 .panel:not(.live) .prow { pointer-events: none; }
 .panel-head {
