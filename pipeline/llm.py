@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+import tomllib
 from pathlib import Path
 from typing import Protocol
 
@@ -174,46 +175,89 @@ class CodexCliProvider(_CliProvider):
     empty temp directory so the agent has nothing to look at but the prompt."""
     name = "codex"
     default_timeout = 300.0
+    # A pure question-and-answer call: no shell tool, no hooks, no web search, never ask for approval.
+    ISOLATION = ["-c", 'approval_policy="never"', "-c", "features.shell_tool=false",
+                 "-c", "features.hooks=false", "-c", 'web_search="disabled"']
+
+    def __init__(self, model: str | None = None, cache_dir: Path | None = None,
+                 prompt_version: int = 1, timeout: float | None = None):
+        # Resolve the user's configured default model up front so the cache key names the real model
+        # (a bare "default" would keep serving old answers after the user changes ~/.codex/config.toml).
+        super().__init__(model or configured_codex_model(), cache_dir, prompt_version, timeout)
 
     def _cache_fields(self, system, user, schema):
         return {"provider": "codex", **super()._cache_fields(system, user, schema)}
 
     def _call(self, system: str, user: str, schema: dict | None) -> dict:
-        with tempfile.TemporaryDirectory(prefix="ytlearn-codex-") as tmp:
-            last = Path(tmp) / "last.txt"
-            argv = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral",
-                    "--color", "never", "-C", tmp, "-o", str(last)]
-            if schema is not None:
-                schema_path = Path(tmp) / "schema.json"
-                schema_path.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
-                argv += ["--output-schema", str(schema_path)]
-            if self.model:
-                argv += ["-m", self.model]
-            argv.append("-")
-            prompt = system + "\n\n---\n\n" + user
+        try:
+            with tempfile.TemporaryDirectory(prefix="ytlearn-codex-") as tmp:
+                return self._call_in(tmp, system, user, schema)
+        except OSError as e:  # temp dir, schema file or output file trouble
+            raise _Failure(f"codex CLI workspace error: {e}") from None
+
+    def _call_in(self, tmp: str, system: str, user: str, schema: dict | None) -> dict:
+        last = Path(tmp) / "last.txt"
+        argv = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral",
+                "--color", "never", *self.ISOLATION, "-C", tmp, "-o", str(last)]
+        if schema is not None:
+            schema_path = Path(tmp) / "schema.json"
+            schema_path.write_text(json.dumps(strict_schema(schema), ensure_ascii=False), encoding="utf-8")
+            argv += ["--output-schema", str(schema_path)]
+        if self.model:
+            argv += ["-m", self.model]
+        argv.append("-")
+        prompt = system + "\n\n---\n\n" + user
+        try:
+            proc = subprocess.run(argv, input=prompt, capture_output=True, text=True, encoding="utf-8",
+                                  timeout=self.timeout)
+        except FileNotFoundError:
+            raise ProviderError("codex CLI not found on PATH") from None
+        except subprocess.TimeoutExpired:
+            raise _Failure(f"codex CLI timed out after {self.timeout}s") from None
+        if proc.returncode != 0:
+            raise _Failure(f"codex CLI exit {proc.returncode}: {(proc.stderr or '').strip()[-200:]}")
+        text = ""
+        try:
+            text = last.read_text(encoding="utf-8")
+        except OSError:
+            pass
+        if text.strip():
+            return _parse_object(text, "codex final message")
+        # stdout fallback: the final message is the latest tail of stdout that parses as an object
+        # (it may be fenced and span several lines; the banner lines above it never parse).
+        lines = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
+        for i in range(len(lines) - 1, -1, -1):
+            if not lines[i].lstrip().startswith(("{", "```")):
+                continue
             try:
-                proc = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=self.timeout)
-            except FileNotFoundError:
-                raise ProviderError("codex CLI not found on PATH") from None
-            except subprocess.TimeoutExpired:
-                raise _Failure(f"codex CLI timed out after {self.timeout}s") from None
-            if proc.returncode != 0:
-                raise _Failure(f"codex CLI exit {proc.returncode}: {(proc.stderr or '').strip()[-200:]}")
-            text = ""
-            try:
-                text = last.read_text(encoding="utf-8")
-            except OSError:
-                pass
-            if text.strip():
-                return _parse_object(text, "codex final message")
-            # stdout fallback: the final message is the latest tail of stdout that parses as an object
-            # (it may be fenced and span several lines; the banner lines above it never parse).
-            lines = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
-            for i in range(len(lines) - 1, -1, -1):
-                if not lines[i].lstrip().startswith(("{", "```")):
-                    continue
-                try:
-                    return _parse_object("\n".join(lines[i:]), "codex final message")
-                except _Failure:
-                    continue
-            raise _Failure("no final message from codex CLI")
+                return _parse_object("\n".join(lines[i:]), "codex final message")
+            except _Failure:
+                continue
+        raise _Failure("no final message from codex CLI")
+
+
+def strict_schema(schema):
+    """A copy of ``schema`` that OpenAI strict structured outputs accept: every object carries
+    ``additionalProperties: false`` and lists all its properties as required. Claude gets the original."""
+    if isinstance(schema, list):
+        return [strict_schema(x) for x in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {k: strict_schema(v) if k != "enum" else v for k, v in schema.items()}
+    if out.get("type") == "object" or "properties" in out:
+        props = out.get("properties") or {}
+        out["properties"] = {k: strict_schema(v) for k, v in props.items()}
+        out["required"] = list(props.keys())
+        out["additionalProperties"] = False
+    return out
+
+
+def configured_codex_model() -> str | None:
+    """The `model` in $CODEX_HOME/config.toml (default ~/.codex/config.toml), or None when unset/unreadable."""
+    home = os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    try:
+        with open(Path(home) / "config.toml", "rb") as f:
+            m = tomllib.load(f).get("model")
+    except (OSError, ValueError):
+        return None
+    return m if isinstance(m, str) and m else None

@@ -206,3 +206,10 @@ def test_provider_flag_defaults_to_claude_and_switches_to_codex(tmp_path, monkey
     seen = {}
     assert main(["CR94QQXO_4s", "--force", "--provider", "claude"], data_dir=tmp_path, provider_factory=_spy_factory(seen)) == 0
     assert seen["provider"] == "claude"
+
+
+def test_unknown_provider_from_env_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("YTLEARN_PROVIDER", "typo")
+    with pytest.raises(SystemExit) as e:
+        main(["CR94QQXO_4s"], data_dir=tmp_path)
+    assert e.value.code == 2

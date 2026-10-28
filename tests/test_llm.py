@@ -191,7 +191,8 @@ def codex_run(monkeypatch, answers):
     return calls
 
 
-def test_codex_argv_schema_file_and_prompt(monkeypatch):
+def test_codex_argv_schema_file_and_prompt(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-config"))  # no configured default model
     seen = {}
 
     def spy(argv, **kwargs):
@@ -206,8 +207,19 @@ def test_codex_argv_schema_file_and_prompt(monkeypatch):
     argv, kw = seen["argv"], seen["kw"]
     assert argv[:2] == ["codex", "exec"] and argv[-1] == "-"
     assert argv[argv.index("--sandbox") + 1] == "read-only" and "--ephemeral" in argv and "--skip-git-repo-check" in argv
-    assert "-m" not in argv and seen["schema"] == {"type": "object"}
+    assert "-m" not in argv and seen["schema"] == {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
     assert kw["input"].startswith("sys") and kw["input"].endswith("usr") and kw["timeout"] == 300.0
+
+
+def test_strict_schema_adds_additional_properties_false_everywhere():
+    from pipeline.llm import strict_schema
+    from pipeline.vocab import VOCAB_SCHEMA
+    out = strict_schema(VOCAB_SCHEMA)
+    assert out["additionalProperties"] is False and out["required"] == ["vocab"]
+    item = out["properties"]["vocab"]["items"]
+    assert item["additionalProperties"] is False and item["required"] == ["term", "pos", "ipa", "zh", "cues"]
+    assert item["properties"]["pos"]["enum"] == VOCAB_SCHEMA["properties"]["vocab"]["items"]["properties"]["pos"]["enum"]
+    assert "additionalProperties" not in VOCAB_SCHEMA  # the original is untouched (Claude cache keys depend on it)
 
 
 def test_codex_model_flag_and_no_schema(monkeypatch):
@@ -248,3 +260,23 @@ def test_cache_keys_differ_by_provider_and_claude_key_is_unchanged(tmp_path):
     legacy = hashlib.sha256(json.dumps({"model": "m", "promptVersion": 1, "system": "s", "user": "u", "schema": None},
                                        sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     assert c._cache_path("s", "u", None).name == legacy + ".json"
+
+
+def test_codex_isolation_flags_and_configured_model(monkeypatch, tmp_path):
+    (tmp_path / "config.toml").write_text('model = "gpt-test"\nmodel_reasoning_effort = "low"\n', "utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    calls = codex_run(monkeypatch, [{"a": 1}])
+    p = CodexCliProvider(cache_dir=tmp_path / "cache")
+    assert p.model == "gpt-test"
+    assert p.complete_json("s", "u") == {"a": 1}
+    argv = calls[0][0]
+    assert argv[argv.index("-m") + 1] == "gpt-test"
+    cfg = [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
+    assert 'approval_policy="never"' in cfg and "features.shell_tool=false" in cfg and "features.hooks=false" in cfg
+    assert calls[0][1]["encoding"] == "utf-8"
+    # explicit model wins; no config file -> None and no -m
+    assert CodexCliProvider(model="other").model == "other"
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "nowhere"))
+    calls = codex_run(monkeypatch, [{"a": 2}])
+    p2 = CodexCliProvider()
+    assert p2.model is None and p2.complete_json("s", "u") == {"a": 2} and "-m" not in calls[0][0]

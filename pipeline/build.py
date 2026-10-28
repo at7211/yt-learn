@@ -108,6 +108,8 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
     ap.add_argument("--progress-file", default=os.environ.get("YTLEARN_PROGRESS_FILE") or None,
                     help="write {phase, done, total} JSON here as the build advances (env YTLEARN_PROGRESS_FILE)")
     args = ap.parse_args(argv)
+    if args.provider not in PROVIDERS:  # argparse does not check an env-derived default against choices
+        ap.error(f"unknown provider {args.provider!r} (YTLEARN_PROVIDER); choose one of {', '.join(sorted(PROVIDERS))}")
     if args.model is None and args.provider == "claude":
         args.model = DEFAULT_MODEL
     model_label = args.model if args.provider == "claude" else f"codex:{args.model or 'default'}"
@@ -151,7 +153,7 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
         print(f"error: {e}", file=sys.stderr)
         return 1
     if stats["chunks"] and stats["fallback_chunks"] == stats["chunks"]:
-        print("所有切句呼叫都失敗（請確認 claude CLI 已登入）；未寫入 lesson", file=sys.stderr)
+        print(f"所有切句呼叫都失敗（請確認 {args.provider} CLI 已登入）；未寫入 lesson", file=sys.stderr)
         return 1
     errs = validate_lesson(lesson)
     if errs:

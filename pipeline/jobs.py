@@ -6,6 +6,7 @@ import os
 import queue
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -173,6 +174,14 @@ class JobStore:
                 self._set(job, "error", message)
 
 
+def _kill_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the build's whole process group (the build itself plus the claude/codex CLI it spawned)."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.kill()
+
+
 class BuildQueue:
     def __init__(self, store: JobStore, root, cmd_factory=None, timeout: float = 1200.0, log_dir=None):
         self.store = store
@@ -264,13 +273,14 @@ class BuildQueue:
         log = self.log_dir / f"{vid}.log"
         env = {**os.environ, "YTLEARN_PROGRESS_FILE": str(self.progress_path(vid))}
         with open(log, "wb") as lf:
-            proc = subprocess.Popen(self._cmd(vid), cwd=self.root, stdout=lf, stderr=subprocess.STDOUT, env=env)
+            proc = subprocess.Popen(self._cmd(vid), cwd=self.root, stdout=lf, stderr=subprocess.STDOUT, env=env,
+                                    start_new_session=True)  # its own process group, so a kill reaches the LLM CLI too
             with self._lock:
                 self._proc = proc
             try:
                 rc = proc.wait(timeout=self.timeout)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                _kill_group(proc)
                 proc.wait()
                 return self._finish(vid, False, f"build 逾時 (timeout {self.timeout:g}s)")
         if self._stop.is_set():
@@ -295,7 +305,7 @@ class BuildQueue:
             try:
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                _kill_group(proc)
         self._q.put(None)
         t = self._thread
         if t is not None:
