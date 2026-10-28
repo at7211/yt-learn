@@ -9,6 +9,7 @@ from pipeline.schema import validate_lesson
 from pipeline.words import normalize_words
 
 FIX = Path(__file__).parent / "fixtures"
+INTRO = {"title": "脫口秀片段", "lines": ["主持人評論一位名人"]}
 
 
 def load(name):
@@ -23,12 +24,13 @@ def fake_provider():
         return {"cues": [{"a": a, "b": b, "tokens": [words[i]["w"] for i in range(a, b + 1)], "zh": "譯文"}]}
 
     vocab = {"vocab": [{"term": "clown", "pos": "n.", "ipa": "/klaʊn/", "zh": "小丑", "cues": [0]}]}
-    return FakeProvider([seg(0, 120), seg(121, 172), vocab])
+    return FakeProvider([seg(0, 120), seg(121, 172), vocab, INTRO])
 
 
 def test_build_with_fake_provider_matches_schema():
     lesson, stats = build_lesson(load("raw_small.json"), fake_provider())
-    assert stats == {"chunks": 2, "fallback_chunks": 0, "vocab_failed": 0}
+    assert stats == {"chunks": 2, "fallback_chunks": 0, "vocab_failed": 0, "intro_failed": 0}
+    assert lesson["intro"] == INTRO
     assert validate_lesson(lesson) == []
     assert lesson["videoId"] == "CR94QQXO_4s" and lesson["coveredSeconds"] == 344
     assert len(lesson["words"]) == 173 and len(lesson["cues"]) == 2
@@ -41,7 +43,7 @@ def test_limit_seconds_sets_covered_seconds():
     words = normalize_words(raw["events"], 344)
     n = sum(1 for w in words if w["t"] < 30)
     resp = [{"cues": [{"a": 0, "b": n - 1, "tokens": [w["w"] for w in words[:n]], "zh": "譯"}]},
-            {"vocab": []}]
+            {"vocab": []}, INTRO]
     lesson, _ = build_lesson(raw, FakeProvider(resp), limit_seconds=30)
     assert validate_lesson(lesson) == []
     assert lesson["coveredSeconds"] == 30 and len(lesson["words"]) == n
@@ -106,7 +108,7 @@ def test_build_partial_failure_still_writes(tmp_path, capsys):
     target = _setup(tmp_path)
     words = normalize_words(load("raw_small.json")["events"], 344)
     ok = {"cues": [{"a": 121, "b": 172, "tokens": [words[i]["w"] for i in range(121, 173)], "zh": "譯"}]}
-    prov = FakeProvider([ProviderError("boom"), ok, ProviderError("vocab boom")])
+    prov = FakeProvider([ProviderError("boom"), ok, ProviderError("vocab boom"), ProviderError("intro boom")])
     assert main(["CR94QQXO_4s"], data_dir=tmp_path, provider_factory=lambda m, c: prov) == 0
     out = json.loads(target.read_text(encoding="utf-8"))
     assert validate_lesson(out) == [] and out["vocab"] == []
@@ -120,7 +122,7 @@ def test_build_survives_dead_provider_via_build_lesson():
 
 
 def test_build_survives_garbage_responses():
-    lesson, stats = build_lesson(load("raw_small.json"), FakeProvider([{"x": 1}, "junk", {"vocab": 3}]))
+    lesson, stats = build_lesson(load("raw_small.json"), FakeProvider([{"x": 1}, "junk", {"vocab": 3}, {"title": "", "lines": []}]))
     assert validate_lesson(lesson) == []
     assert lesson["vocab"] == [] and stats["fallback_chunks"] == 2
 
@@ -139,9 +141,19 @@ def test_manual_caption_lesson_has_addressable_cues():
         {"cues": [{"a": 0, "b": 2, "tokens": toks[0:3], "zh": "我回家了。"},
                   {"a": 3, "b": 7, "tokens": toks[3:8], "zh": "然後我們吃了晚餐。"}]},
         {"vocab": []},
+        INTRO,
     ])
     lesson, _ = build_lesson(raw, prov)
     starts = [lesson["words"][c["a"]]["t"] for c in lesson["cues"]]
     assert len(starts) == 2 and starts[0] < starts[1]
     assert all(not w["timed"] for w in lesson["words"])
+    assert validate_lesson(lesson) == []
+
+
+def test_build_invalid_intro_is_omitted_but_lesson_still_builds():
+    words = normalize_words(load("raw_small.json")["events"], 344)
+    seg = {"cues": [{"a": 0, "b": 172, "tokens": [w["w"] for w in words], "zh": "譯文"}]}
+    prov = FakeProvider([seg, seg, {"vocab": []}, {"title": "a\nb\nc", "lines": ["x"]}])
+    lesson, stats = build_lesson(load("raw_small.json"), prov)
+    assert "intro" not in lesson and stats["intro_failed"] == 1
     assert validate_lesson(lesson) == []

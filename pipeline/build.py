@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pipeline.chunk import chunk_words
+from pipeline.intro import make_intro
 from pipeline.llm import ClaudeCliProvider
 from pipeline.schema import VIDEO_ID_RE, validate_lesson, validate_raw
 from pipeline.segment import finalize_cues, make_cues
@@ -21,7 +22,7 @@ DEFAULT_MODEL = "claude-sonnet-5-5"
 
 def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
                  model_label: str = "default", prompt_version: int = 1) -> tuple[dict, dict]:
-    """Return ``(lesson, stats)``; stats has chunks, fallback_chunks, vocab_failed."""
+    """Return ``(lesson, stats)``; stats has chunks, fallback_chunks, vocab_failed, intro_failed."""
     errs = validate_raw(raw)
     if errs:
         raise ValueError("invalid raw capture: " + "; ".join(errs))
@@ -33,13 +34,14 @@ def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
         words = [w for w in words if w["t"] < limit_seconds]
     if not words:
         raise ValueError("no words to build (empty after time limit)")
-    stats = {"chunks": 0, "fallback_chunks": 0, "vocab_failed": 0}
+    stats = {"chunks": 0, "fallback_chunks": 0, "vocab_failed": 0, "intro_failed": 0}
     cues = []
     for chunk in chunk_words(words):
         stats["chunks"] += 1
         cues += make_cues(words, chunk, provider, stats)
     cues = finalize_cues(cues, words)
     vocab = pick_vocab(cues, words, provider, stats=stats)
+    intro = make_intro({"title": raw["title"], "channel": raw["channel"], "duration": duration}, cues, provider, stats)
     lesson = {
         "videoId": raw["videoId"], "title": raw["title"], "channel": raw["channel"],
         "duration": duration, "lang": raw["lang"],
@@ -47,6 +49,8 @@ def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
         "model": model_label, "promptVersion": prompt_version, "coveredSeconds": covered,
         "words": words, "cues": cues, "vocab": vocab,
     }
+    if intro is not None:
+        lesson["intro"] = intro
     return lesson, stats
 
 
@@ -120,6 +124,7 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
     print(f"cues={len(lesson['cues'])} vocab={len(lesson['vocab'])} "
           f"fallback_chunks={stats['fallback_chunks']}/{stats['chunks']} "
           f"vocab_status={'skipped' if stats['vocab_failed'] else 'ok'} "
+          f"intro={'failed' if stats['intro_failed'] else 'ok'} "
           f"llm_calls={getattr(provider, 'calls', 0)} cache_hits={getattr(provider, 'cache_hits', 0)} "
           f"seconds={time.monotonic() - t0:.1f}")
     return 0
