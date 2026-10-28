@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import sys
+import unicodedata
 
 from .llm import ProviderError
 
@@ -50,6 +51,15 @@ def intro_user_prompt(title: str, channel: str, duration: float, cues: list[dict
     return "\n".join(out)
 
 
+def display_width(s: str) -> float:
+    """Width in CJK character units: wide/fullwidth characters count 1, everything else 0.5.
+
+    The card is sized for ``LINE_MAX`` Chinese characters a line; a Latin name takes about half
+    the room per character, and the model counts "字" the same way.
+    """
+    return sum(1.0 if unicodedata.east_asian_width(ch) in ("W", "F") else 0.5 for ch in s)
+
+
 def validate_intro(obj) -> list[str]:
     """Return error messages for an intro card; empty means valid."""
     if not isinstance(obj, dict):
@@ -67,7 +77,7 @@ def validate_intro(obj) -> list[str]:
         for r in rows:
             if not r.strip():
                 errs.append("title has a blank line")
-            elif len(r.strip()) > TITLE_LINE_MAX:
+            elif display_width(r.strip()) > TITLE_LINE_MAX:
                 errs.append(f"title line longer than {TITLE_LINE_MAX} chars")
     lines = obj.get("lines")
     if not isinstance(lines, list) or not 1 <= len(lines) <= LINES_MAX:
@@ -80,7 +90,7 @@ def validate_intro(obj) -> list[str]:
                 errs.append("lines items must be single lines")
             elif not ln.strip():
                 errs.append("lines items must be non-empty")
-            elif len(ln.strip()) > LINE_MAX:
+            elif display_width(ln.strip()) > LINE_MAX:
                 errs.append(f"lines item longer than {LINE_MAX} chars")
     return errs
 

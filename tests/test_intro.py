@@ -98,3 +98,11 @@ def test_validate_lesson_intro_optional_and_checked():
     for bad in ({"title": "   ", "lines": ["x"]}, {"title": "ok", "lines": ["a\nb"]}, {"title": "ok\t", "lines": ["x"]}):
         les["intro"] = bad
         assert schema.validate_lesson(les) and all(e.startswith("intro: ") for e in schema.validate_lesson(les)), bad
+
+
+def test_line_limits_count_latin_at_half_width():
+    # "Alex Palcuie 談 Anthropic 的實務" is 28 code points but renders narrower than 22 CJK characters.
+    assert validate_intro({"title": "AI 代理與\n正式環境維運", "lines": ["Alex Palcuie 談 Anthropic 的實務", "從 Google SRE 到 Claude 值班"]}) == []
+    assert any("longer" in e for e in validate_intro({"title": "x", "lines": ["一二三四五六七八九十一二三四五六七八九十一二三"]}))
+    assert any("title line longer" in e for e in validate_intro({"title": "一二三四五六七八九十一二三四五六七", "lines": ["x"]}))
+    assert validate_intro({"title": "Kimmy K 3.1 發布\n神祕模型之謎", "lines": ["2026 年 10 月 26 日 Code Report", "Moonshot 新模型與蒸餾爭議"]}) == []
