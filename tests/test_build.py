@@ -177,3 +177,32 @@ def test_progress_file_written_by_cli(tmp_path, monkeypatch):
     monkeypatch.setenv("YTLEARN_PROGRESS_FILE", str(tmp_path / "env.json"))
     assert main(["CR94QQXO_4s", "--force"], data_dir=tmp_path, provider_factory=lambda m, c: fake_provider()) == 0
     assert json.loads((tmp_path / "env.json").read_text("utf-8"))["phase"] == "finish"
+
+
+def _spy_factory(seen):
+    def factory(model, cache_dir, provider="claude"):
+        seen.update(model=model, provider=provider)
+        return fake_provider()
+    return factory
+
+
+def test_provider_flag_defaults_to_claude_and_switches_to_codex(tmp_path, monkeypatch):
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw" / "CR94QQXO_4s.json").write_text(json.dumps(load("raw_small.json")), "utf-8")
+    monkeypatch.delenv("YTLEARN_PROVIDER", raising=False)
+    seen = {}
+    assert main(["CR94QQXO_4s"], data_dir=tmp_path, provider_factory=_spy_factory(seen)) == 0
+    assert seen == {"model": "claude-sonnet-5-5", "provider": "claude"}
+    assert json.loads((tmp_path / "lessons" / "CR94QQXO_4s.json").read_text("utf-8"))["model"] == "claude-sonnet-5-5"
+    seen = {}
+    assert main(["CR94QQXO_4s", "--provider", "codex", "--force"], data_dir=tmp_path, provider_factory=_spy_factory(seen)) == 0
+    assert seen == {"model": None, "provider": "codex"}
+    assert json.loads((tmp_path / "lessons" / "CR94QQXO_4s.json").read_text("utf-8"))["model"] == "codex:default"
+    seen = {}
+    monkeypatch.setenv("YTLEARN_PROVIDER", "codex")
+    assert main(["CR94QQXO_4s", "--force", "--model", "gpt-6-astra"], data_dir=tmp_path, provider_factory=_spy_factory(seen)) == 0
+    assert seen == {"model": "gpt-6-astra", "provider": "codex"}
+    assert json.loads((tmp_path / "lessons" / "CR94QQXO_4s.json").read_text("utf-8"))["model"] == "codex:gpt-6-astra"
+    seen = {}
+    assert main(["CR94QQXO_4s", "--force", "--provider", "claude"], data_dir=tmp_path, provider_factory=_spy_factory(seen)) == 0
+    assert seen["provider"] == "claude"

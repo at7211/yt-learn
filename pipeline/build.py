@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pipeline.chunk import chunk_words
 from pipeline.intro import make_intro
-from pipeline.llm import ClaudeCliProvider
+from pipeline.llm import ClaudeCliProvider, CodexCliProvider
 from pipeline.schema import VIDEO_ID_RE, validate_lesson, validate_raw
 from pipeline.segment import finalize_cues, make_cues
 from pipeline.vocab import pick_vocab
@@ -75,8 +75,11 @@ def _read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _default_provider(model, cache_dir):
-    return ClaudeCliProvider(model=model, cache_dir=cache_dir)
+PROVIDERS = {"claude": ClaudeCliProvider, "codex": CodexCliProvider}
+
+
+def _default_provider(model, cache_dir, provider="claude"):
+    return PROVIDERS[provider](model=model, cache_dir=cache_dir)
 
 
 def progress_writer(path: Path):
@@ -98,11 +101,16 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
     ap = argparse.ArgumentParser(prog="python3 -m pipeline.build")
     ap.add_argument("video_id")
     ap.add_argument("--limit-seconds", type=float, default=None)
-    ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--provider", choices=sorted(PROVIDERS), default=os.environ.get("YTLEARN_PROVIDER") or "claude",
+                    help="which logged-in CLI answers the prompts (env YTLEARN_PROVIDER); default claude")
+    ap.add_argument("--model", default=None, help=f"model name for the provider; claude defaults to {DEFAULT_MODEL}, codex to its own config")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--progress-file", default=os.environ.get("YTLEARN_PROGRESS_FILE") or None,
                     help="write {phase, done, total} JSON here as the build advances (env YTLEARN_PROGRESS_FILE)")
     args = ap.parse_args(argv)
+    if args.model is None and args.provider == "claude":
+        args.model = DEFAULT_MODEL
+    model_label = args.model if args.provider == "claude" else f"codex:{args.model or 'default'}"
     data = Path(data_dir)
     vid = args.video_id
     if not VIDEO_ID_RE.fullmatch(vid):
@@ -133,9 +141,10 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
             return 2
 
     t0 = time.monotonic()
-    provider = provider_factory(args.model, data / "cache" / vid)
+    provider = (provider_factory(args.model, data / "cache" / vid, args.provider) if args.provider != "claude"
+                else provider_factory(args.model, data / "cache" / vid))  # the two-argument form keeps old factories working
     try:
-        lesson, stats = build_lesson(raw, provider, args.limit_seconds, model_label=args.model,
+        lesson, stats = build_lesson(raw, provider, args.limit_seconds, model_label=model_label,
                                      prompt_version=getattr(provider, "prompt_version", 1),
                                      progress=progress_writer(args.progress_file) if args.progress_file else None)
     except ValueError as e:
