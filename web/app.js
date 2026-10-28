@@ -25,6 +25,7 @@ const S = {
   showZh: true,
   showEn: true,
   showVocab: true,
+  started: false, // true after the first PLAYING; subtitles and the panel stay hidden until then
   review: false,
   page: 0,
   keys: { sub: null, panel: null, cue: null, count: null },
@@ -428,6 +429,7 @@ function hideYouTubeCaptions() {
 function onStateChange(ev) {
   const st = ev.data;
   if (st === YT.PlayerState.PLAYING) hideYouTubeCaptions();
+  if (st === YT.PlayerState.PLAYING && !S.started) { S.started = true; $('stage').classList.add('started'); }
   if (st === YT.PlayerState.ENDED) enterReview();
   else if (st === YT.PlayerState.PLAYING && S.review) leaveReview();
   $('btn-play').textContent = st === YT.PlayerState.PLAYING ? '暫停' : '播放';

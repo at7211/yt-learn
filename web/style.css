@@ -96,6 +96,7 @@ button { font: inherit; }
 .sub-zh:empty { display: none; }
 .no-en .sub-en, .no-zh .sub-zh { display: none; }
 .no-vocab .panel { display: none; }
+.stage:not(.started) .subs, .stage:not(.started) .panel { visibility: hidden; } /* nothing over the video until it has started playing */
 
 /* ---- vocab panel: x 60%–97%, y 4%–84% */
 .panel { left: 60%; width: 37%; top: 4%; height: 80%; font-family: var(--sans); opacity: 0; transition: opacity .7s ease; }
