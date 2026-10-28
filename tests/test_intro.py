@@ -60,10 +60,10 @@ def test_make_intro_retries_once_with_a_changed_prompt():
 
 def test_length_limits_are_inclusive():
     t16, t17 = "字" * 16, "字" * 17
-    l18, l19 = "字" * 18, "字" * 19
-    assert validate_intro({"title": t16 + "\n" + t16, "lines": [l18, l18]}) == []
-    assert validate_intro({"title": t17, "lines": [l18]}) == ["title line longer than 16 chars"]
-    assert validate_intro({"title": t16, "lines": [l19]}) == ["lines item longer than 18 chars"]
+    l22, l23 = "字" * 22, "字" * 23
+    assert validate_intro({"title": t16 + "\n" + t16, "lines": [l22, l22]}) == []
+    assert validate_intro({"title": t17, "lines": [l22]}) == ["title line longer than 16 chars"]
+    assert validate_intro({"title": t16, "lines": [l23]}) == ["lines item longer than 22 chars"]
 
 
 def test_make_intro_provider_error_returns_none_without_retry():
