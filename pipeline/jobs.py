@@ -183,7 +183,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 class BuildQueue:
-    def __init__(self, store: JobStore, root, cmd_factory=None, timeout: float = 1200.0, log_dir=None):
+    def __init__(self, store: JobStore, root, cmd_factory=None, timeout: float = 3600.0, log_dir=None):
         self.store = store
         self.root = Path(root)
         self.cmd_factory = cmd_factory
