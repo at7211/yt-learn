@@ -78,6 +78,10 @@ node --test tests/web/                           # 播放器純函式
 - 疊層蓋在 YouTube 嵌入播放器上，只適合個人本機使用，不要公開部署。
 - 前情提要卡的字數有上限，模型兩次都寫太長時那一堂就沒有卡，其他功能照常。
 
+## 素材出處
+
+截圖與介紹片裡的影片畫面來自 UC Berkeley 上傳的〈Berkeley's 2016 University Medalist Kaavya Veliveti Commencement Speech〉（<https://www.youtube.com/watch?v=h3oSkfUGw5c>），YouTube 標示為「創用 CC 姓名標示」授權。播放器本身只嵌入 YouTube 播放器，不複製任何影片內容。
+
 ## 開發紀錄
 
 每個功能都先寫設計與計畫、交給 Codex 審查，再分任務實作與審查；計畫與量測結果在 `docs/superpowers/plans/`，參考影片的版面觀察在 `docs/superpowers/notes/`。
