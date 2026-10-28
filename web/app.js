@@ -13,6 +13,7 @@ function el(tag, text, cls) {
   return e;
 }
 const PANEL_LEAD = 1.0; // seconds before the first vocab word that the panel fades in
+const INTRO_SECONDS = 10; // how long the 前情提要 card stays after the first play
 const PER_PAGE = 18; // review: 3 columns × 6 rows
 
 const S = {
@@ -343,6 +344,26 @@ function showMalformed(id, e) {
   initHome(false);
 }
 
+// The intro card is optional data; anything malformed just means no card, never a broken lesson.
+function renderIntro(intro) {
+  const box = $('intro');
+  box.hidden = true;
+  box.classList.remove('show');
+  try {
+    if (!intro || typeof intro.title !== 'string' || !Array.isArray(intro.lines)) return;
+    $('intro-title').replaceChildren(...intro.title.split('\n').map((r) => el('div', r)));
+    $('intro-lines').replaceChildren(...intro.lines.map((r) => el('div', String(r))));
+    box.hidden = false;
+  } catch (e) { box.hidden = true; }
+}
+
+function showIntro() {
+  const box = $('intro');
+  if (box.hidden) return;
+  box.classList.add('show');
+  setTimeout(() => box.classList.remove('show'), INTRO_SECONDS * 1000);
+}
+
 function setupLesson(lesson, id) {
   lesson.vocab = lesson.vocab || [];
   S.lesson = lesson;
@@ -352,6 +373,7 @@ function setupLesson(lesson, id) {
   $('player-view').hidden = false;
   $('lesson-title').textContent = lesson.title || id;
   $('lesson-meta').textContent = [lesson.channel, fmtTime(lesson.duration), lesson.vocab.length + ' 個單字'].filter(Boolean).join('・');
+  renderIntro(lesson.intro);
   if (lesson.coveredSeconds != null && lesson.duration != null && lesson.coveredSeconds < lesson.duration) {
     $('banner').hidden = false;
     $('banner').textContent = '僅前 ' + Math.round(lesson.coveredSeconds) + ' 秒';
@@ -429,7 +451,7 @@ function hideYouTubeCaptions() {
 function onStateChange(ev) {
   const st = ev.data;
   if (st === YT.PlayerState.PLAYING) hideYouTubeCaptions();
-  if (st === YT.PlayerState.PLAYING && !S.started) { S.started = true; $('stage').classList.add('started'); }
+  if (st === YT.PlayerState.PLAYING && !S.started) { S.started = true; $('stage').classList.add('started'); showIntro(); }
   if (st === YT.PlayerState.ENDED) enterReview();
   else if (st === YT.PlayerState.PLAYING && S.review) leaveReview();
   $('btn-play').textContent = st === YT.PlayerState.PLAYING ? '暫停' : '播放';
@@ -582,6 +604,7 @@ function pageCount() { return Math.max(1, Math.ceil(S.lesson.vocab.length / PER_
 
 function enterReview(page = 0) {
   S.review = true;
+  $('intro').classList.remove('show');
   S.page = page;
   $('review-total').textContent = S.lesson.vocab.length;
   $('review').hidden = false;
