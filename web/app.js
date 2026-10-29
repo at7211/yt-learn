@@ -5,6 +5,7 @@ import { parseVideoId } from './ytid.js';
 import { waitForAck, shouldApplyLiveStatus } from './handshake.js';
 import { introRows } from './intro.js';
 import { barState } from './progress.js';
+import { DEFAULTS, MODELS, EFFORTS, PRESETS, normalize, presetOf, summary, shortModel } from './settings.js';
 
 // ---------------------------------------------------------------- util
 const $ = (id) => document.getElementById(id);
@@ -38,6 +39,7 @@ const S = {
 function initHome(showList) {
   $('home').hidden = false;
   $('lesson-list').hidden = !showList;
+  $('settings').hidden = !showList; // settings live on the real home page only, not under 「尚未產課」
   const result = $('result');
   const show = (nodes) => result.replaceChildren(...nodes);
   $('url-form').onsubmit = (e) => {
@@ -69,7 +71,92 @@ function initHome(showList) {
       show([el('p', '無法連線到 server：' + e.message, 'err')]);
     }
   };
-  if (showList) loadLessonList();
+  if (showList) {
+    const listed = loadLessonList();
+    initSettings(listed);
+  }
+}
+
+// ---------------------------------------------------------------- settings (home only)
+const EFFORT_TEXT = { default: '預設（不指定）' };
+
+function readSettingsForm() {
+  return { model: $('set-model').value, effort: $('set-effort').value, workers: Number($('set-workers').value) };
+}
+
+function fillSettingsForm(s) {
+  $('set-model').value = s.model;
+  $('set-effort').value = s.effort;
+  $('set-workers').value = String(s.workers);
+  markPreset();
+}
+
+function markPreset() {
+  const p = presetOf(readSettingsForm());
+  for (const b of document.querySelectorAll('#settings [data-preset]')) {
+    b.setAttribute('aria-pressed', String(b.dataset.preset === p));
+  }
+  $('preset-note').textContent = p ? PRESETS[p].note : '自訂組合';
+}
+
+function initSettings(listed) {
+  const box = $('settings');
+  const result = $('set-result');
+  const warn = (text) => { $('set-warning').textContent = text || ''; $('set-warning').hidden = !text; };
+  if (!$('set-model').options.length) {
+    $('set-model').append(...MODELS.map((m) => { const o = el('option', shortModel(m)); o.value = m; return o; }));
+    $('set-effort').append(...EFFORTS.map((x) => { const o = el('option', EFFORT_TEXT[x] || x); o.value = x; return o; }));
+  }
+  for (const b of box.querySelectorAll('[data-preset]')) {
+    b.onclick = () => { fillSettingsForm(PRESETS[b.dataset.preset].settings); result.textContent = '尚未儲存'; };
+  }
+  for (const id of ['set-model', 'set-effort', 'set-workers']) {
+    $(id).oninput = () => { markPreset(); result.textContent = '尚未儲存'; };
+  }
+  $('set-save').onclick = async () => {
+    const { settings, errors } = normalize(readSettingsForm());
+    if (errors.length) { result.textContent = ''; warn('無法儲存：' + errors.join('；')); return; }
+    result.textContent = '儲存中…';
+    try {
+      const res = await fetch('/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings) });
+      let out;
+      try { out = await res.json(); } catch (e) { throw new BadResponse(); }
+      if (!res.ok || !out.ok) {
+        result.textContent = '';
+        warn('無法儲存：' + ((out.errors && out.errors.join('；')) || '未知錯誤'));
+        return;
+      }
+      warn('');
+      fillSettingsForm(out.settings);
+      $('settings-summary').textContent = summary(out.settings);
+      result.textContent = '已儲存，之後開始的產課會用這組設定。';
+    } catch (e) {
+      result.textContent = '';
+      warn(e instanceof BadResponse ? BAD_RESPONSE : UNREACHABLE);
+    }
+  };
+  fillSettingsForm(DEFAULTS); // until the server answers, never show a stray first option
+  fetch('/settings').then(async (res) => {
+    const out = await res.json();
+    if (!out.settings) throw new BadResponse();
+    fillSettingsForm(out.settings);
+    $('settings-summary').textContent = summary(out.settings);
+    warn(out.warning ? '設定檔有問題，暫用預設值：' + out.warning : '');
+  }).catch(() => warn('讀不到目前的設定（' + UNREACHABLE + '）'));
+  openSettingsFromHash(listed);
+  window.addEventListener('hashchange', () => openSettingsFromHash());
+}
+
+// index.html#settings (the extension icon's 「設定」 menu item) opens the section and scrolls to it;
+// once more after the lesson list above it has loaded, since that moves it down.
+function openSettingsFromHash(listed) {
+  if (location.hash !== '#settings') return;
+  const box = $('settings');
+  box.open = true;
+  const go = () => box.scrollIntoView({ block: 'start' });
+  go();
+  if (listed) listed.finally(go);
 }
 
 // ---------------------------------------------------------------- progress card

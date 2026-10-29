@@ -135,6 +135,29 @@
   <section id="lesson-list" class="sheet">
     <ul id="lessons" class="lesson-rows"><li class="lrow-empty">載入中…</li></ul>
   </section>
+  <details id="settings" class="settings" hidden>
+    <summary id="settings-summary">設定</summary>
+    <div class="sheet settings-body">
+      <p class="settings-lead">產課用的模型、思考強度（effort）與同時切句的數量。設定套用在之後開始的產課，正在跑的不受影響。</p>
+      <div class="presets" role="group" aria-label="預設組合">
+        <button type="button" data-preset="fast" aria-pressed="false">快</button>
+        <button type="button" data-preset="standard" aria-pressed="false">標準</button>
+        <button type="button" data-preset="fine" aria-pressed="false">細緻</button>
+        <span id="preset-note" class="meta"></span>
+      </div>
+      <div class="settings-fields">
+        <label>模型<select id="set-model"></select></label>
+        <label>Effort<select id="set-effort"></select></label>
+        <label>併行數<input id="set-workers" type="number" min="1" max="8" step="1" inputmode="numeric"></label>
+      </div>
+      <p class="meta">模型與 effort 只對 Claude 有效：改用 Codex（<code>YTLEARN_PROVIDER=codex</code>）時模型照 Codex 自己的設定，effort 最高到 high。併行數越大切句越快，同時開的 CLI 也越多。標準設定約每分鐘影片 1–2 美分。</p>
+      <p id="set-warning" class="err" hidden></p>
+      <div class="settings-actions">
+        <button id="set-save" type="button" class="primary">儲存</button>
+        <span id="set-result" class="meta" role="status"></span>
+      </div>
+    </div>
+  </details>
   <details class="fallback">
     <summary>手動匯入（備援）</summary>
     <p>把書籤小工具產生的 JSON 貼在這裡。</p>

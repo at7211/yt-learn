@@ -280,3 +280,26 @@ button { font: inherit; }
 .vocab-table .vt .vi { color: var(--faint); font-weight: 400; font-size: 12px; margin-top: 2px; }
 .vocab-table .vn { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .vocab-table td:nth-child(3) { font-family: var(--tc); color: var(--muted); }
+
+/* ------------------------------------------------ home: build settings (a .sheet inside a <details>, like .fallback) */
+.settings { margin: var(--pad) 0 0; scroll-margin-top: 16px; }
+.settings summary { cursor: pointer; color: var(--muted); font-size: 14px; font-weight: 500; font-family: var(--tc); }
+.settings summary:hover { color: var(--text); }
+.settings-body { margin-top: 10px; padding: 18px var(--pad); }
+.settings-body p { margin: 0 0 14px; }
+.settings-lead { color: var(--muted); }
+.settings-body code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.presets { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.presets .meta { margin: 0 0 0 6px; }
+.page .presets button[aria-pressed="true"] { background: var(--text); color: #000; font-weight: 600; }
+.settings-fields { display: flex; gap: var(--gap); flex-wrap: wrap; margin-bottom: 14px; }
+.settings-fields label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.settings-fields select, .settings-fields input {
+  height: var(--control-h); min-width: 140px; background: var(--raised); color: var(--text);
+  border: 1px solid var(--control); border-radius: var(--radius-control); padding: 0 14px; font: 14px var(--sans);
+}
+.settings-fields input { width: 96px; min-width: 0; }
+.settings-fields select:focus, .settings-fields input:focus { outline: 2px solid var(--text); outline-offset: 0; border-color: var(--text); }
+.settings-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.settings-actions .meta { margin: 0; }
+.settings .err { margin: 0 0 14px; }
