@@ -48,7 +48,12 @@ python3 server.py            # http://127.0.0.1:8765
 python3 -m pipeline.build <videoId>                    # 預設 Claude
 python3 -m pipeline.build <videoId> --provider codex   # 用 Codex CLI
 YTLEARN_PROVIDER=codex python3 server.py               # 讓 server 啟動的產課都用 Codex
+python3 -m pipeline.build <videoId> --model claude-opus-5-5 --effort high   # 指令列參數優先於一切
 ```
+
+### 設定
+
+首頁課程列表下方的「設定」可以選產課用的模型、effort（思考強度）與切句併行數（1–8），也有三個一鍵預設：**快**（Haiku、low、8 併行）最快也最省，中譯與挑字會粗一點；**標準**（Sonnet、不指定 effort、4 併行）就是原本的預設；**細緻**（Opus、high、4 併行）最慢也最貴，翻譯與挑字最好。套用預設後三個欄位仍可個別改，按「儲存」才生效。設定存在 `data/settings.json`（不進 git）；檔案裡有的值優先，沒有的才看環境變數 `YTLEARN_MODEL`、`YTLEARN_EFFORT`、`YTLEARN_WORKERS`，所以原本用環境變數的做法照樣能用，指令列參數又優先於兩者。模型與 effort 只對 Claude 有效：用 Codex 時模型照 Codex 自己的設定，effort 以 `model_reasoning_effort` 傳、最高到 high；併行數兩者都適用。設定套用在之後開始的產課，正在跑的那支不受影響。effort 不同的回覆分開快取，換回原本的 effort 會重用舊快取。在工具列的擴充功能圖示上按右鍵，有「打開 yt-learn 首頁」與「設定」兩個入口。
 
 ## 費用
 
@@ -73,7 +78,7 @@ YTLEARN_PROVIDER=codex python3 server.py               # 讓 server 啟動的產
 
 ```
 extension/   Chrome MV3 擴充：在 YouTube 分頁擷取 json3 字幕送到本機 server，並把課程疊在播放器上
-server.py    標準庫 HTTP server：靜態網頁、/ingest、/add、/jobs、產課佇列
+server.py    標準庫 HTTP server：靜態網頁、/ingest、/add、/jobs、/settings、產課佇列
 pipeline/    words（字詞正規化）→ chunk → segment（切句翻譯）→ vocab（挑字）→ intro（前情提要）→ build
 web/         播放器：index.html、app.js、style.css、timing.js（純函式）
 data/        raw/（字幕）、lessons/（課程 JSON）、cache/（LLM 回覆）、jobs/（build log）

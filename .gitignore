@@ -7,3 +7,4 @@ data/cache/
 .venv/
 data/lessons/
 data/jobs/
+data/settings.json

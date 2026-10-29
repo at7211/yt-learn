@@ -4,6 +4,7 @@ yt-learn 擷取擴充功能（v1.3.0，未封裝）。
 疊層快捷鍵（只在疊層開著時攔，輸入框內不攔；YouTube 自己的 Space、← →、F、C、K、J、L、M 不受影響）：Z 中文・E 英文・V 單字面板・R 重播本句・[ ] 上一句／下一句。
 疊層注意：看 yt-learn 課程時請把「沉浸式翻譯」在 YouTube 關掉（兩個疊層會疊在一起）。重新載入擴充功能後，已開著的 YouTube 分頁按圖示時 worker 會自動補注入 overlay.js，不必重新整理；只有注入也失敗時才退回舊行為（在目前分頁擷取 → 開新分頁 index.html?v=<id> 顯示進度）。Shorts／其他網址形式改用靜音背景分頁擷取。非影片頁 → 開 index.html。
 疊層手動驗收（自動化測不到）：在 chrome://extensions 重新載入未封裝的擴充功能、重新整理 YouTube 分頁後，按 F 進全螢幕確認字幕與面板仍在、尺寸跟著放大；劇院模式（T）與視窗縮放也看一次；長句英文會縮成兩行內。
+圖示右鍵選單：「打開 yt-learn 首頁」開 index.html，「設定」開 index.html#settings（首頁的設定區會自動展開）；選單在 onInstalled 建立，重新載入擴充功能後才出現。
 入口二（本機首頁）：bridge.js 轉送頁面的 window.postMessage({type:'ytlearn:ping'|'ytlearn:capture', videoId})；回 ytlearn:ack 與 ytlearn:status。
 除錯：在擴充功能頁點「service worker」開 console，看 [yt-learn] 日誌。
 檔案：background.js（worker）、capture.js（MAIN world 擷取，與 bookmarklet.js 同源）、bridge.js（首頁 content script）、overlay.js（youtube.com 的疊層 content script，全部用 createElement 建 DOM，因為 YouTube 強制 Trusted Types）、overlay-state.js（疊層的純函式狀態）、overlay.css（疊層樣式，抄自 web/style.css 的舞台段落）、timing.js／intro.js（web/ 的逐字節複本，改一邊請同步另一邊）、ytid.js（網址解析，與 pipeline/jobs.py 同表）。
