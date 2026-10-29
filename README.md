@@ -106,3 +106,7 @@ node --test tests/web/                           # 播放器與擴充功能的�
 ## 開發紀錄
 
 每個功能都先寫設計與計畫、交給 Codex 審查，再分任務實作與審查；計畫與量測結果在 `docs/superpowers/plans/`，參考影片的版面觀察在 `docs/superpowers/notes/`。
+
+## 授權
+
+MIT，見 [LICENSE](LICENSE)。
