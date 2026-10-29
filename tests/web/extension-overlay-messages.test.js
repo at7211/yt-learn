@@ -12,8 +12,8 @@ const VID = 'puh91fohvTA';
 const LESSON = { videoId: VID, cues: [], words: [], vocab: [] };
 
 // routes: { 'GET /path': {status, json} | 'down' }
-function load(routes = {}, { toggleReply } = {}) {
-  const calls = { fetched: [], created: [], sent: [] };
+function load(routes = {}, { toggleReply, executeScript } = {}) {
+  const calls = { fetched: [], created: [], sent: [], removed: [], sessionSets: [], bodies: {} };
   const listeners = {};
   const on = (name) => ({ addListener: (f) => { listeners[name] = f; } });
   const store = {};
@@ -22,7 +22,7 @@ function load(routes = {}, { toggleReply } = {}) {
     tabs: {
       onUpdated: on('updated'), onRemoved: on('removed'),
       create: async (o) => { calls.created.push(o); return { id: 99 }; },
-      remove: async () => {}, update: async () => {}, get: async (id) => ({ id }),
+      remove: async (id) => { calls.removed.push(id); }, update: async () => {}, get: async (id) => ({ id }),
       sendMessage: async (tabId, msg) => {
         calls.sent.push({ tabId, msg });
         if (toggleReply instanceof Error) throw toggleReply;
@@ -30,8 +30,8 @@ function load(routes = {}, { toggleReply } = {}) {
       },
     },
     action: { onClicked: on('clicked'), setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {}, setTitle: async () => {} },
-    storage: { session: { get: async (k) => ({ [k]: store[k] }), set: async (o) => { Object.assign(store, o); } } },
-    scripting: { executeScript: async () => { throw new Error('not in tests'); } },
+    storage: { session: { get: async (k) => ({ [k]: store[k] }), set: async (o) => { calls.sessionSets.push(JSON.stringify(o)); Object.assign(store, o); } } },
+    scripting: { executeScript: executeScript || (async () => { throw new Error('not in tests'); }) },
   };
   const ctx = {
     chrome, URL, Promise, Date, JSON, Error, console: { log() {} }, setTimeout, clearTimeout,
@@ -40,6 +40,7 @@ function load(routes = {}, { toggleReply } = {}) {
       const path = url.replace('http://127.0.0.1:8765', '');
       const key = (init.method || 'GET') + ' ' + path;
       calls.fetched.push(key);
+      if (init.body) calls.bodies[key] = JSON.parse(init.body);
       const r = routes[key];
       if (r === undefined || r === 'down') throw new TypeError('fetch failed');
       return { status: r.status, json: async () => { if (r.json === undefined) throw new SyntaxError('not json'); return r.json; } };
@@ -122,6 +123,32 @@ test('ytlearn:build: runs the job in the sender tab without opening a tab', asyn
   assert.equal(r.done, true);
   assert.deepEqual(w.calls.fetched, ['POST /add']);
   assert.deepEqual(w.calls.created, [], 'no player tab, no background capture tab');
+});
+
+test('ytlearn:build: queued -> claim -> capture in the sender tab -> ingest; no tab created/removed, ownedTabs untouched', async () => {
+  const targets = [];
+  const raw = { videoId: VID, events: [{ t: 0, d: 1000, segs: [[0, 'hi']] }] };
+  const executeScript = async (o) => {
+    targets.push(o.target.tabId);
+    return o.files ? [{ result: undefined }] : [{ result: { ok: true, raw } }];
+  };
+  const w = load({
+    'POST /add': { status: 200, json: { job: { videoId: VID, state: 'queued', attempt: 1, message: '' } } },
+    ['POST /jobs/' + VID + '/claim']: { status: 200, json: { attempt: 1 } },
+    'POST /ingest?attempt=1': { status: 200, json: { ok: true, job: { videoId: VID, state: 'captured', attempt: 1, message: '' } } },
+  }, { executeScript });
+  await new Promise((r) => setTimeout(r, 10)); // let the startup ownedTabs cleanup finish
+  const setsAtStartup = w.calls.sessionSets.length;
+  const { r, ret } = await ask(w, { type: 'ytlearn:build', videoId: VID }, { id: EXT, tab: { id: 42 } });
+  assert.equal(ret, true);
+  assert.equal(r.ok, true);
+  assert.equal(r.job.state, 'captured');
+  assert.deepEqual(w.calls.fetched, ['POST /add', 'POST /jobs/' + VID + '/claim', 'POST /ingest?attempt=1']);
+  assert.deepEqual(targets, [42, 42], 'capture injected into the sender tab only');
+  assert.deepEqual(JSON.parse(JSON.stringify(w.calls.bodies['POST /ingest?attempt=1'])), raw);
+  assert.deepEqual(w.calls.created, []);
+  assert.deepEqual(w.calls.removed, []);
+  assert.equal(w.calls.sessionSets.length, setsAtStartup, 'ownedTabs never written by the overlay build');
 });
 
 test('ytlearn:build: job already running -> inProgress, no capture', async () => {

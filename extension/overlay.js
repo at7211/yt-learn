@@ -30,6 +30,7 @@
   let M = null; // the mounted overlay (see mount())
   let P = null; // the progress pill: { host, box, timer }
   let pollTimer = null;
+  let cancelWait = null; // cancels a pending waitForPlayer (teardown / toggle-off)
   let lastHref = '';
 
   /* ---------- messaging ---------- */
@@ -109,6 +110,7 @@
     S = O.markBuilding(S, tok);
     showPill(tok, O.pillText(null));
     let buildFailed = false;
+    let pollErrors = 0; // consecutive {error} replies (server gone after ingest); 3 in a row ends the wait
     send({ type: 'ytlearn:build', videoId: tok.videoId }).then((r) => {
       if (O.isStale(S, tok)) return;
       log('build:result', JSON.stringify(r));
@@ -122,6 +124,12 @@
       if (O.isStale(S, tok) || buildFailed) return;
       const res = await send({ type: 'ytlearn:job', videoId: tok.videoId });
       if (O.isStale(S, tok) || buildFailed) return;
+      if (res && res.error) {
+        if (++pollErrors >= 3) { failBuild(tok, res.error); return; }
+        pollTimer = setTimeout(tick, POLL_MS);
+        return;
+      }
+      pollErrors = 0;
       const job = res && res.job;
       if (job) {
         const phase = O.jobPhase(job);
@@ -206,11 +214,15 @@
       };
       const now = find();
       if (now) { resolve(now); return; }
+      const finish = (v) => { mo.disconnect(); clearTimeout(timer); if (cancelWait === cancel) cancelWait = null; resolve(v); };
+      const cancel = () => finish(null);
       const mo = new MutationObserver(() => {
         const got = find();
-        if (got || O.isStale(S, tok)) { mo.disconnect(); clearTimeout(timer); resolve(got); }
+        if (got || O.isStale(S, tok)) finish(got);
       });
-      const timer = setTimeout(() => { mo.disconnect(); resolve(find()); }, WAIT_PLAYER_MS);
+      const timer = setTimeout(() => finish(find()), WAIT_PLAYER_MS);
+      if (cancelWait) cancelWait();
+      cancelWait = cancel;
       mo.observe(document.documentElement, { childList: true, subtree: true });
     });
   }
@@ -308,6 +320,7 @@
   }
 
   function start(m) {
+    if (m.ad) return; // the frame is hidden during an ad: start (and the intro timer) when it ends
     if (!m.started) { m.started = true; m.ui.frame.classList.add('started'); }
     if (!m.introShown) { m.introShown = true; showIntro(m); }
   }
@@ -331,7 +344,12 @@
     if (ad !== m.ad) {
       m.ad = ad;
       m.ui.frame.classList.toggle('ad', ad);
-      if (!ad) { m.keys.sub = null; m.keys.panel = null; draw(m); }
+      if (!ad) {
+        m.keys.sub = null; m.keys.panel = null;
+        if (!m.video.paused && !m.video.ended) { start(m); loop(m); }
+        draw(m);
+        fitSubtitle(m); // same cue as before the ad: renderSubtitle would skip the fit
+      }
     }
     // re-assert after YouTube rewrites className; off while an ad plays so its captions stay usable
     if (m.player.classList.contains(ON_CLASS) === ad) m.player.classList.toggle(ON_CLASS, !ad);
@@ -361,6 +379,7 @@
   function teardownAll() {
     clearTimeout(pollTimer);
     pollTimer = null;
+    if (cancelWait) cancelWait();
     teardownOverlay();
     removePill();
     const player = document.getElementById('movie_player');
