@@ -155,7 +155,8 @@ class ClaudeCliProvider(_CliProvider):
         argv += ["--system-prompt", system]
         if schema is not None:
             argv += ["--json-schema", json.dumps(schema, ensure_ascii=False)]
-        argv += ["--tools", ""]
+        # No tools, no MCP servers, no user/project settings (hooks, plugins): a bare Q&A call.
+        argv += ["--tools", "", "--strict-mcp-config", "--setting-sources", ""]
         try:
             proc = subprocess.run(argv, input=user, capture_output=True, text=True, timeout=self.timeout)
         except FileNotFoundError:

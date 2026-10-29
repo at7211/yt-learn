@@ -36,6 +36,7 @@ def test_parses_result_field_and_strips_fence(monkeypatch):
     assert "--bare" not in argv and "--model" not in argv and "--json-schema" not in argv
     assert argv[argv.index("--system-prompt") + 1] == "sys"
     assert argv[argv.index("--tools") + 1] == ""
+    assert "--strict-mcp-config" in argv and argv[argv.index("--setting-sources") + 1] == ""
     assert kw["input"] == "usr" and kw["timeout"] == 180.0
 
 
