@@ -203,6 +203,16 @@ test('caption time beyond duration -> 字幕時間超出影片長度', async () 
   assert.equal(await rejection(page.run()), '字幕時間超出影片長度');
 });
 
+test('a trailing event past the duration is dropped, the rest is kept', async () => {
+  const page = makePage({ json3: { events: [
+    { tStartMs: 1000, dDurationMs: 1000, segs: [{ utf8: 'keep' }] },
+    { tStartMs: 2000, dDurationMs: 1000, segs: [{ utf8: 'keep too' }] },
+    { tStartMs: 999999, segs: [{ utf8: 'overrun' }] },
+  ] } });
+  const raw = await page.run();
+  assert.deepEqual(JSON.parse(JSON.stringify(raw.events.map((e) => e.t))), [1000, 2000]);
+});
+
 test('inPlace + paused video: muted play, then pause and restore muted', async () => {
   const page = makePage({ videoPaused: true, videoMuted: false, timedtextAfter: 3 });
   await page.run({ inPlace: true });

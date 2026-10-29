@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -28,11 +29,14 @@ INTRO_UNITS = 1
 
 def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
                  model_label: str = "default", prompt_version: int = 1,
-                 progress=None) -> tuple[dict, dict]:
+                 progress=None, workers: int | None = None) -> tuple[dict, dict]:
     """Return ``(lesson, stats)``; stats has chunks, fallback_chunks, vocab_failed, intro_failed.
 
     ``progress(phase, done, total)`` is called after each chunk ("segment"), when the vocabulary
-    call starts ("vocab"), when the intro call starts ("intro") and at the end ("finish")."""
+    call starts ("vocab"), when the intro call starts ("intro") and at the end ("finish").
+
+    Chunks are independent, so ``workers`` of them are segmented at once (default
+    ``$YTLEARN_WORKERS`` or 4); cues come back in chunk order regardless of completion order."""
     errs = validate_raw(raw)
     if errs:
         raise ValueError("invalid raw capture: " + "; ".join(errs))
@@ -48,11 +52,33 @@ def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
     chunks = list(chunk_words(words))
     total = len(chunks) + VOCAB_UNITS + INTRO_UNITS
     report = progress or (lambda phase, done, total: None)
+    if workers is None:
+        workers = _workers_from_env()
+    done = 0
+
+    def segment(chunk):
+        st = {"fallback_chunks": 0}
+        return make_cues(words, chunk, provider, st), st["fallback_chunks"]
+
+    results = []
+    if workers <= 1:
+        for chunk in chunks:
+            results.append(segment(chunk))
+            done += 1
+            report("segment", done, total)
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(chunks))) as pool:
+            futures = [pool.submit(segment, c) for c in chunks]
+            for f in futures:  # wait in chunk order; progress still counts every finished chunk
+                f.result()
+                done = sum(1 for x in futures if x.done())
+                report("segment", done, total)
+            results = [f.result() for f in futures]
     cues = []
-    for chunk in chunks:
+    for chunk_cues, fell_back in results:
         stats["chunks"] += 1
-        cues += make_cues(words, chunk, provider, stats)
-        report("segment", stats["chunks"], total)
+        stats["fallback_chunks"] += fell_back
+        cues += chunk_cues
     cues = finalize_cues(cues, words)
     report("vocab", len(chunks), total)
     vocab = pick_vocab(cues, words, provider, stats=stats)
@@ -69,6 +95,13 @@ def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
     if intro is not None:
         lesson["intro"] = intro
     return lesson, stats
+
+
+def _workers_from_env() -> int:
+    try:
+        return max(1, int(os.environ.get("YTLEARN_WORKERS", "4")))
+    except ValueError:
+        return 4
 
 
 def _read_json(path: Path):

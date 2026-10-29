@@ -184,7 +184,7 @@ globalThis.ytLearnCapture = async function (opts) {
        單字 seg：有 tOffsetMs 照用；缺的話 ASR 軌或同事件有任一 offset → 0，否則 null。
        kind=asr 但超過 20% 的 seg 無時間 → 降為 manual。 */
     let isAsr = u.searchParams.get('kind') === 'asr';
-    const events = [];
+    let events = [];
     for (const e of evs) {
       if (!e.segs) continue;
       const segs = [];
@@ -199,13 +199,18 @@ globalThis.ytLearnCapture = async function (opts) {
       events.push({ t: e.tStartMs ?? 0, d: e.dDurationMs ?? 0, segs });
     }
     if (!events.length) throw new Error('字幕內容為空');
-    const last = events[events.length - 1];
     if (isAsr) {
       const all = events.reduce((n, e) => n + e.segs.length, 0);
       const untimed = events.reduce((n, e) => n + e.segs.filter((sg) => sg[0] === null).length, 0);
       if (untimed > all * 0.2) isAsr = false;
     }
-    if (duration && last.t > duration * 1000) throw new Error('字幕時間超出影片長度');
+    // json3 occasionally carries a trailing event past videoDetails.lengthSeconds (trimmed uploads,
+    // live archives). Drop those; only a track that is mostly beyond the end is the wrong track.
+    if (duration) {
+      const beyond = events.filter((e) => e.t > duration * 1000).length;
+      if (beyond > events.length / 2) throw new Error('字幕時間超出影片長度');
+      if (beyond) { events = events.filter((e) => e.t <= duration * 1000); log('dropped', beyond, 'events past duration'); }
+    }
     const brands = navigator.userAgentData?.brands || [];
     const chromeBrand = brands.find((b) => b.brand === 'Google Chrome') || brands.find((b) => b.brand === 'Chromium');
     const raw = {
