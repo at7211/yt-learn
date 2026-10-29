@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from pipeline import settings
 from pipeline.schema import validate_lesson
 
 ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
@@ -267,12 +268,19 @@ class BuildQueue:
             pass
 
     def _run(self, vid):
+        # One snapshot of data/settings.json per build, taken before it is visible as "building":
+        # a POST /settings after this point only affects builds that start later.
+        saved = settings.load(self.root)
+        warning = saved.pop("warning", None)
         self._clear_progress(vid)  # before "building" is visible, so a GET never shows the last run's bar
         self.store.set_building(vid)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         log = self.log_dir / f"{vid}.log"
-        env = {**os.environ, "YTLEARN_PROGRESS_FILE": str(self.progress_path(vid))}
+        env = settings.apply_to_env(saved, {**os.environ, "YTLEARN_PROGRESS_FILE": str(self.progress_path(vid))})
         with open(log, "wb") as lf:
+            if warning:
+                lf.write(f"warning: {warning}\n".encode("utf-8"))
+                lf.flush()
             proc = subprocess.Popen(self._cmd(vid), cwd=self.root, stdout=lf, stderr=subprocess.STDOUT, env=env,
                                     start_new_session=True)  # its own process group, so a kill reaches the LLM CLI too
             with self._lock:

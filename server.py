@@ -6,6 +6,7 @@
 - GET  /lessons                : lists lesson summaries.
 - POST /ingest                 : validates raw captions (see bookmarklet.js) and
                                  writes <root>/data/raw/<videoId>.json.
+- GET/POST /settings           : build settings (model, effort, workers) in <root>/data/settings.json.
 """
 import json
 import os
@@ -15,6 +16,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from pipeline import settings
 from pipeline.jobs import BuildQueue, IllegalTransition, JobStore, parse_video_id
 from pipeline.schema import validate_lesson, validate_raw
 
@@ -54,6 +56,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._serve_data(path)
         if path == "/lessons":
             return self._json(self._lessons())
+        if path == "/settings":
+            return self._get_settings()
         parts = path.strip("/").split("/")
         if len(parts) == 2 and parts[0] == "jobs":
             job = self.jobs.get(parts[1])
@@ -113,9 +117,32 @@ class Handler(SimpleHTTPRequestHandler):
             return self._ingest(parse_qs(sp.query))
         if sp.path == "/add":
             return self._add()
+        if sp.path == "/settings":
+            return self._post_settings()
         if len(parts) == 3 and parts[0] == "jobs" and parts[2] in ("claim", "fail"):
             return self._claim(parts[1]) if parts[2] == "claim" else self._fail(parts[1])
         self.send_error(404)
+
+    def _get_settings(self):
+        """The effective settings (saved > env > defaults): what the next build will use."""
+        saved = settings.load(self.root)
+        out = {"settings": settings.resolve(saved, os.environ)}
+        if "warning" in saved:
+            out["warning"] = saved["warning"]
+        self._json(out)
+
+    def _post_settings(self):
+        obj, err = self._read_json()
+        if err:
+            return
+        clean, errs = settings.normalize(obj)
+        if errs:
+            return self._json({"ok": False, "errors": errs}, 400)
+        try:
+            saved = settings.save(self.root, clean)
+        except OSError as e:
+            return self._json({"ok": False, "errors": [f"無法寫入設定檔：{e}"]}, 500)
+        self._json({"ok": True, "settings": saved})
 
     def _lesson_ok(self, vid):
         try:
