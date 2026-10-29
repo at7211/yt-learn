@@ -24,6 +24,10 @@
   background: linear-gradient(90deg, rgba(10, 12, 18, 0) 48%, rgba(10, 12, 18, .55) 58%, rgba(10, 12, 18, .92) 72%, rgba(10, 12, 18, .96) 100%),
               linear-gradient(180deg, rgba(10, 12, 18, 0) 56%, rgba(10, 12, 18, .6) 76%, rgba(10, 12, 18, .85) 86%, rgba(10, 12, 18, .4) 100%); }
 .frame:not(.started) .shade { display: none; }
+/* both subtitle lines off: drop the bottom fog; everything off: the shade fades away entirely */
+.shade { transition: opacity .4s ease; }
+.no-en.no-zh .shade { background: linear-gradient(90deg, rgba(10, 12, 18, 0) 48%, rgba(10, 12, 18, .55) 58%, rgba(10, 12, 18, .92) 72%, rgba(10, 12, 18, .96) 100%); }
+.no-en.no-zh.no-vocab .shade { opacity: 0; }
 .no-vocab .shade { background: linear-gradient(180deg, rgba(10, 12, 18, 0) 56%, rgba(10, 12, 18, .6) 76%, rgba(10, 12, 18, .85) 86%, rgba(10, 12, 18, .4) 100%); }
 .layer { position: absolute; pointer-events: none; z-index: 2; }
 .subs { z-index: 3; }
