@@ -18,7 +18,7 @@ function load(routes = {}, { toggleReply, executeScript } = {}) {
   const on = (name) => ({ addListener: (f) => { listeners[name] = f; } });
   const store = {};
   const chrome = {
-    runtime: { id: EXT, getManifest: () => ({ version: '1.3.0' }), onMessage: on('message'), onMessageExternal: on('external'),
+    runtime: { id: EXT, getManifest: () => ({ version: '1.3.1' }), onMessage: on('message'), onMessageExternal: on('external'),
                onInstalled: on('installed'), lastError: undefined },
     contextMenus: {
       onClicked: on('menuClicked'),
@@ -227,7 +227,7 @@ test('ping still answered synchronously', async () => {
   const { r, ret } = await ask(w, { type: 'ytlearn:ping' });
   assert.equal(ret, false);
   assert.equal(r.type, 'ytlearn:ack');
-  assert.equal(r.version, '1.3.0');
+  assert.equal(r.version, '1.3.1');
 });
 
 test('install builds the two action menu items after removeAll, and reinstall does not duplicate them', () => {
@@ -254,8 +254,16 @@ test('menu clicks open the home page and the settings section', async () => {
   ]);
 });
 
-test('manifest asks for contextMenus and is version 1.3.0', () => {
+test('manifest asks for contextMenus and is version 1.3.1', () => {
   const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
   assert.ok(m.permissions.includes('contextMenus'));
-  assert.equal(m.version, '1.3.0');
+  assert.equal(m.version, '1.3.1');
+  // tab.url comes from host permissions (youtube.com, the local server) and activeTab on icon click
+  assert.ok(!m.permissions.includes('tabs') && m.permissions.includes('activeTab'));
+});
+
+test('overlay and pill shadow roots are closed', () => {
+  const src = readFileSync(new URL('../../extension/overlay.js', import.meta.url), 'utf8');
+  assert.equal((src.match(/attachShadow\(\{ mode: 'closed' \}\)/g) || []).length, 2);
+  assert.ok(!/mode: 'open'/.test(src));
 });

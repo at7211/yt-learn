@@ -166,7 +166,8 @@
       const host = document.createElement('div');
       host.id = 'ytlearn-pill';
       host.style.cssText = 'position:absolute;inset:0;z-index:31;pointer-events:none;';
-      const root = host.attachShadow({ mode: 'open' });
+      // closed: page scripts on youtube.com cannot reach into the pill (we keep our own refs in P)
+      const root = host.attachShadow({ mode: 'closed' });
       const style = document.createElement('style');
       style.textContent = cssText || '.pill{position:absolute;left:12px;bottom:64px;padding:6px 14px;border-radius:999px;background:rgba(17,17,17,.88);color:#fff;font:500 13px/1.4 system-ui,sans-serif}';
       const box = document.createElement('div');
@@ -276,7 +277,8 @@
     const host = document.createElement('div');
     host.id = 'ytlearn-overlay';
     host.style.cssText = 'position:absolute;inset:0;z-index:30;pointer-events:none;';
-    const root = host.attachShadow({ mode: 'open' });
+    // closed: page scripts on youtube.com cannot read or drive the overlay (refs live in M / ui)
+    const root = host.attachShadow({ mode: 'closed' });
     const style = document.createElement('style');
     style.textContent = cssText;
     const ui = buildUi();
