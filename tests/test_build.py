@@ -213,3 +213,69 @@ def test_unknown_provider_from_env_is_rejected(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as e:
         main(["CR94QQXO_4s"], data_dir=tmp_path)
     assert e.value.code == 2
+
+
+def _effort_spy(seen):
+    def factory(model, cache_dir, provider="claude", **kw):
+        seen.update(model=model, provider=provider, **kw)
+        return fake_provider()
+    return factory
+
+
+def _lesson(tmp_path):
+    return json.loads((tmp_path / "lessons" / "CR94QQXO_4s.json").read_text("utf-8"))
+
+
+@pytest.fixture
+def raw_dir(tmp_path, monkeypatch):
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw" / "CR94QQXO_4s.json").write_text(json.dumps(load("raw_small.json")), "utf-8")
+    for k in ("YTLEARN_PROVIDER", "YTLEARN_MODEL", "YTLEARN_EFFORT"):
+        monkeypatch.delenv(k, raising=False)
+    return tmp_path
+
+
+def test_effort_and_model_from_env_reach_factory_and_lesson(raw_dir, monkeypatch, capsys):
+    monkeypatch.setenv("YTLEARN_MODEL", "claude-haiku-5-5")
+    monkeypatch.setenv("YTLEARN_EFFORT", "low")
+    seen = {}
+    assert main(["CR94QQXO_4s"], data_dir=raw_dir, provider_factory=_effort_spy(seen)) == 0
+    assert seen == {"model": "claude-haiku-5-5", "provider": "claude", "effort": "low"}
+    les = _lesson(raw_dir)
+    assert les["model"] == "claude-haiku-5-5" and les["effort"] == "low" and not validate_lesson(les)
+    assert "settings: provider=claude model=claude-haiku-5-5 effort=low workers=1" in capsys.readouterr().out
+
+
+def test_cli_flags_beat_env(raw_dir, monkeypatch):
+    monkeypatch.setenv("YTLEARN_MODEL", "claude-haiku-5-5")
+    monkeypatch.setenv("YTLEARN_EFFORT", "low")
+    seen = {}
+    assert main(["CR94QQXO_4s", "--model", "claude-opus-5-5", "--effort", "max"], data_dir=raw_dir,
+                provider_factory=_effort_spy(seen)) == 0
+    assert seen == {"model": "claude-opus-5-5", "provider": "claude", "effort": "max"}
+    assert _lesson(raw_dir)["effort"] == "max"
+
+
+def test_effort_default_is_none_and_old_two_arg_factory_still_works(raw_dir, monkeypatch, capsys):
+    monkeypatch.setenv("YTLEARN_EFFORT", "default")
+    assert main(["CR94QQXO_4s"], data_dir=raw_dir, provider_factory=lambda m, c: fake_provider()) == 0
+    assert _lesson(raw_dir)["effort"] == "default"
+    assert "effort=default" in capsys.readouterr().out
+
+
+def test_codex_ignores_ytlearn_model_and_caps_effort(raw_dir, monkeypatch, capsys):
+    monkeypatch.setenv("YTLEARN_MODEL", "claude-opus-5-5")
+    monkeypatch.setenv("YTLEARN_EFFORT", "xhigh")
+    seen = {}
+    assert main(["CR94QQXO_4s", "--provider", "codex"], data_dir=raw_dir, provider_factory=_effort_spy(seen)) == 0
+    assert seen == {"model": None, "provider": "codex", "effort": "xhigh"}  # the provider caps it itself
+    les = _lesson(raw_dir)
+    assert les["model"] == "codex:default" and les["effort"] == "high"
+    assert "effort=high" in capsys.readouterr().out
+
+
+def test_unknown_effort_from_env_is_rejected(raw_dir, monkeypatch):
+    monkeypatch.setenv("YTLEARN_EFFORT", "huge")
+    with pytest.raises(SystemExit) as e:
+        main(["CR94QQXO_4s"], data_dir=raw_dir)
+    assert e.value.code == 2

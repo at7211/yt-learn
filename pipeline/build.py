@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pipeline.chunk import chunk_words
 from pipeline.intro import make_intro
-from pipeline.llm import ClaudeCliProvider, CodexCliProvider
+from pipeline.llm import CODEX_EFFORT, EFFORTS, ClaudeCliProvider, CodexCliProvider
 from pipeline.schema import VIDEO_ID_RE, validate_lesson, validate_raw
 from pipeline.segment import finalize_cues, make_cues
 from pipeline.vocab import pick_vocab
@@ -29,7 +29,7 @@ INTRO_UNITS = 1
 
 def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
                  model_label: str = "default", prompt_version: int = 1,
-                 progress=None, workers: int | None = None) -> tuple[dict, dict]:
+                 progress=None, workers: int | None = None, effort: str = "default") -> tuple[dict, dict]:
     """Return ``(lesson, stats)``; stats has chunks, fallback_chunks, vocab_failed, intro_failed.
 
     ``progress(phase, done, total)`` is called after each chunk ("segment"), when the vocabulary
@@ -89,7 +89,7 @@ def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
         "videoId": raw["videoId"], "title": raw["title"], "channel": raw["channel"],
         "duration": duration, "lang": raw["lang"],
         "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "model": model_label, "promptVersion": prompt_version, "coveredSeconds": covered,
+        "model": model_label, "effort": effort, "promptVersion": prompt_version, "coveredSeconds": covered,
         "words": words, "cues": cues, "vocab": vocab,
     }
     if intro is not None:
@@ -111,8 +111,8 @@ def _read_json(path: Path):
 PROVIDERS = {"claude": ClaudeCliProvider, "codex": CodexCliProvider}
 
 
-def _default_provider(model, cache_dir, provider="claude"):
-    return PROVIDERS[provider](model=model, cache_dir=cache_dir)
+def _default_provider(model, cache_dir, provider="claude", effort=None):
+    return PROVIDERS[provider](model=model, cache_dir=cache_dir, effort=effort)
 
 
 def progress_writer(path: Path):
@@ -136,15 +136,25 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
     ap.add_argument("--limit-seconds", type=float, default=None)
     ap.add_argument("--provider", choices=sorted(PROVIDERS), default=os.environ.get("YTLEARN_PROVIDER") or "claude",
                     help="which logged-in CLI answers the prompts (env YTLEARN_PROVIDER); default claude")
-    ap.add_argument("--model", default=None, help=f"model name for the provider; claude defaults to {DEFAULT_MODEL}, codex to its own config")
+    ap.add_argument("--model", default=None,
+                    help=f"model name for the provider; claude defaults to $YTLEARN_MODEL or {DEFAULT_MODEL}, "
+                         "codex to its own config (YTLEARN_MODEL is ignored for codex)")
+    ap.add_argument("--effort", choices=("default", *EFFORTS), default=os.environ.get("YTLEARN_EFFORT") or None,
+                    help="reasoning effort (env YTLEARN_EFFORT); default = the CLI's own; codex caps it at high")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--progress-file", default=os.environ.get("YTLEARN_PROGRESS_FILE") or None,
                     help="write {phase, done, total} JSON here as the build advances (env YTLEARN_PROGRESS_FILE)")
     args = ap.parse_args(argv)
     if args.provider not in PROVIDERS:  # argparse does not check an env-derived default against choices
         ap.error(f"unknown provider {args.provider!r} (YTLEARN_PROVIDER); choose one of {', '.join(sorted(PROVIDERS))}")
+    if args.effort is not None and args.effort not in ("default", *EFFORTS):  # env default, unchecked by argparse
+        ap.error(f"unknown effort {args.effort!r} (YTLEARN_EFFORT); choose one of default, {', '.join(EFFORTS)}")
+    if args.effort == "default":
+        args.effort = None
     if args.model is None and args.provider == "claude":
-        args.model = DEFAULT_MODEL
+        args.model = os.environ.get("YTLEARN_MODEL") or DEFAULT_MODEL  # codex keeps its own config's model
+    effective_effort = (CODEX_EFFORT[args.effort] if args.provider == "codex" else args.effort) if args.effort else None
+    workers = _workers_from_env()
     model_label = args.model if args.provider == "claude" else f"codex:{args.model or 'default'}"
     data = Path(data_dir)
     vid = args.video_id
@@ -175,13 +185,18 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
                   "(use --force)", file=sys.stderr)
             return 2
 
+    print(f"settings: provider={args.provider} model={args.model or 'default'} "
+          f"effort={effective_effort or 'default'} workers={workers}", flush=True)
     t0 = time.monotonic()
-    provider = (provider_factory(args.model, data / "cache" / vid, args.provider) if args.provider != "claude"
-                else provider_factory(args.model, data / "cache" / vid))  # the two-argument form keeps old factories working
+    # Old two-argument factories keep working: the provider name and effort are only passed when needed.
+    extra = {"effort": args.effort} if args.effort else {}
+    provider = (provider_factory(args.model, data / "cache" / vid, args.provider, **extra) if args.provider != "claude"
+                else provider_factory(args.model, data / "cache" / vid, **extra))
     try:
         lesson, stats = build_lesson(raw, provider, args.limit_seconds, model_label=model_label,
                                      prompt_version=getattr(provider, "prompt_version", 1),
-                                     progress=progress_writer(args.progress_file) if args.progress_file else None)
+                                     progress=progress_writer(args.progress_file) if args.progress_file else None,
+                                     workers=workers, effort=effective_effort or "default")
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

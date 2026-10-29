@@ -13,6 +13,10 @@ from typing import Protocol
 
 RETRY_SUFFIX = "\n\n(上一次輸出不是合法 JSON，請只輸出符合 schema 的 JSON。)"
 
+EFFORTS = ("low", "medium", "high", "xhigh", "max")  # what `claude --effort` accepts
+# Codex's model_reasoning_effort tops out at high: the two higher levels fall back to it.
+CODEX_EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
+
 
 class ProviderError(Exception):
     pass
@@ -65,8 +69,9 @@ class _CliProvider:
     default_timeout = 180.0
 
     def __init__(self, model: str | None = None, cache_dir: Path | None = None,
-                 prompt_version: int = 1, timeout: float | None = None):
+                 prompt_version: int = 1, timeout: float | None = None, effort: str | None = None):
         self.model = model
+        self.effort = effort or None  # None = the CLI's own default (no flag passed)
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.prompt_version = prompt_version
         self.timeout = self.default_timeout if timeout is None else timeout
@@ -75,8 +80,12 @@ class _CliProvider:
 
     def _cache_fields(self, system: str, user: str, schema: dict | None) -> dict:
         # Claude keeps the original key shape so caches built before CodexCliProvider existed still hit.
-        return {"model": self.model or "default", "promptVersion": self.prompt_version,
-                "system": system, "user": user, "schema": schema}
+        # With no explicit effort the key is exactly what it was before effort existed, so old caches hit.
+        fields = {"model": self.model or "default", "promptVersion": self.prompt_version,
+                  "system": system, "user": user, "schema": schema}
+        if self.effort:
+            fields["effort"] = self.effort
+        return fields
 
     def _cache_path(self, system: str, user: str, schema: dict | None) -> Path:
         key = hashlib.sha256(json.dumps(self._cache_fields(system, user, schema),
@@ -89,6 +98,7 @@ class _CliProvider:
         except (OSError, ValueError):
             return None
         if (isinstance(d, dict) and d.get("model") == (self.model or "default")
+                and d.get("effort", "default") == (self.effort or "default")
                 and d.get("promptVersion") == self.prompt_version and isinstance(d.get("response"), dict)):
             return d["response"]
         return None
@@ -98,8 +108,9 @@ class _CliProvider:
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-            tmp.write_text(json.dumps({"model": self.model or "default", "promptVersion": self.prompt_version,
-                                       "response": resp}, ensure_ascii=False), encoding="utf-8")
+            tmp.write_text(json.dumps({"model": self.model or "default", "effort": self.effort or "default",
+                                       "promptVersion": self.prompt_version, "response": resp},
+                                      ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, path)
         except OSError:
             try:
@@ -139,6 +150,8 @@ class ClaudeCliProvider(_CliProvider):
         argv = ["claude", "-p", "--no-session-persistence", "--output-format", "json"]
         if self.model:
             argv += ["--model", self.model]
+        if self.effort:
+            argv += ["--effort", self.effort]
         argv += ["--system-prompt", system]
         if schema is not None:
             argv += ["--json-schema", json.dumps(schema, ensure_ascii=False)]
@@ -180,10 +193,12 @@ class CodexCliProvider(_CliProvider):
                  "-c", "features.hooks=false", "-c", 'web_search="disabled"']
 
     def __init__(self, model: str | None = None, cache_dir: Path | None = None,
-                 prompt_version: int = 1, timeout: float | None = None):
+                 prompt_version: int = 1, timeout: float | None = None, effort: str | None = None):
         # Resolve the user's configured default model up front so the cache key names the real model
         # (a bare "default" would keep serving old answers after the user changes ~/.codex/config.toml).
-        super().__init__(model or configured_codex_model(), cache_dir, prompt_version, timeout)
+        # ``effort`` is stored as the level Codex actually gets (xhigh/max -> high).
+        super().__init__(model or configured_codex_model(), cache_dir, prompt_version, timeout,
+                         CODEX_EFFORT.get(effort) if effort else None)
 
     def _cache_fields(self, system, user, schema):
         return {"provider": "codex", **super()._cache_fields(system, user, schema)}
@@ -205,6 +220,8 @@ class CodexCliProvider(_CliProvider):
             argv += ["--output-schema", str(schema_path)]
         if self.model:
             argv += ["-m", self.model]
+        if self.effort:
+            argv += ["-c", f'model_reasoning_effort="{self.effort}"']
         argv.append("-")
         prompt = system + "\n\n---\n\n" + user
         try:

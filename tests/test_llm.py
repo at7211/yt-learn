@@ -280,3 +280,69 @@ def test_codex_isolation_flags_and_configured_model(monkeypatch, tmp_path):
     calls = codex_run(monkeypatch, [{"a": 2}])
     p2 = CodexCliProvider()
     assert p2.model is None and p2.complete_json("s", "u") == {"a": 2} and "-m" not in calls[0][0]
+
+
+# ---------------------------------------------------------------- effort
+
+
+def test_claude_effort_flag(monkeypatch):
+    calls = install(monkeypatch, [ok({"is_error": False, "result": '{"a": 1}'})] * 2)
+    ClaudeCliProvider(model="m", effort="low").complete_json("s", "u")
+    argv = calls[0][0]
+    assert argv[argv.index("--effort") + 1] == "low"
+    assert argv.index("--effort") == argv.index("--model") + 2
+    ClaudeCliProvider(model="m").complete_json("s", "u")
+    assert "--effort" not in calls[1][0]
+
+
+def test_codex_effort_config_caps_at_high(monkeypatch):
+    calls = codex_run(monkeypatch, [{"a": 1}, {"a": 1}, {"a": 1}])
+    for effort in ("medium", "max", None):
+        p = CodexCliProvider(model="g", effort=effort)
+        p.complete_json("s", "u")
+    efforts = [[a for a in argv if a.startswith("model_reasoning_effort=")] for argv, _ in calls]
+    assert efforts == [['model_reasoning_effort="medium"'], ['model_reasoning_effort="high"'], []]
+    assert CodexCliProvider(model="g", effort="xhigh").effort == "high"
+
+
+def _key_fields_hash(p):
+    return p._cache_path("s", "u", None).name
+
+
+def test_cache_default_effort_keeps_old_key_and_hits_old_record(monkeypatch, tmp_path):
+    # A record written before effort existed: no "effort" field, key without effort.
+    old = ClaudeCliProvider(model="m", cache_dir=tmp_path)
+    path = old._cache_path("s", "u", None)
+    path.write_text(json.dumps({"model": "m", "promptVersion": 1, "response": {"old": True}}), "utf-8")
+    calls = install(monkeypatch, [])
+    assert ClaudeCliProvider(model="m", cache_dir=tmp_path).complete_json("s", "u") == {"old": True}
+    assert calls == []
+    # an explicit effort uses a different key and does not reuse the old record
+    install(monkeypatch, [ok({"is_error": False, "result": '{"new": 1}'})])
+    p = ClaudeCliProvider(model="m", cache_dir=tmp_path, effort="high")
+    assert _key_fields_hash(p) != path.name
+    assert p.complete_json("s", "u") == {"new": 1}
+
+
+def test_cache_record_effort_must_match(monkeypatch, tmp_path):
+    p = ClaudeCliProvider(model="m", cache_dir=tmp_path, effort="low")
+    path = p._cache_path("s", "u", None)
+    path.write_text(json.dumps({"model": "m", "effort": "high", "promptVersion": 1, "response": {"x": 1}}), "utf-8")
+    install(monkeypatch, [ok({"is_error": False, "result": '{"x": 2}'})])
+    assert p.complete_json("s", "u") == {"x": 2}
+    assert json.loads(path.read_text("utf-8"))["effort"] == "low"
+
+
+def test_cache_low_high_low_reuses_low(monkeypatch, tmp_path):
+    calls = install(monkeypatch, [ok({"is_error": False, "result": '{"e": "low"}'}),
+                                  ok({"is_error": False, "result": '{"e": "high"}'})])
+    assert ClaudeCliProvider(model="m", cache_dir=tmp_path, effort="low").complete_json("s", "u") == {"e": "low"}
+    assert ClaudeCliProvider(model="m", cache_dir=tmp_path, effort="high").complete_json("s", "u") == {"e": "high"}
+    p = ClaudeCliProvider(model="m", cache_dir=tmp_path, effort="low")
+    assert p.complete_json("s", "u") == {"e": "low"} and p.cache_hits == 1
+    assert len(calls) == 2
+    # records name their effort; a no-effort record says "default"
+    install(monkeypatch, [ok({"is_error": False, "result": '{"e": "d"}'})])
+    d = ClaudeCliProvider(model="m", cache_dir=tmp_path)
+    d.complete_json("s", "u")
+    assert json.loads(d._cache_path("s", "u", None).read_text("utf-8"))["effort"] == "default"
