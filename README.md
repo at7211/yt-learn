@@ -57,17 +57,17 @@ python3 -m pipeline.build <videoId> --model claude-opus-5-5 --effort high   # �
 
 ## 費用
 
-產課用的是 Claude Sonnet 5.5（`pipeline/build.py` 的 `DEFAULT_MODEL`），透過已登入的 `claude` CLI 呼叫，吃的是 Claude 訂閱的用量額度，不是 API 帳單。下面是以 API 牌價（輸入 $2、輸出 $10 每百萬 token）換算的估計，token 數用真實 prompt 與快取回覆估算：
+產課用的是 Claude Sonnet 5.5（`pipeline/build.py` 的 `DEFAULT_MODEL`），透過已登入的 `claude` CLI 呼叫，吃的是 Claude 訂閱的用量額度，不是 API 帳單。下面是以 API 牌價（輸入 $2、輸出 $10 每百萬 token）換算的單次產課估計。輸入用真實 prompt 估算；輸出用課程檔還原一次產課的回覆估算（快取裡可能有多次產課的回覆，不直接加總）。另外每次 `claude -p` 呼叫都有約 3.6k token 的 CLI 固定開銷（多半是寫入 prompt cache，以 1.25 倍、每百萬 $2.5 計）：
 
-| 影片長度 | 呼叫次數 | 輸入 | 輸出 | 約略費用 |
-| --- | --- | --- | --- | --- |
-| 6 分 | 12 | 12k | 15k | $0.19 |
-| 22 分 | 30 | 31k | 18k | $0.25 |
-| 40 分 | 56 | 63k | 34k | $0.45 |
+| 影片長度 | 呼叫次數 | 輸入（prompt） | CLI 固定開銷 | 輸出 | 約略費用 |
+| --- | --- | --- | --- | --- | --- |
+| 6 分 | 12 | 13k | 43k | 8k | $0.21 |
+| 22 分 | 30 | 32k | 108k | 18k | $0.52 |
+| 40 分 | 56 | 63k | 202k | 35k | $0.98 |
 
-經驗法則：一分鐘影片約 1 到 2 美分，一支 20 分鐘的演講兩三毛美金。重跑同一支影片幾乎免費，回覆都快取在 `data/cache/`，只有 prompt 版本變了才會重新呼叫。
+經驗法則：一分鐘影片約 2.5 到 3.5 美分，一支 20 分鐘的演講約半美元。早期版本的每次呼叫還會載入本機的 MCP 伺服器、hooks 與使用者設定，固定開銷約 30k token；現在 `claude -p` 帶 `--strict-mcp-config --setting-sources ""`，降到約 3.6k。重跑同一支影片幾乎免費，回覆都快取在 `data/cache/`，只有 prompt 版本變了才會重新呼叫。
 
-還沒做的省錢空間：每個切句 chunk 都是獨立的 `claude -p` 程序，系統提示每次重送、吃不到 prompt cache，約佔輸入一半；輸出裡一半是把英文原句抄回來，schema 改成只回切點與中譯可砍近半。
+還沒做的省錢空間：每個切句 chunk 都是獨立的 `claude -p` 程序，上面的固定開銷與系統提示每次重送，是輸入的大宗，chunk 切大一點、呼叫少一點就省；輸出裡一半是把英文原句抄回來，schema 改成只回切點與中譯可砍近半。
 
 ## 快捷鍵
 
@@ -87,7 +87,7 @@ docs/        設計與計畫（superpowers/plans）、參考版面觀察、截�
 ```
 
 ```bash
-~/.local/bin/uv run --with pytest pytest -q     # pipeline + server
+uv run --with pytest pytest -q                   # pipeline + server
 node --test tests/web/                           # 播放器與擴充功能的純函式
 ```
 
@@ -96,6 +96,7 @@ node --test tests/web/                           # 播放器與擴充功能的�
 - 自動字幕的品質決定切句與單字的品質；沒有字幕軌的影片做不了。
 - 兩個 LLM 都只透過本機 CLI 呼叫，速度取決於你的帳號與模型；回覆會快取在 `data/cache/`，重跑同一支影片很快。
 - 兩種疊層都蓋在 YouTube 播放器上（擴充功能蓋在 youtube.com 的播放器，本機播放器蓋在嵌入播放器），只適合個人本機使用，不要公開部署。
+- YouTube 條款風險：字幕是重用播放器自己發出的 timedtext 請求取得的，疊層也直接畫在播放器上，這兩件事都可能不符合 YouTube 的服務條款與嵌入規範。請只在自己的電腦上、為自己學習使用，不要拿來散布字幕或課程內容。
 - YouTube 疊層與「沉浸式翻譯」這類也在播放器上畫字幕的擴充會重疊，看課時先把它們在 YouTube 關掉。
 - 前情提要卡的字數有上限，模型兩次都寫太長時那一堂就沒有卡，其他功能照常。
 
