@@ -13,12 +13,24 @@ const LESSON = { videoId: VID, cues: [], words: [], vocab: [] };
 
 // routes: { 'GET /path': {status, json} | 'down' }
 function load(routes = {}, { toggleReply, executeScript } = {}) {
-  const calls = { fetched: [], created: [], sent: [], removed: [], sessionSets: [], bodies: {} };
+  const calls = { fetched: [], created: [], sent: [], removed: [], sessionSets: [], bodies: {}, menus: [], menuOps: [] };
   const listeners = {};
   const on = (name) => ({ addListener: (f) => { listeners[name] = f; } });
   const store = {};
   const chrome = {
-    runtime: { id: EXT, getManifest: () => ({ version: '1.2.0' }), onMessage: on('message'), onMessageExternal: on('external') },
+    runtime: { id: EXT, getManifest: () => ({ version: '1.3.0' }), onMessage: on('message'), onMessageExternal: on('external'),
+               onInstalled: on('installed'), lastError: undefined },
+    contextMenus: {
+      onClicked: on('menuClicked'),
+      removeAll: (cb) => { calls.menuOps.push('removeAll'); calls.menus.length = 0; if (cb) cb(); return Promise.resolve(); },
+      create: (o, cb) => {
+        calls.menuOps.push('create:' + o.id);
+        if (calls.menus.some((m) => m.id === o.id)) throw new Error('duplicate id ' + o.id);
+        calls.menus.push(o);
+        if (cb) cb();
+        return o.id;
+      },
+    },
     tabs: {
       onUpdated: on('updated'), onRemoved: on('removed'),
       create: async (o) => { calls.created.push(o); return { id: 99 }; },
@@ -215,5 +227,35 @@ test('ping still answered synchronously', async () => {
   const { r, ret } = await ask(w, { type: 'ytlearn:ping' });
   assert.equal(ret, false);
   assert.equal(r.type, 'ytlearn:ack');
-  assert.equal(r.version, '1.2.0');
+  assert.equal(r.version, '1.3.0');
+});
+
+test('install builds the two action menu items after removeAll, and reinstall does not duplicate them', () => {
+  const w = load();
+  w.listeners.installed({ reason: 'install' });
+  w.listeners.installed({ reason: 'update' });
+  assert.deepEqual(w.calls.menuOps, ['removeAll', 'create:ytlearn-home', 'create:ytlearn-settings',
+    'removeAll', 'create:ytlearn-home', 'create:ytlearn-settings']);
+  assert.deepEqual(JSON.parse(JSON.stringify(w.calls.menus)), [
+    { id: 'ytlearn-home', title: '打開 yt-learn 首頁', contexts: ['action'] },
+    { id: 'ytlearn-settings', title: '設定', contexts: ['action'] },
+  ]);
+});
+
+test('menu clicks open the home page and the settings section', async () => {
+  const w = load();
+  w.listeners.menuClicked({ menuItemId: 'ytlearn-home' });
+  w.listeners.menuClicked({ menuItemId: 'ytlearn-settings' });
+  w.listeners.menuClicked({ menuItemId: 'something-else' });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(JSON.parse(JSON.stringify(w.calls.created)), [
+    { url: 'http://127.0.0.1:8765/index.html', active: true },
+    { url: 'http://127.0.0.1:8765/index.html#settings', active: true },
+  ]);
+});
+
+test('manifest asks for contextMenus and is version 1.3.0', () => {
+  const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
+  assert.ok(m.permissions.includes('contextMenus'));
+  assert.equal(m.version, '1.3.0');
 });

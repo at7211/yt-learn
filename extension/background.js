@@ -30,6 +30,30 @@ chrome.action.onClicked.addListener((tab) => {
   onIconClicked(tab).catch((e) => log('icon:error', errMsg(e)));
 });
 
+/* ---------- 圖示右鍵選單：首頁、設定（設定存在本機 server，所以不用 options_ui） ---------- */
+
+const MENU = [
+  { id: 'ytlearn-home', title: '打開 yt-learn 首頁', url: SERVER + '/index.html' },
+  { id: 'ytlearn-settings', title: '設定', url: SERVER + '/index.html#settings' },
+];
+
+chrome.runtime.onInstalled.addListener(() => {
+  // removeAll first: onInstalled also fires on update/reload, and a duplicate id is an error.
+  chrome.contextMenus.removeAll(() => {
+    for (const m of MENU) {
+      chrome.contextMenus.create({ id: m.id, title: m.title, contexts: ['action'] }, () => {
+        if (chrome.runtime.lastError) log('menu:create-failed', m.id, chrome.runtime.lastError.message);
+      });
+    }
+  });
+});
+
+chrome.contextMenus.onClicked.addListener((info) => {
+  const m = MENU.find((x) => x.id === info.menuItemId);
+  if (!m) return;
+  chrome.tabs.create({ url: m.url, active: true }).catch((e) => log('menu:open-failed', errMsg(e)));
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== 'string' || sender.id !== chrome.runtime.id) return false;
   if (msg.type === 'ytlearn:ping') {
