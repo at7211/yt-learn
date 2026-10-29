@@ -1,0 +1,110 @@
+/* yt-learn overlay on youtube.com. Loaded into the overlay's shadow root by overlay.js (style.textContent).
+   Subtitle / intro / panel / shade rules are copied from web/style.css (the 16:9 stage), with:
+   - the container is .frame (absolute, inset 0, container-type inline-size, no aspect-ratio): it fills #movie_player,
+     so 1cqw = 1% of the player's width in normal, theater and fullscreen alike;
+   - .stage:not(.started) → .frame:not(.started); no review / page chrome;
+   - system fonts instead of the bundled web fonts: Inter → system-ui, Noto Sans TC → PingFang TC, Noto Serif TC → Songti TC. */
+:host {
+  all: initial;
+  position: absolute; inset: 0; z-index: 30; pointer-events: none; display: block;
+  --orange: #F0A868;
+  --gold: #E8C87A;
+  --mint: #A8D8B9;
+  --sans: system-ui, -apple-system, "PingFang TC", sans-serif;
+  --tc: "PingFang TC", system-ui, -apple-system, sans-serif;
+  --serif: "Songti TC", "PingFang TC", serif;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+.frame { position: absolute; inset: 0; container-type: inline-size; overflow: hidden; pointer-events: none; }
+.frame.ad { display: none; } /* an ad is playing in the same <video>: its currentTime is not the lesson's */
+
+.shade { position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: linear-gradient(90deg, rgba(10, 12, 18, 0) 48%, rgba(10, 12, 18, .55) 58%, rgba(10, 12, 18, .92) 72%, rgba(10, 12, 18, .96) 100%),
+              linear-gradient(180deg, rgba(10, 12, 18, 0) 56%, rgba(10, 12, 18, .6) 76%, rgba(10, 12, 18, .85) 86%, rgba(10, 12, 18, .4) 100%); }
+.frame:not(.started) .shade { display: none; }
+.no-vocab .shade { background: linear-gradient(180deg, rgba(10, 12, 18, 0) 56%, rgba(10, 12, 18, .6) 76%, rgba(10, 12, 18, .85) 86%, rgba(10, 12, 18, .4) 100%); }
+.layer { position: absolute; pointer-events: none; z-index: 2; }
+.subs { z-index: 3; }
+
+/* ---- subtitles: bottom centre over the fog, above the 12% strip where YouTube's control bar appears */
+.subs { left: 5%; right: 5%; bottom: 12%; text-align: center; }
+.sub-en {
+  font: 700 clamp(15px, 3.44cqw, 60px)/1.2 system-ui, -apple-system, sans-serif;
+  color: #fff;
+  letter-spacing: -.005em;
+  text-shadow: 0 0 .12em rgba(0, 0, 0, .95), 0 .05em .2em rgba(0, 0, 0, .9), 0 0 .5em rgba(0, 0, 0, .6);
+  max-width: 88cqw; margin: 0 auto;
+}
+.sub-en:not(.measuring) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.sub-en.long { font-size: clamp(12px, 2.66cqw, 46px); }
+.sub-en .kw { color: var(--orange); }
+.sub-zh {
+  font: 700 clamp(11px, 2.34cqw, 42px)/1.35 var(--serif);
+  color: var(--gold);
+  letter-spacing: .04em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-shadow: 0 0 .15em rgba(0, 0, 0, .95), 0 .05em .25em rgba(0, 0, 0, .9);
+  margin: .25em auto 0; max-width: 84cqw;
+}
+.sub-zh.long { font-size: clamp(11px, 1.88cqw, 34px); }
+.sub-zh:empty { display: none; }
+.no-en .sub-en, .no-zh .sub-zh { display: none; }
+.no-vocab .panel { display: none; }
+.frame:not(.started) .subs, .frame:not(.started) .panel { visibility: hidden; } /* nothing over the video until it has started playing */
+
+/* ---- intro card (前情提要): top-left over the picture, shown once for 10 s after the first play */
+.intro { left: 4%; top: 5%; width: 34%; opacity: 0; transition: opacity .6s ease; font-family: var(--sans);
+  text-shadow: 0 0 .15em rgba(0, 0, 0, .95), 0 .05em .25em rgba(0, 0, 0, .9); }
+.intro.show { opacity: 1; }
+.intro-eyebrow { font: 500 clamp(11px, 1.1cqw, 20px)/1 var(--tc); letter-spacing: .5em; color: #a7d58f; }
+.intro-title { margin-top: .9cqw; font: 700 clamp(12px, 2.3cqw, 40px)/1.3 var(--serif); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.intro-rule { width: 3cqw; height: 1px; margin: 1cqw 0 .9cqw; background: rgba(255, 255, 255, .5); }
+.intro-lines { font: 500 clamp(11px, 1.45cqw, 26px)/1.55 var(--tc); color: #e3e6eb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (prefers-reduced-motion: reduce) { .intro { transition: none; } }
+
+/* ---- vocab panel: x 58%–97%, on the shaded right side */
+.panel { left: 58%; width: 39%; top: 4%; height: 80%; font-family: var(--sans); opacity: 0; transition: opacity .7s ease; }
+.panel.live { opacity: 1; }
+.panel:not(.live) .prow { pointer-events: none; }
+.panel-head {
+  display: flex; align-items: center; gap: 1.1cqw;
+  height: 2.5cqw; border-bottom: 1px solid rgba(255, 255, 255, .14);
+}
+.panel-head .rule { display: inline-block; width: 2.9cqw; height: 1px; background: var(--orange); }
+.panel-title { font: 500 clamp(11px, 1.2cqw, 22px)/1 var(--tc); letter-spacing: .38em; color: #d5d9e0; }
+.panel-count { margin-left: auto; font: 700 clamp(11px, 1.25cqw, 22px)/1 system-ui, -apple-system, sans-serif; color: var(--orange); letter-spacing: .06em; }
+.panel-rows { margin-top: .5cqw; overflow: hidden; height: calc(5 * (5.85cqw + .95cqw + 1px)); -webkit-mask-image: linear-gradient(180deg, #000 88%, transparent 100%); mask-image: linear-gradient(180deg, #000 88%, transparent 100%); }
+.ptrack { transition: transform .42s cubic-bezier(.22, .72, .2, 1); will-change: transform; }
+.prow {
+  pointer-events: auto; cursor: pointer;
+  height: 5.85cqw; padding: .55cqw .3cqw .4cqw 0;
+  border-bottom: 1px solid rgba(255, 255, 255, .08);
+  display: flex; flex-direction: column; justify-content: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+}
+.prow .l1, .prow .l2 { display: flex; align-items: baseline; gap: .6cqw; white-space: nowrap; min-width: 0; }
+.prow .term { font: 600 clamp(11px, 1.8cqw, 32px)/1.2 system-ui, -apple-system, sans-serif; color: var(--mint); overflow: hidden; text-overflow: ellipsis; }
+.prow .pos, .prow .ipa { display: none; font: 400 clamp(11px, 1.1cqw, 19px)/1 system-ui, -apple-system, sans-serif; color: #d9dde4; }
+.prow .ipa { color: #c5cad3; }
+.prow .times { margin-left: auto; font: 400 clamp(11px, 1.2cqw, 20px)/1 system-ui, -apple-system, sans-serif; color: #8d939e; padding-left: .8cqw; }
+.prow .pzh { font: 500 clamp(11px, 1.3cqw, 23px)/1.35 var(--tc); color: #e3e6eb; overflow: hidden; text-overflow: ellipsis; }
+.prow .dots { margin-left: auto; display: flex; gap: .3cqw; align-self: center; }
+.prow .dots i { width: .5cqw; height: .5cqw; border-radius: 50%; background: rgba(240, 168, 104, .3); }
+.prow .dots i.on { background: var(--orange); }
+.prow { --row-o: 1; opacity: var(--row-o); }
+.prow.future { --row-o: .5; }
+.prow { transition: opacity .3s ease, background-color .3s ease; }
+@media (prefers-reduced-motion: reduce) { .ptrack { transition: none; } .prow { transition: none; } .panel { transition: none; } }
+.prow.current { background: linear-gradient(90deg, rgba(255, 236, 214, .16), rgba(255, 236, 214, .22)); margin-left: -.6cqw; padding-left: .6cqw; opacity: 1; }
+.prow.current .term { color: var(--orange); }
+.prow.current .pos, .prow.current .ipa { display: inline; }
+.prow.current .times { color: var(--orange); }
+.prow:hover .term { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: .2em; }
+
+/* ---- progress pill (擷取字幕 → 產生課程 x% → 完成): bottom-left, above YouTube's control bar */
+.pill { position: absolute; left: 12px; bottom: 64px; z-index: 4; max-width: 60%;
+  padding: 6px 14px; border-radius: 999px; background: rgba(17, 17, 17, .88); color: #fff;
+  font: 500 13px/1.4 var(--tc); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.pill.error { color: #ffb4c0; }

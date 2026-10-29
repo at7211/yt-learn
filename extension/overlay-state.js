@@ -24,7 +24,7 @@ export function watchVideoId(href, flexyId) {
    on       the user's intent: true after turning the overlay on, false after turning it off.
             It survives navigation, so an explicit "off" is never undone by changing videos.
    mounted  the overlay is rendered for (videoId, gen)
-   building a capture/build job is being watched for (videoId, gen) */
+   building a lesson fetch or a capture/build job is in flight for (videoId, gen) */
 
 export function initialState() {
   return { videoId: null, gen: 0, on: false, mounted: false, building: false };
