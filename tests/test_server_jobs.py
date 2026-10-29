@@ -35,7 +35,8 @@ def env(tmp_path, monkeypatch):
 
 def req(url, body=None, method=None):
     data = json.dumps(body).encode() if body is not None and not isinstance(body, bytes) else body
-    r = urllib.request.Request(url, data=data, method=method or ("POST" if data is not None else "GET"))
+    r = urllib.request.Request(url, data=data, method=method or ("POST" if data is not None else "GET"),
+                               headers={"Content-Type": "application/json"} if data is not None else {})
     try:
         with urllib.request.urlopen(r) as resp:
             return resp.status, json.loads(resp.read())

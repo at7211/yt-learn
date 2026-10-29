@@ -251,7 +251,7 @@ async function runJobInner(videoId, opts) {
   if (job.state === 'done') return { ok: true, done: true, lessonUrl: SERVER + '/index.html?v=' + videoId, job };
   if (job.state !== 'queued') return { ok: true, inProgress: true, job };
 
-  const claim = await api('/jobs/' + videoId + '/claim', { method: 'POST' });
+  const claim = await api('/jobs/' + videoId + '/claim', { method: 'POST', body: {} }); // a body sets Content-Type: application/json, which the server requires
   if (claim.status === 409) {
     log('claim:conflict', videoId);
     return { ok: true, inProgress: true, job };

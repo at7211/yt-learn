@@ -7,6 +7,12 @@
 - POST /ingest                 : validates raw captions (see bookmarklet.js) and
                                  writes <root>/data/raw/<videoId>.json.
 - GET/POST /settings           : build settings (model, effort, workers) in <root>/data/settings.json.
+
+Request hardening (every route): the Host header must name this server (127.0.0.1 / localhost /
+[::1] on our port) so DNS-rebinding pages are refused; a POST must be Content-Type: application/json
+(no CORS-"simple" form/text posts); a request carrying an Origin must come from the local UI, from a
+Chrome extension (the yt-learn worker's POSTs carry Origin: chrome-extension://<id>), or from
+https://www.youtube.com, and that last one only for POST /ingest (the bookmarklet) and preflights.
 """
 import json
 import os
@@ -21,7 +27,7 @@ from pipeline.jobs import BuildQueue, IllegalTransition, JobStore, parse_video_i
 from pipeline.schema import validate_lesson, validate_raw
 
 ROOT = Path(__file__).resolve().parent
-MAX_BODY = 20 * 1024 * 1024
+MAX_BODY = 4 * 1024 * 1024  # a 40-min json3 capture is ~150 KB
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -32,13 +38,57 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(self.root / "web"), **kw)
 
+    YOUTUBE = "https://www.youtube.com"
+
     def _allowed_origins(self):
         port = self.server.server_address[1]
-        return {"https://www.youtube.com", f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
+        return {self.YOUTUBE, f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
+
+    def _youtube_route_ok(self):
+        """youtube.com pages may only preflight and POST /ingest (the bookmarklet)."""
+        path = urlsplit(self.path).path
+        return self.command == "OPTIONS" or (self.command == "POST" and path == "/ingest")
+
+    def _cors_origin(self):
+        """The Origin to echo in Access-Control-Allow-Origin, or None."""
+        origin = self.headers.get("Origin")
+        if origin not in self._allowed_origins():
+            return None
+        if origin == self.YOUTUBE and urlsplit(self.path).path != "/ingest":
+            return None
+        return origin
+
+    def _reject(self):
+        """Host / Origin / Content-Type gate. Sends the error and returns True when refused."""
+        port = self.server.server_address[1]
+        host = self.headers.get("Host")
+        if host is None:
+            self.send_error(400, "Host header required")
+            return True
+        if host.lower() not in {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}:
+            self.send_error(421, "Unexpected Host")
+            return True
+        origin = self.headers.get("Origin")
+        if origin is not None:
+            if origin.startswith("chrome-extension://"):
+                pass  # the extension's service worker (unpacked ids vary, so no pinning)
+            elif origin not in self._allowed_origins():
+                self.send_error(403, "Origin not allowed")
+                return True
+            elif origin == self.YOUTUBE and not self._youtube_route_ok():
+                self.send_error(403, "Origin not allowed for this route")
+                return True
+        if self.command == "POST":
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                self.send_error(415, "Content-Type must be application/json")
+                return True
+        return False
 
     def end_headers(self):
-        if self.headers.get("Origin") in self._allowed_origins():
-            self.send_header("Access-Control-Allow-Origin", self.headers["Origin"])
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Private-Network", "true")
@@ -46,11 +96,20 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_OPTIONS(self):
+        if self._reject():
+            return
         self.send_response(204)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
 
+    def do_HEAD(self):
+        if self._reject():
+            return
+        super().do_HEAD()
+
     def do_GET(self):
+        if self._reject():
+            return
         path = unquote(urlsplit(self.path).path)
         if path.startswith("/data/"):
             return self._serve_data(path)
@@ -111,6 +170,8 @@ class Handler(SimpleHTTPRequestHandler):
             return None, True
 
     def do_POST(self):
+        if self._reject():
+            return
         sp = urlsplit(self.path)
         parts = sp.path.strip("/").split("/")
         if sp.path == "/ingest":

@@ -24,7 +24,10 @@ def base(tmp_path):
 
 
 def req(url, data=None, method=None, headers=None):
-    r = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    headers = dict(headers or {})
+    if data is not None:  # like the real clients: JSON bodies say so (the server requires it)
+        headers.setdefault("Content-Type", "application/json")
+    r = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(r) as resp:
             return resp.status, resp.read(), resp.headers
@@ -65,11 +68,14 @@ def test_options_preflight_headers(base):
 
 def test_cors_omitted_for_other_origin(base):
     code, _, h = req(base + "/ingest", method="OPTIONS", headers={"Origin": "https://evil.example"})
-    assert code == 204
+    assert code == 403  # foreign origins are refused outright
     assert "Access-Control-Allow-Origin" not in h
     assert h["Vary"] == "Origin" and h["Access-Control-Allow-Private-Network"] == "true"
     _, _, h = req(base + "/ingest", method="OPTIONS", headers={"Origin": base})
     assert h["Access-Control-Allow-Origin"] == base
+    # youtube.com may preflight, but only /ingest gets the CORS grant
+    code, _, h = req(base + "/settings", method="OPTIONS", headers={"Origin": "https://www.youtube.com"})
+    assert code == 204 and "Access-Control-Allow-Origin" not in h
 
 
 def test_data_path_traversal_sibling_blocked(base, tmp_path):
@@ -177,9 +183,13 @@ def test_settings_get_broken_file_warns(base, tmp_path, clean_env):
     assert code == 200 and j["settings"]["model"] == "claude-sonnet-5-5" and j["warning"]
 
 
-def test_settings_cors_like_other_routes(base):
-    _, _, h = req(base + "/settings", headers={"Origin": "https://www.youtube.com"})
-    assert h["Access-Control-Allow-Origin"] == "https://www.youtube.com"
+def test_settings_refused_for_youtube_origin(base, tmp_path):
+    code, _, h = req(base + "/settings", headers={"Origin": "https://www.youtube.com"})
+    assert code == 403 and "Access-Control-Allow-Origin" not in h
+    good = {"model": "claude-haiku-5-5", "effort": "low", "workers": 8}
+    code, _, h = req(base + "/settings", json.dumps(good).encode(), "POST", {"Origin": "https://www.youtube.com"})
+    assert code == 403 and "Access-Control-Allow-Origin" not in h
+    assert not (tmp_path / "data" / "settings.json").exists()
 
 
 # BuildQueue picks the settings up at the start of each build -------------------------
@@ -264,3 +274,113 @@ def test_settings_snapshot_taken_before_building(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs.JobStore, "set_building", set_building)
     env, _ = _capture_env(tmp_path, monkeypatch)
     assert env["YTLEARN_MODEL"] == "claude-haiku-5-5" and env["YTLEARN_EFFORT"] == "low"
+
+
+# ---------------------------------------------------------------- request hardening
+
+GOOD_SETTINGS = {"model": "claude-haiku-5-5", "effort": "low", "workers": 8}
+
+
+def raw_req(base, method, path, body=None, headers=None):
+    """http.client so the Host header can be forged."""
+    import http.client
+    host, port = base[len("http://"):].split(":")
+    c = http.client.HTTPConnection(host, int(port))
+    try:
+        c.request(method, path, body=body, headers=headers or {})
+        r = c.getresponse()
+        return r.status, r.read(), r.headers
+    finally:
+        c.close()
+
+
+def test_extension_style_post_without_origin_ok(base, tmp_path):
+    code, _, _ = req(base + "/settings", json.dumps(GOOD_SETTINGS).encode(), "POST")
+    assert code == 200
+
+
+def test_extension_worker_origin_post_ok(base, tmp_path):
+    # Chrome's extension service worker sends Origin: chrome-extension://<id> on POST.
+    code, _, h = req(base + "/ingest", json.dumps(GOOD).encode(), "POST",
+                     {"Origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop"})
+    assert code == 200 and "Access-Control-Allow-Origin" not in h
+
+
+def test_same_origin_post_ok(base, tmp_path):
+    code, _, h = req(base + "/settings", json.dumps(GOOD_SETTINGS).encode(), "POST", {"Origin": base})
+    assert code == 200 and h["Access-Control-Allow-Origin"] == base
+    port = base.rsplit(":", 1)[1]
+    code, _, _ = req(base + "/settings", json.dumps(GOOD_SETTINGS).encode(), "POST",
+                     {"Origin": f"http://localhost:{port}"})
+    assert code == 200
+
+
+def test_youtube_origin_post_ingest_allowed(base, tmp_path):
+    code, _, h = req(base + "/ingest", json.dumps(GOOD).encode(), "POST", {"Origin": "https://www.youtube.com"})
+    assert code == 200 and h["Access-Control-Allow-Origin"] == "https://www.youtube.com"
+
+
+@pytest.mark.parametrize("path", ["/add", "/jobs/abcdefghijk/claim"])
+def test_youtube_origin_other_posts_refused(base, path):
+    code, _, _ = req(base + path, b"{}", "POST", {"Origin": "https://www.youtube.com"})
+    assert code == 403
+
+
+def test_youtube_origin_get_refused(base):
+    assert req(base + "/lessons", headers={"Origin": "https://www.youtube.com"})[0] == 403
+
+
+def test_foreign_origin_refused(base, tmp_path):
+    code, _, h = req(base + "/settings", json.dumps(GOOD_SETTINGS).encode(), "POST", {"Origin": "https://evil.example"})
+    assert code == 403 and "Access-Control-Allow-Origin" not in h
+    assert req(base + "/lessons", headers={"Origin": "https://evil.example"})[0] == 403
+    assert req(base + "/lessons", headers={"Origin": "null"})[0] == 403
+    assert not (tmp_path / "data" / "settings.json").exists()
+
+
+@pytest.mark.parametrize("ctype", ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data", None])
+def test_post_needs_json_content_type(base, tmp_path, ctype):
+    headers = {"Content-Type": ctype} if ctype else {}
+    code, _, _ = raw_req(base, "POST", "/settings", json.dumps(GOOD_SETTINGS).encode(), headers)
+    assert code == 415
+    assert not (tmp_path / "data" / "settings.json").exists()
+
+
+def test_json_content_type_with_charset_ok(base):
+    code, _, _ = req(base + "/settings", json.dumps(GOOD_SETTINGS).encode(), "POST",
+                     {"Content-Type": "application/json; charset=utf-8"})
+    assert code == 200
+
+
+@pytest.mark.parametrize("host", ["evil.example", "evil.example:{port}", "127.0.0.1", "127.0.0.1:1",
+                                  "localhost.evil.example:{port}"])
+def test_bad_host_refused(base, tmp_path, host):
+    port = base.rsplit(":", 1)[1]
+    h = {"Host": host.format(port=port)}
+    assert raw_req(base, "GET", "/lessons", headers=h)[0] == 421
+    assert raw_req(base, "GET", "/", headers=h)[0] == 421
+    code, _, _ = raw_req(base, "POST", "/settings", json.dumps(GOOD_SETTINGS).encode(),
+                         dict(h, **{"Content-Type": "application/json"}))
+    assert code == 421
+    assert not (tmp_path / "data" / "settings.json").exists()
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:{port}", "localhost:{port}", "LOCALHOST:{port}", "[::1]:{port}"])
+def test_good_hosts_accepted(base, host):
+    port = base.rsplit(":", 1)[1]
+    assert raw_req(base, "GET", "/lessons", headers={"Host": host.format(port=port)})[0] == 200
+
+
+def test_missing_host_refused(base):
+    import socket
+    host, port = base[len("http://"):].split(":")
+    with socket.create_connection((host, int(port))) as s:
+        s.sendall(b"GET /lessons HTTP/1.0\r\n\r\n")
+        assert s.recv(64).split()[1] == b"400"
+
+
+def test_max_body_is_4mb(base):
+    assert server.MAX_BODY == 4 * 1024 * 1024
+    code, _, _ = raw_req(base, "POST", "/ingest", b"",
+                         {"Content-Type": "application/json", "Content-Length": str(server.MAX_BODY + 1)})
+    assert code == 400
