@@ -37,7 +37,7 @@
 
 ### Task 2: build 的 `--provider`
 **Files:** Modify `pipeline/build.py`, `extension/README.md`（一行）; Test `tests/test_build.py`。
-- [ ] 測試：`main(["CR94QQXO_4s", "--provider", "codex"], data_dir, provider_factory=spy)` → spy 收到 `provider="codex"`、`model=None`；寫出的 lesson `model == "codex:default"`。不帶 `--provider` → `provider="claude"`、`model == DEFAULT_MODEL` 且 lesson `model == DEFAULT_MODEL`（既有行為）。
+- [ ] 測試：`main(["puh91fohvTA", "--provider", "codex"], data_dir, provider_factory=spy)` → spy 收到 `provider="codex"`、`model=None`；寫出的 lesson `model == "codex:default"`。不帶 `--provider` → `provider="claude"`、`model == DEFAULT_MODEL` 且 lesson `model == DEFAULT_MODEL`（既有行為）。
 - [ ] 測試：`YTLEARN_PROVIDER=codex` 環境變數 → 預設成 codex；`--provider claude` 覆蓋環境變數。
 - [ ] 實作；全套 pytest。Commit: `feat(build): --provider claude|codex (env YTLEARN_PROVIDER)`
 

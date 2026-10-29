@@ -74,8 +74,8 @@ def test_strips_entities_newlines_and_blank():
 def test_fixture_asr_words():
     raw = json.loads(FIXTURE.read_text(encoding="utf-8"))
     words = normalize_words(raw["events"], raw["duration"])
-    assert words[0]["w"] == "pretends"
-    assert words[0]["t"] == 0.28
+    assert words[0]["w"] == "Bonjour"
+    assert words[0]["t"] == 10.8
     assert all(w["timed"] is True for w in words)
     ts = [w["t"] for w in words]
     assert ts == sorted(ts)

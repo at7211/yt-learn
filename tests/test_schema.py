@@ -3,11 +3,11 @@ import copy
 from pipeline import schema
 
 GOOD = {
-    "videoId": "CR94QQXO_4s", "title": "T", "channel": "CTV News", "duration": 344,
+    "videoId": "puh91fohvTA", "title": "T", "channel": "dotconferences", "duration": 1378,
     "lang": "en", "kind": "asr", "capturedAt": "2026-10-27T23:00:00+08:00", "chrome": "142.0.7444.60",
     "events": [
-        {"t": 280, "d": 5160, "segs": [[0, "pretends"], [400, "like"], [560, "he's"], [840, "self-made"]]},
-        {"t": 5600, "d": 2100, "segs": [[None, "what a clown"]]},
+        {"t": 10800, "d": 2840, "segs": [[0, "Bonjour"], [920, "and"], [1280, "hello."]]},
+        {"t": 13640, "d": 2100, "segs": [[None, "And wouldn't it"]]},
     ],
 }
 
@@ -61,9 +61,9 @@ def test_rejects_non_object():
 
 
 def test_rejects_non_numeric_duration():
-    for bad in ("344", True, -1, [1], {"a": 1}):
+    for bad in ("1378", True, -1, [1], {"a": 1}):
         assert schema.validate_raw(mod(duration=bad)), bad
-    assert schema.validate_raw(mod(duration=344.5)) == []
+    assert schema.validate_raw(mod(duration=1378.5)) == []
 
 
 def _lesson():
@@ -83,10 +83,10 @@ def test_lesson_rejects_non_monotonic_words():
 def test_lesson_rejects_non_increasing_cue_starts():
     les = _lesson()
     c = les["cues"][0]
-    k = 4  # split the single fixture cue after word 3
+    k = 2  # split the first fixture cue after word 1
     c2 = {**c, "a": k, "tokens": c["tokens"][k:], "en": " ".join(c["tokens"][k:])}
     c1 = {**c, "b": k - 1, "tokens": c["tokens"][:k], "en": " ".join(c["tokens"][:k])}
-    les["cues"] = [c1, c2]
+    les["cues"] = [c1, c2] + les["cues"][1:]
     les["vocab"] = []
     assert schema.validate_lesson(les) == []
     les["words"][k]["t"] = les["words"][0]["t"]

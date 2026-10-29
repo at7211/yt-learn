@@ -6,7 +6,7 @@ import {
 } from '../../extension/overlay-state.js';
 
 const A = 'puh91fohvTA';
-const B = 'CR94QQXO_4s';
+const B = 'abcdefghijk';
 const W = (id, extra = '') => 'https://www.youtube.com/watch?v=' + id + extra;
 
 test('watchVideoId: watch pages only, flexy attribute must agree', () => {

@@ -24,7 +24,7 @@
 ### Task 1: build 回報進度
 **Files:** Modify `pipeline/build.py`; Test `tests/test_build.py`。
 - [ ] 測試：`build_lesson(raw, fake_provider(), progress=calls.append)` 後，`calls == [("segment",1,5),("segment",2,5),("vocab",2,5),("intro",4,5),("finish",5,5)]`（raw_small 有 2 個 chunk）。
-- [ ] 測試：`main(["CR94QQXO_4s", "--progress-file", str(p)], ...)` 結束後檔案存在、`phase == "finish"`、`done == total`。
+- [ ] 測試：`main(["puh91fohvTA", "--progress-file", str(p)], ...)` 結束後檔案存在、`phase == "finish"`、`done == total`。
 - [ ] 實作：`build_lesson(..., progress: Callable[[str, int, int], None] | None = None)`；先 `chunks = list(chunk_words(words))` 取得總數。CLI 加 `--progress-file PATH`：回呼把 JSON 寫到 `PATH.tmp` 再 `os.replace`，失敗吞掉 `OSError`。
 - [ ] Commit: `feat(pipeline): build reports progress to --progress-file`
 

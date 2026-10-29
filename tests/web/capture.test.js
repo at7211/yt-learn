@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const SRC = readFileSync(new URL('../../extension/capture.js', import.meta.url), 'utf8');
-const VID = 'CR94QQXO_4s';
+const VID = 'puh91fohvTA';
 const TT = (q) => `https://www.youtube.com/api/timedtext?v=${VID}&lang=en${q || ''}`;
 
 function playerResponse(over = {}) {

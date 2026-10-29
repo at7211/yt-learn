@@ -22,5 +22,5 @@ test('rejects every url in the shared table', () => {
 test('non-strings rejected; canonical url', () => {
   assert.equal(ctx.ytLearnParseVideoId(undefined), null);
   assert.equal(ctx.ytLearnParseVideoId(42), null);
-  assert.equal(ctx.ytLearnCanonicalUrl('CR94QQXO_4s'), 'https://www.youtube.com/watch?v=CR94QQXO_4s');
+  assert.equal(ctx.ytLearnCanonicalUrl('puh91fohvTA'), 'https://www.youtube.com/watch?v=puh91fohvTA');
 });

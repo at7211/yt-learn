@@ -39,9 +39,9 @@ def test_ingest_writes_raw_file(base, tmp_path):
     code, body, h = req(base + "/ingest", json.dumps(GOOD).encode(), "POST")
     assert code == 200
     out = json.loads(body)
-    assert out == {"ok": True, "videoId": "CR94QQXO_4s", "events": 2,
-                   "next": "python3 -m pipeline.build CR94QQXO_4s"}
-    saved = json.loads((tmp_path / "data" / "raw" / "CR94QQXO_4s.json").read_text("utf-8"))
+    assert out == {"ok": True, "videoId": "puh91fohvTA", "events": 2,
+                   "next": "python3 -m pipeline.build puh91fohvTA"}
+    saved = json.loads((tmp_path / "data" / "raw" / "puh91fohvTA.json").read_text("utf-8"))
     assert saved == GOOD
     assert "Access-Control-Allow-Origin" not in h  # no Origin header sent
 
@@ -102,13 +102,13 @@ def test_data_lessons_served(base, tmp_path):
 def test_lessons_lists_root_dir_only(base, tmp_path):
     d = tmp_path / "data" / "lessons"
     (d / "sub").mkdir(parents=True)
-    (d / "CR94QQXO_4s.json").write_text(json.dumps(
-        {"title": "T", "channel": "C", "duration": 344, "vocab": [1, 2, 3], "coveredSeconds": 120}))
+    (d / "puh91fohvTA.json").write_text(json.dumps(
+        {"title": "T", "channel": "C", "duration": 1378, "vocab": [1, 2, 3], "coveredSeconds": 120}))
     (d / "sub" / "z.json").write_text("{}")
     code, body, _ = req(base + "/lessons")
     assert code == 200
-    assert json.loads(body) == [{"videoId": "CR94QQXO_4s", "title": "T", "channel": "C",
-                                 "duration": 344, "vocabCount": 3, "coveredSeconds": 120}]
+    assert json.loads(body) == [{"videoId": "puh91fohvTA", "title": "T", "channel": "C",
+                                 "duration": 1378, "vocabCount": 3, "coveredSeconds": 120}]
 
 
 def test_lessons_empty_when_no_dir(base):
@@ -194,7 +194,7 @@ def test_settings_refused_for_youtube_origin(base, tmp_path):
 
 # BuildQueue picks the settings up at the start of each build -------------------------
 
-VID = "CR94QQXO_4s"
+VID = "puh91fohvTA"
 
 
 def _capture_env(tmp_path, monkeypatch, env=None):

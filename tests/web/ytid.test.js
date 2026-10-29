@@ -17,5 +17,5 @@ test('parseVideoId rejects non-strings', () => {
   assert.equal(parseVideoId(42), null);
 });
 test('canonicalUrl', () => {
-  assert.equal(canonicalUrl('CR94QQXO_4s'), 'https://www.youtube.com/watch?v=CR94QQXO_4s');
+  assert.equal(canonicalUrl('puh91fohvTA'), 'https://www.youtube.com/watch?v=puh91fohvTA');
 });

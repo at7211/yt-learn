@@ -1,88 +1,442 @@
 {
- "videoId": "CR94QQXO_4s",
- "title": "'Stand your butt up': GOP Senator challenges union boss to fight",
- "channel": "CTV News",
- "duration": 344,
+ "videoId": "puh91fohvTA",
+ "title": "Agents for production engineering - Alex Palcuie - Anthropic",
+ "channel": "dotconferences",
+ "duration": 1378,
  "lang": "en",
- "generatedAt": "2026-10-27T23:00:00+08:00",
+ "generatedAt": "2026-10-29T02:32:20+08:00",
  "model": "claude-sonnet-5-5",
  "promptVersion": 1,
- "coveredSeconds": 344,
+ "coveredSeconds": 1378,
  "words": [
   {
-   "t": 0.28,
-   "e": 0.68,
-   "w": "pretends",
-   "timed": true
+   "t": 10.8,
+   "w": "Bonjour",
+   "timed": true,
+   "e": 11.72
   },
   {
-   "t": 0.68,
-   "e": 0.84,
-   "w": "like",
-   "timed": true
+   "t": 11.72,
+   "w": "and",
+   "timed": true,
+   "e": 12.08
   },
   {
-   "t": 0.84,
-   "e": 1.12,
-   "w": "he's",
-   "timed": true
+   "t": 12.08,
+   "w": "hello.",
+   "timed": true,
+   "e": 13.58
   },
   {
-   "t": 1.12,
-   "e": 1.84,
-   "w": "self-made",
-   "timed": true
+   "t": 13.64,
+   "w": "And",
+   "timed": true,
+   "e": 14.64
   },
   {
-   "t": 1.84,
-   "e": 2.04,
-   "w": "what",
-   "timed": true
+   "t": 14.64,
+   "w": "wouldn't",
+   "timed": true,
+   "e": 15.08
   },
   {
-   "t": 2.04,
-   "e": 2.3,
-   "w": "a",
-   "timed": true
+   "t": 15.08,
+   "w": "it",
+   "timed": true,
+   "e": 15.12
   },
   {
-   "t": 2.3,
-   "e": 2.9,
-   "w": "clown",
-   "timed": true
+   "t": 15.12,
+   "w": "be",
+   "timed": true,
+   "e": 15.24
+  },
+  {
+   "t": 15.24,
+   "w": "great",
+   "timed": true,
+   "e": 16.32
+  },
+  {
+   "t": 16.32,
+   "w": "if",
+   "timed": true,
+   "e": 16.96
+  },
+  {
+   "t": 16.96,
+   "w": "when",
+   "timed": true,
+   "e": 17.28
+  },
+  {
+   "t": 17.28,
+   "w": "I",
+   "timed": true,
+   "e": 17.88
+  },
+  {
+   "t": 17.88,
+   "w": "go",
+   "timed": true,
+   "e": 18.12
+  },
+  {
+   "t": 18.12,
+   "w": "to",
+   "timed": true,
+   "e": 18.32
+  },
+  {
+   "t": 18.32,
+   "w": "work,",
+   "timed": true,
+   "e": 19.16
+  },
+  {
+   "t": 19.16,
+   "w": "I",
+   "timed": true,
+   "e": 19.28
+  },
+  {
+   "t": 19.28,
+   "w": "could",
+   "timed": true,
+   "e": 19.48
+  },
+  {
+   "t": 19.48,
+   "w": "just",
+   "timed": true,
+   "e": 20.2
+  },
+  {
+   "t": 20.2,
+   "w": "ask",
+   "timed": true,
+   "e": 20.64
+  },
+  {
+   "t": 20.64,
+   "w": "Claude",
+   "timed": true,
+   "e": 21.68
+  },
+  {
+   "t": 21.68,
+   "w": "to",
+   "timed": true,
+   "e": 21.8
+  },
+  {
+   "t": 21.8,
+   "w": "do",
+   "timed": true,
+   "e": 22.44
+  },
+  {
+   "t": 22.44,
+   "w": "almost",
+   "timed": true,
+   "e": 22.8
+  },
+  {
+   "t": 22.8,
+   "w": "everything",
+   "timed": true,
+   "e": 23.16
+  },
+  {
+   "t": 23.16,
+   "w": "for",
+   "timed": true,
+   "e": 23.36
+  },
+  {
+   "t": 23.36,
+   "w": "me?",
+   "timed": true,
+   "e": 24.44
+  },
+  {
+   "t": 24.44,
+   "w": "Um",
+   "timed": true,
+   "e": 25.0
+  },
+  {
+   "t": 25.0,
+   "w": "just",
+   "timed": true,
+   "e": 25.28
+  },
+  {
+   "t": 25.28,
+   "w": "analyze",
+   "timed": true,
+   "e": 25.64
+  },
+  {
+   "t": 25.64,
+   "w": "my",
+   "timed": true,
+   "e": 25.72
+  },
+  {
+   "t": 25.72,
+   "w": "production",
+   "timed": true,
+   "e": 26.2
+  },
+  {
+   "t": 26.2,
+   "w": "system,",
+   "timed": true,
+   "e": 27.2
+  },
+  {
+   "t": 27.2,
+   "w": "just",
+   "timed": true,
+   "e": 27.44
+  },
+  {
+   "t": 27.44,
+   "w": "go",
+   "timed": true,
+   "e": 27.68
+  },
+  {
+   "t": 27.68,
+   "w": "and",
+   "timed": true,
+   "e": 27.8
+  },
+  {
+   "t": 27.8,
+   "w": "find",
+   "timed": true,
+   "e": 28.0
+  },
+  {
+   "t": 28.0,
+   "w": "the",
+   "timed": true,
+   "e": 28.08
+  },
+  {
+   "t": 28.08,
+   "w": "critical",
+   "timed": true,
+   "e": 28.44
+  },
+  {
+   "t": 28.44,
+   "w": "problems,",
+   "timed": true,
+   "e": 29.32
+  },
+  {
+   "t": 29.32,
+   "w": "determine",
+   "timed": true,
+   "e": 29.8
+  },
+  {
+   "t": 29.8,
+   "w": "the",
+   "timed": true,
+   "e": 29.88
+  },
+  {
+   "t": 29.88,
+   "w": "root",
+   "timed": true,
+   "e": 30.08
+  },
+  {
+   "t": 30.08,
+   "w": "causes,",
+   "timed": true,
+   "e": 31.4
+  },
+  {
+   "t": 31.4,
+   "w": "implement",
+   "timed": true,
+   "e": 32.04
+  },
+  {
+   "t": 32.04,
+   "w": "them,",
+   "timed": true,
+   "e": 32.72
+  },
+  {
+   "t": 32.72,
+   "w": "ship",
+   "timed": true,
+   "e": 33.12
+  },
+  {
+   "t": 33.12,
+   "w": "them",
+   "timed": true,
+   "e": 33.36
+  },
+  {
+   "t": 33.36,
+   "w": "for",
+   "timed": true,
+   "e": 33.6
+  },
+  {
+   "t": 33.6,
+   "w": "me",
+   "timed": true,
+   "e": 33.72
+  },
+  {
+   "t": 33.72,
+   "w": "to",
+   "timed": true,
+   "e": 33.84
+  },
+  {
+   "t": 33.84,
+   "w": "production.",
+   "timed": true,
+   "e": 35.28
   }
  ],
  "cues": [
   {
    "a": 0,
-   "b": 6,
-   "en": "Pretends like he's self-made. What a clown.",
+   "b": 2,
    "tokens": [
-    "Pretends",
-    "like",
-    "he's",
-    "self-made.",
-    "What",
-    "a",
-    "clown."
+    "Bonjour",
+    "and",
+    "hello."
    ],
-   "zh": "假裝自己白手起家，真是個小丑。"
+   "zh": "Bonjour，大家好。",
+   "en": "Bonjour and hello."
+  },
+  {
+   "a": 3,
+   "b": 13,
+   "tokens": [
+    "And",
+    "wouldn't",
+    "it",
+    "be",
+    "great",
+    "if",
+    "when",
+    "I",
+    "go",
+    "to",
+    "work,"
+   ],
+   "zh": "如果我去上班的時候，不是很棒嗎，",
+   "en": "And wouldn't it be great if when I go to work,"
+  },
+  {
+   "a": 14,
+   "b": 24,
+   "tokens": [
+    "I",
+    "could",
+    "just",
+    "ask",
+    "Claude",
+    "to",
+    "do",
+    "almost",
+    "everything",
+    "for",
+    "me?"
+   ],
+   "zh": "我只要請 Claude 幫我做幾乎所有事？",
+   "en": "I could just ask Claude to do almost everything for me?"
+  },
+  {
+   "a": 25,
+   "b": 37,
+   "tokens": [
+    "Um",
+    "just",
+    "analyze",
+    "my",
+    "production",
+    "system,",
+    "just",
+    "go",
+    "and",
+    "find",
+    "the",
+    "critical",
+    "problems,"
+   ],
+   "zh": "就分析我的正式環境系統，去找出關鍵問題，",
+   "en": "Um just analyze my production system, just go and find the critical problems,"
+  },
+  {
+   "a": 38,
+   "b": 49,
+   "tokens": [
+    "determine",
+    "the",
+    "root",
+    "causes,",
+    "implement",
+    "them,",
+    "ship",
+    "them",
+    "for",
+    "me",
+    "to",
+    "production."
+   ],
+   "zh": "判斷根本原因，實作修正，然後幫我部署到正式環境。",
+   "en": "determine the root causes, implement them, ship them for me to production."
   }
  ],
  "vocab": [
   {
    "id": 0,
-   "term": "like",
-   "pos": "adv.",
-   "ipa": "/laɪk/",
-   "zh": "好像、彷彿",
+   "term": "root causes",
+   "pos": "phr.",
+   "ipa": null,
+   "zh": "根本原因",
    "hits": [
     {
-     "cue": 0,
-     "a": 1,
-     "b": 1
+     "cue": 4,
+     "a": 40,
+     "b": 41
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "term": "ship",
+   "pos": "v.",
+   "ipa": "/ʃɪp/",
+   "zh": "上線、發布",
+   "hits": [
+    {
+     "cue": 4,
+     "a": 44,
+     "b": 44
     }
    ]
   }
- ]
+ ],
+ "intro": {
+  "title": "AI 代理與\n正式環境維運",
+  "lines": [
+   "Alex Palcuie 談 Anthropic 的實務",
+   "從生產工程看 AI 的真實與炒作"
+  ]
+ }
 }

@@ -66,10 +66,10 @@
 
 **`data/raw/<videoId>.json`**（bookmarklet 或匯入框產出）
 ```json
-{"videoId":"CR94QQXO_4s","title":"...","channel":"CTV News","duration":344,
+{"videoId":"puh91fohvTA","title":"...","channel":"dotconferences","duration":1378,
  "lang":"en","kind":"asr","capturedAt":"2026-10-27T23:00:00+08:00","chrome":"142.0.7444.60",
- "events":[{"t":280,"d":5160,"segs":[[0,"pretends"],[400,"like"],[560,"he's"],[840,"self-made"]]},
-           {"t":5600,"d":2100,"segs":[[null,"what a clown"]]}]}
+ "events":[{"t":10800,"d":2840,"segs":[[0,"Bonjour"],[920,"and"],[1280,"hello."]]},
+           {"t":13640,"d":2100,"segs":[[null,"And wouldn't it"]]}]}
 ```
 - `events[].t/d` 毫秒；`segs[i] = [offsetMs | null, text]`。`offsetMs = null` 表示該 seg 沒有逐字時間（手動字幕）。
 - 匯入驗證（server 與 build 都做）：`videoId` 符合 `^[A-Za-z0-9_-]{11}$`；`events` 非空、`t` 為非負整數且非遞減、`d ≥ 0`；每 seg 是長度 2 的陣列、text 非空字串；`title/channel/duration/lang/kind` 必填。
@@ -77,15 +77,15 @@
 **`data/lessons/<videoId>.json`**（pipeline 產出；播放器唯一輸入）
 ```json
 {
- "videoId":"CR94QQXO_4s","title":"...","channel":"...","duration":344,"lang":"en",
+ "videoId":"puh91fohvTA","title":"...","channel":"...","duration":1378,"lang":"en",
  "generatedAt":"2026-10-27T23:00:00+08:00","model":"claude-sonnet-5-5","promptVersion":1,
- "coveredSeconds":344,
- "words":[{"t":0.28,"e":0.68,"w":"pretends","timed":true}, ...],
- "cues":[{"a":0,"b":6,"en":"Pretends like he's self-made. What a clown.",
-          "tokens":["Pretends","like","he's","self-made.","What","a","clown."],
-          "zh":"假裝自己白手起家，真是個小丑。"}],
- "vocab":[{"id":0,"term":"run your mouth","pos":"phr.","ipa":null,"zh":"嘴砲、亂講話",
-           "hits":[{"cue":3,"a":46,"b":48}]}]
+ "coveredSeconds":1378,
+ "words":[{"t":10.8,"e":11.72,"w":"Bonjour","timed":true}, ...],
+ "cues":[{"a":0,"b":2,"en":"Bonjour and hello.",
+          "tokens":["Bonjour","and","hello."],
+          "zh":"Bonjour，大家好。"}],
+ "vocab":[{"id":0,"term":"root causes","pos":"phr.","ipa":null,"zh":"根本原因",
+           "hits":[{"cue":4,"a":40,"b":41}]}]
 }
 ```
 - `words` 由 events 攤平：有 offset 的 seg → 一個字，`t = (ev.t+offset)/1000`、`timed=true`；offset 為 null 的 seg → 以空白切成多個字，全部 `t = ev.t/1000`、`timed=false`。
@@ -115,7 +115,7 @@ yt-learn/
     timing.js                純函式（ESM）：cueIndexAt / activeHitAt / panelState / seenCount
   tests/
     test_schema.py test_server.py test_words.py test_chunk.py test_segment.py test_vocab.py test_build.py
-    fixtures/raw_small.json  （CR94QQXO_4s 前 60 秒的 events）
+    fixtures/raw_small.json  （puh91fohvTA 前 23 個 events，約前 75 秒）
     fixtures/lesson_min.json （§2 範例）
     web/timing.test.js       （node --test）
   data/raw/  data/lessons/  data/cache/<videoId>/<sha>.json
@@ -155,12 +155,12 @@ yt-learn/
 - [ ] **Step 5: 跑測試確認通過**。
 - [ ] **Step 6: 寫 `bookmarklet.js`**（IIFE，可貼 console）：(1) 讀 `ytInitialPlayerResponse.videoDetails.videoId` 與 `captionTracks`，沒有字幕軌 → `console.warn` 並結束；(2) 開 CC → 播 2 秒 → 暫停；(3) 從 `performance.getEntriesByType('resource')` 取 `/api/timedtext` 中 **`v=` 等於當前 videoId 且無 `tlang` 參數** 的最後一筆；沒有 → 提示「請手動開啟 CC 再執行」；(4) 加 `fmt=json3` 重抓，檢查 `events` 非空且最後一個 event 的 `t ≤ duration*1000`；(5) 組 §2 raw（`segs` 的 offset 用 `tOffsetMs ?? null`；text 去掉 `\n`，空白跳過；`chrome` 取自 `navigator.userAgentData?.brands`）；(6) `fetch` POST，`AbortController` 5 秒，`response.ok` 才算成功；(7) 失敗任一步 → 在頁面右下角插入 `position:fixed` 面板：`<textarea readonly>`（內容 = JSON，自動 select）+「複製」按鈕（`navigator.clipboard.writeText`，失敗也沒關係，使用者可手動複製）+ 說明「貼到 http://127.0.0.1:8765 的匯入框」。全程不用 `alert`。
 - [ ] **Step 7: 寫 `web/index.html` 最小版**：標題；`<textarea id="import">` +「匯入」按鈕（POST 同源 `/ingest`，成功後顯示 `next` 指令與「產課完成後重新整理」）；lesson 清單（`GET /lessons`，每項連到 `index.html?v=<id>`）。
-- [ ] **Step 8: 手動驗證三情境**（server 已啟動；Chrome 擴充在 `https://www.youtube.com/watch?v=CR94QQXO_4s` 執行 `bookmarklet.js`）：(a) 允許本機網路 → server log `[ingest] CR94QQXO_4s ...`；(b) 拒絕/被擋 → 頁面出現 textarea，貼到匯入框 → 同一檔案產生；(c) server 沒開 → 5 秒內出現 textarea。把走通的路徑與 Chrome 版本記到 §8。
+- [ ] **Step 8: 手動驗證三情境**（server 已啟動；Chrome 擴充在 `https://www.youtube.com/watch?v=puh91fohvTA` 執行 `bookmarklet.js`）：(a) 允許本機網路 → server log `[ingest] puh91fohvTA ...`；(b) 拒絕/被擋 → 頁面出現 textarea，貼到匯入框 → 同一檔案產生；(c) server 沒開 → 5 秒內出現 textarea。把走通的路徑與 Chrome 版本記到 §8。
 - [ ] **Step 9: Commit** `feat(ingest): schema, local server, youtube bookmarklet, import box`
 
 ### Task 2: words 正規化
 
-**Files:** Create `pipeline/words.py`; Test `tests/test_words.py`; fixture `tests/fixtures/raw_small.json`（從 `data/raw/CR94QQXO_4s.json` 取 `t < 60000` 的 events）。
+**Files:** Create `pipeline/words.py`; Test `tests/test_words.py`; fixture `tests/fixtures/raw_small.json`（從 `data/raw/puh91fohvTA.json` 取前 23 個 events）。
 
 **Interfaces:**
 - Produces: `normalize_words(events: list[dict], duration: float) -> list[dict]`，回 `[{"t","e","w","timed"}]`，§2 規則。
@@ -211,9 +211,9 @@ yt-learn/
 
 - [ ] **Step 1: 失敗測試**
   - `test_hit_text_mismatch_dropped`、`test_hit_bad_shape_dropped`（`a` 是字串、`cue` 不存在）、`test_hit_outside_cue_dropped`。
-  - `test_hit_matches_corrected_token_when_raw_is_asr_typo`：raw `hofa`、token `Hoffa.`、term `Hoffa` → 通過。
-  - `test_no_inflection_matching`：term `expose`、字 `exposed` → 丟棄。
-  - `test_expand_finds_other_exact_occurrences_within_a_cue`：`thug` 只給 1 hit、全片 3 處 → 3 hits；跨 cue 邊界的序列不加。
+  - `test_hit_matches_corrected_token_when_raw_is_asr_typo`：raw `clawed`、token `Claude.`、term `Claude` → 通過。
+  - `test_no_inflection_matching`：term `deploy`、字 `deployed` → 丟棄。
+  - `test_expand_finds_other_exact_occurrences_within_a_cue`：`agent` 只給 1 hit、全片 3 處 → 3 hits；跨 cue 邊界的序列不加。
   - `test_ids_ordered_by_first_hit_time`、`test_max_items_cap`、`test_provider_error_returns_empty`。
 - [ ] Step 2 FAIL → Step 3 實作 → Step 4 PASS → **Step 5: Commit** `feat(pipeline): vocab selection with exact-match validation`
 
@@ -226,9 +226,9 @@ yt-learn/
 
 - [ ] **Step 1: 失敗測試**：`test_build_with_fake_provider_matches_schema`（fixture → `validate_lesson` 空）、`test_limit_seconds_sets_covered_seconds`、`test_preview_refuses_to_overwrite_full_lesson`、`test_lesson_min_fixture_is_valid`。
 - [ ] Step 2 FAIL → Step 3 實作 → Step 4 PASS
-- [ ] **Step 5: 真跑一次（便宜版）**：`python3 -m pipeline.build CR94QQXO_4s --limit-seconds 60` → 人工讀譯文與單字，prompt 調整一輪以內。
-- [ ] **Step 6: 全片**：`python3 -m pipeline.build CR94QQXO_4s` → 數字記到 §8。
-- [ ] **Step 7: Commit** `feat(pipeline): build cli`（`data/lessons/CR94QQXO_4s.json` 一併進版）
+- [ ] **Step 5: 真跑一次（便宜版）**：`python3 -m pipeline.build puh91fohvTA --limit-seconds 60` → 人工讀譯文與單字，prompt 調整一輪以內。
+- [ ] **Step 6: 全片**：`python3 -m pipeline.build puh91fohvTA` → 數字記到 §8。
+- [ ] **Step 7: Commit** `feat(pipeline): build cli`（`data/lessons/puh91fohvTA.json` 一併進版）
 
 ### Task 7: 播放器
 
@@ -249,7 +249,7 @@ yt-learn/
 - [ ] **Step 7: 單字面板**（§1b）。
 - [ ] **Step 8: 片尾複習**（§1c）與鍵盤模式切換。
 - [ ] **Step 9: 舞台下方**（§1d）：逐句列表、單字總表、播放/暫停與重播本句按鈕、stage 全螢幕按鈕、快捷鍵（焦點在 `input/textarea` 時忽略）。
-- [ ] **Step 10: 視覺驗收**：Chrome 開 `http://127.0.0.1:8765/index.html?v=CR94QQXO_4s`，截圖：0:08、0:45、2:20（對照參考影片三格：字幕位置/字級/顏色、面板 5 列與當前列、k/N）、一句最長英文（兩行 + 縮字）、一句最長中文、複習第 1 頁與最後一頁、瀏覽器寬度 900px。手動測：暫停時高亮不前進、播放速度 1.5x 仍同步、往回 seek 後 k 變小、YouTube 控制列可點（進度條、音量）。列差異修到「一眼看過去像同一套版型」。
+- [ ] **Step 10: 視覺驗收**：Chrome 開 `http://127.0.0.1:8765/index.html?v=puh91fohvTA`，截圖：0:08、0:45、2:20（對照參考影片三格：字幕位置/字級/顏色、面板 5 列與當前列、k/N）、一句最長英文（兩行 + 縮字）、一句最長中文、複習第 1 頁與最後一頁、瀏覽器寬度 900px。手動測：暫停時高亮不前進、播放速度 1.5x 仍同步、往回 seek 後 k 變小、YouTube 控制列可點（進度條、音量）。列差異修到「一眼看過去像同一套版型」。
 - [ ] **Step 11: Commit** `feat(web): player`
 
 ### Task 8: 收尾驗證
@@ -267,7 +267,7 @@ yt-learn/
 |---|---|
 | YouTube 字幕端點需要 `pot` token，無法在 server 端抓（今天 yt-dlp 即使指定 Node runtime 仍被 bot 驗證擋） | 擷取固定在使用者瀏覽器內做（bookmarklet），server 只收。不要花時間在 cookies 路線上。 |
 | Chrome Local Network Access 權限閘擋 https→127.0.0.1 POST | 直接 POST 是可選路徑；textarea + 匯入框是保底路徑（Task 1 Step 8 驗三情境）。 |
-| ASR 錯字（`hofa`→Hoffa、`Mullen`→Mullin、`colle`）| segment prompt 允許在 `tokens` 修正拼字但不得增減 token 數；vocab 驗證同時接受原字或修正字。 |
+| ASR 錯字（`clawed`→Claude 這類人名、專有名詞拼錯）| segment prompt 允許在 `tokens` 修正拼字但不得增減 token 數；vocab 驗證同時接受原字或修正字。 |
 | `claude -p` 每支影片約 6–10 次呼叫、每次 10–40 秒 | 快取（含 model）+ `--limit-seconds` 開發；可接受。 |
 | iframe 取得焦點後鍵盤事件到不了父頁 | 自備播放/暫停與重播按鈕；快捷鍵為加分項。 |
 | 在 iframe 上疊 DOM 違反 YouTube 嵌入條款的「不得遮蔽播放器」精神 | 僅個人本機使用；不公開部署；控制列保留區不遮。 |
@@ -282,9 +282,9 @@ yt-learn/
 
 （Task 1/6/8 完成後填：Chrome 版本與走通的擷取路徑、LLM 呼叫數、耗時、vocab 數）
 
-**Task 1 擷取端（Step 8 實測）**：Chrome 155。從 https://www.youtube.com 直接 POST 到 http://127.0.0.1:8765 從未抵達 server（log 沒有 preflight），5 秒後 abort → 出現保底面板 → 按「複製」→ 貼進匯入框 → `POST /ingest` 200 → `data/raw/CR94QQXO_4s.json`（144 events、1046 words）。結論：在此 Chrome 上保底路徑才是可行路徑；直接路徑需使用者授予本機網路權限。
+**Task 1 擷取端（Step 8 實測）**：Chrome 155。從 https://www.youtube.com 直接 POST 到 http://127.0.0.1:8765 從未抵達 server（log 沒有 preflight），5 秒後 abort → 出現保底面板 → 按「複製」→ 貼進匯入框 → `POST /ingest` 200 → `data/raw/<videoId>.json`（一支 6 分鐘新聞片段：144 events、1046 words）。結論：在此 Chrome 上保底路徑才是可行路徑；直接路徑需使用者授予本機網路權限。
 
-- **Task 6 build（全片實測）**：`python3 -m pipeline.build CR94QQXO_4s` → cues=142 vocab=42 llm_calls=9 cache_hits=1 seconds=160.6（模型 claude-sonnet-5-5，無 rule-cue fallback；60 秒 preview 第一次有一個 chunk 因模型跳號 fallback，prompt 加強索引連續性後解決）
+- **Task 6 build（全片實測）**：`python3 -m pipeline.build <videoId>`（同一支 6 分鐘片段）→ cues=142 vocab=42 llm_calls=9 cache_hits=1 seconds=160.6（模型 claude-sonnet-5-5，無 rule-cue fallback；60 秒 preview 第一次有一個 chunk 因模型跳號 fallback，prompt 加強索引連續性後解決）
 - Task 8 收尾（2026-10-28）：全新影片 `GqD0rhajhr0`（Howard Stern Show / Trevor Noah，166 s）從 bookmarklet 保底面板 → 匯入框 → `POST /ingest`（81 events、603 segs、0 個 null offset）→ `python3 -m pipeline.build`：cues=62 vocab=28 llm_calls=6 cache_hits=0 seconds=102.3，無規則切句退回 → 播放器 `?v=GqD0rhajhr0` 在 21.5 s 正確高亮 `fly on the radar`、面板 4 / 28。測試：pytest 74 passed / 1 skipped，node --test 10 pass。
 
 ## 9. v2 變更摘要（對 Codex review 的處置）
