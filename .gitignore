@@ -2,10 +2,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .superpowers/
-data/raw/
-data/cache/
 .venv/
-data/lessons/
-data/jobs/
-data/settings.json
+.DS_Store
+.taste-skill/
 promo/
+# all local state: raw captures, lessons, LLM cache, job logs, settings
+data/
