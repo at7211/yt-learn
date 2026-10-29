@@ -50,6 +50,20 @@ python3 -m pipeline.build <videoId> --provider codex   # 用 Codex CLI
 YTLEARN_PROVIDER=codex python3 server.py               # 讓 server 啟動的產課都用 Codex
 ```
 
+## 費用
+
+產課用的是 Claude Sonnet 5.5（`pipeline/build.py` 的 `DEFAULT_MODEL`），透過已登入的 `claude` CLI 呼叫，吃的是 Claude 訂閱的用量額度，不是 API 帳單。下面是以 API 牌價（輸入 $2、輸出 $10 每百萬 token）換算的估計，token 數用真實 prompt 與快取回覆估算：
+
+| 影片長度 | 呼叫次數 | 輸入 | 輸出 | 約略費用 |
+| --- | --- | --- | --- | --- |
+| 6 分 | 12 | 12k | 15k | $0.19 |
+| 22 分 | 30 | 31k | 18k | $0.25 |
+| 40 分 | 56 | 63k | 34k | $0.45 |
+
+經驗法則：一分鐘影片約 1 到 2 美分，一支 20 分鐘的演講兩三毛美金。重跑同一支影片幾乎免費，回覆都快取在 `data/cache/`，只有 prompt 版本變了才會重新呼叫。
+
+還沒做的省錢空間：每個切句 chunk 都是獨立的 `claude -p` 程序，系統提示每次重送、吃不到 prompt cache，約佔輸入一半；輸出裡一半是把英文原句抄回來，schema 改成只回切點與中譯可砍近半。
+
 ## 播放器快捷鍵
 
 Space 播放／暫停・← → 上一句／下一句・R 重播本句・Z 中文・E 英文・V 單字面板・F 全螢幕。中文輸入法開著也能用。
