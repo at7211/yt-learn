@@ -97,6 +97,24 @@ const startup = cleanupOwnedTabs();
 
 /* ---------- 入口 ---------- */
 
+// Toggle the overlay in a watch tab. A tab opened before the extension was (re)loaded has no content
+// script, so on "no receiver" inject overlay.js once (it guards against double loading) and ask again.
+async function askOverlay(tabId) {
+  const ask = () => chrome.tabs.sendMessage(tabId, { type: 'ytlearn:toggle' });
+  try {
+    return await ask();
+  } catch (e) {
+    log('icon:no-overlay', errMsg(e));
+  }
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['overlay.js'] });
+    return await ask();
+  } catch (e) {
+    log('icon:inject-failed', errMsg(e));
+    return null;
+  }
+}
+
 async function onIconClicked(tab) {
   const url = (tab && tab.url) || '';
   const videoId = ytLearnParseVideoId(url);
@@ -109,8 +127,7 @@ async function onIconClicked(tab) {
   if (inPlace) {
     // The overlay content script (overlay.js) takes over on watch pages. No receiver (a tab opened
     // before the extension was loaded) → fall through to the original flow below.
-    const reply = await chrome.tabs.sendMessage(tab.id, { type: 'ytlearn:toggle' })
-      .catch((e) => { log('icon:no-overlay', errMsg(e)); return null; });
+    const reply = await askOverlay(tab.id);
     if (reply && reply.handled) {
       log('icon:overlay', videoId);
       return;

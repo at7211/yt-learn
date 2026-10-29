@@ -25,8 +25,9 @@ function load(routes = {}, { toggleReply, executeScript } = {}) {
       remove: async (id) => { calls.removed.push(id); }, update: async () => {}, get: async (id) => ({ id }),
       sendMessage: async (tabId, msg) => {
         calls.sent.push({ tabId, msg });
-        if (toggleReply instanceof Error) throw toggleReply;
-        return toggleReply;
+        const r = Array.isArray(toggleReply) ? toggleReply[Math.min(calls.sent.length - 1, toggleReply.length - 1)] : toggleReply;
+        if (r instanceof Error) throw r;
+        return r;
       },
     },
     action: { onClicked: on('clicked'), setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {}, setTitle: async () => {} },
@@ -174,9 +175,21 @@ test('icon on a watch page: overlay answers {handled:true} -> nothing else happe
   assert.deepEqual(w.calls.created, []);
 });
 
-test('icon on a watch page: no content script (sendMessage rejects) -> original flow opens the player tab', async () => {
+const NO_RECEIVER = new Error('Could not establish connection. Receiving end does not exist.');
+
+test('icon on a watch page: no content script (tab predates the reload) -> inject overlay.js and ask again', async () => {
+  const injected = [];
+  const w = load({}, { toggleReply: [NO_RECEIVER, { handled: true }], executeScript: async (o) => { injected.push(o); return [{}]; } });
+  await w.ctx.onIconClicked({ id: 7, url: 'https://www.youtube.com/watch?v=' + VID });
+  assert.deepEqual(JSON.parse(JSON.stringify(injected)), [{ target: { tabId: 7 }, files: ['overlay.js'] }]);
+  assert.equal(w.calls.sent.length, 2);
+  assert.deepEqual(w.calls.fetched, []);
+  assert.deepEqual(w.calls.created, []);
+});
+
+test('icon on a watch page: injection also fails -> original flow opens the player tab', async () => {
   const w = load({ 'POST /add': { status: 200, json: { job: { videoId: VID, state: 'done', attempt: 1, message: '完成' } } } },
-    { toggleReply: new Error('Could not establish connection. Receiving end does not exist.') });
+    { toggleReply: NO_RECEIVER, executeScript: async () => { throw new Error('Cannot access contents of the page'); } });
   await w.ctx.onIconClicked({ id: 7, url: 'https://www.youtube.com/watch?v=' + VID });
   assert.equal(w.calls.sent.length, 1);
   assert.deepEqual(w.calls.fetched, ['POST /add']);
