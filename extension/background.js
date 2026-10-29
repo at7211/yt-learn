@@ -51,6 +51,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     onPageCapture(videoId, tabId).catch((e) => log('bridge:error', errMsg(e)));
     return false;
   }
+  if (msg.type === 'ytlearn:lesson' || msg.type === 'ytlearn:job' || msg.type === 'ytlearn:build') {
+    const videoId = ytLearnParseVideoId(typeof msg.videoId === 'string' ? msg.videoId : '');
+    if (!videoId) {
+      sendResponse({ error: '無法辨識的影片 id' });
+      return false;
+    }
+    if (msg.type === 'ytlearn:build') {
+      const tabId = sender.tab && sender.tab.id;
+      if (typeof tabId !== 'number') {
+        sendResponse({ ok: false, error: '沒有可擷取的分頁' });
+        return false;
+      }
+      // Overlay on a watch page: capture in that tab, no onAdded, no new tab, no ownedTabs entry.
+      log('overlay:build', videoId, 'tab', tabId);
+      runJob(videoId, { mode: 'inplace', tabId }).then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
+      return true;
+    }
+    overlayFetch(msg.type, videoId).then(sendResponse);
+    return true;
+  }
   return false;
 });
 
@@ -85,6 +105,17 @@ async function onIconClicked(tab) {
     await chrome.tabs.create({ url: SERVER + '/index.html', active: true });
     return;
   }
+  const inPlace = url.startsWith('https://www.youtube.com/watch') && typeof tab.id === 'number';
+  if (inPlace) {
+    // The overlay content script (overlay.js) takes over on watch pages. No receiver (a tab opened
+    // before the extension was loaded) → fall through to the original flow below.
+    const reply = await chrome.tabs.sendMessage(tab.id, { type: 'ytlearn:toggle' })
+      .catch((e) => { log('icon:no-overlay', errMsg(e)); return null; });
+    if (reply && reply.handled) {
+      log('icon:overlay', videoId);
+      return;
+    }
+  }
   const pageUrl = SERVER + '/index.html?v=' + videoId;
   let opened = false;
   const openPage = () => {
@@ -92,7 +123,6 @@ async function onIconClicked(tab) {
     opened = true;
     chrome.tabs.create({ url: pageUrl, active: true }).catch((e) => log('icon:open-failed', errMsg(e)));
   };
-  const inPlace = url.startsWith('https://www.youtube.com/watch') && typeof tab.id === 'number';
   const result = await runJob(videoId, inPlace
     ? { mode: 'inplace', tabId: tab.id, onAdded: openPage }
     : { mode: 'background', onAdded: openPage });
@@ -130,6 +160,22 @@ function sendStatus(tabId, s) {
   const msg = { type: 'ytlearn:status', videoId: s.videoId, attempt: s.attempt, state: s.state, message: s.message || '' };
   log('status', tabId, JSON.stringify(msg));
   chrome.tabs.sendMessage(tabId, msg).catch((e) => log('status:undelivered', errMsg(e)));
+}
+
+/* ---------- overlay (overlay.js asks; one GET each, never touches `busy`) ---------- */
+
+// -> {lesson} | {job} | {missing:true} (404) | {error} (server down or bad response)
+async function overlayFetch(type, videoId) {
+  const path = type === 'ytlearn:lesson' ? '/data/lessons/' + videoId + '.json' : '/jobs/' + videoId;
+  try {
+    const r = await api(path);
+    if (r.status === 404) return { missing: true };
+    if (r.status !== 200 || !r.json) return { error: serverError(r) };
+    if (type === 'ytlearn:lesson') return { lesson: r.json };
+    return r.json.job ? { job: r.json.job } : { missing: true };
+  } catch (e) {
+    return { error: errMsg(e) };
+  }
 }
 
 /* ---------- job ---------- */
