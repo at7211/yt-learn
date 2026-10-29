@@ -7,3 +7,4 @@ import './ytid.test.js';
 import './handshake.test.js';
 import './intro.test.js';
 import './progress.test.js';
+import './extension-copies.test.js';
