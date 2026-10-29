@@ -8,3 +8,4 @@ import './handshake.test.js';
 import './intro.test.js';
 import './progress.test.js';
 import './extension-copies.test.js';
+import './overlay-state.test.js';
