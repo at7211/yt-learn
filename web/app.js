@@ -640,9 +640,11 @@ function renderSubtitle(t) {
   const ci = cueIndexAt(cues, words, t);
   const hit = activeHitAt(S.flat, cues, words, t);
   let lit = null; // [a, b] global word range to paint orange
+  let term = ''; // its vocab term: what a click on the orange span looks up
   if (hit && ci >= 0) {
-    const h = S.vocabById.get(hit.vocabId).hits[hit.hitIdx];
-    if (h.cue === ci) lit = [h.a, h.b];
+    const v = S.vocabById.get(hit.vocabId);
+    const h = v.hits[hit.hitIdx];
+    if (h.cue === ci) { lit = [h.a, h.b]; term = v.term; }
   }
   const key = ci + '|' + (lit ? lit.join('-') : '');
   if (key === S.keys.sub) return;
@@ -651,10 +653,19 @@ function renderSubtitle(t) {
   if (ci < 0) { en.replaceChildren(); zh.replaceChildren(); en.dataset.cue = ''; return; }
   const cue = cues[ci];
   const parts = [];
+  // Every token is its own clickable .w span; a vocab hit spanning several tokens is one .kw span
+  // (data-term = the vocab term), so a click on it looks up the whole term.
+  let kw = null;
   cue.tokens.forEach((tok, k) => {
     const w = cue.a + k;
+    const inHit = lit && w >= lit[0] && w <= lit[1];
+    if (inHit && kw) { kw.textContent += ' ' + tok; return; }
     if (k) parts.push(document.createTextNode(' '));
-    parts.push(lit && w >= lit[0] && w <= lit[1] ? el('span', tok, 'kw') : document.createTextNode(tok));
+    if (inHit) {
+      kw = el('span', tok, 'kw');
+      if (term) kw.dataset.term = term;
+      parts.push(kw);
+    } else parts.push(el('span', tok, 'w'));
   });
   const enChanged = en.dataset.cue !== String(ci);
   en.replaceChildren(...parts);

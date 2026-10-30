@@ -44,6 +44,9 @@
 .sub-en:not(.measuring) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .sub-en.long { font-size: clamp(12px, 2.66cqw, 46px); }
 .sub-en .kw { color: var(--orange); }
+/* every word is clickable (→ Cambridge dictionary); only the word spans take the pointer, the layer stays pointer-events: none */
+.sub-en .w, .sub-en .kw { pointer-events: auto; cursor: pointer; }
+.sub-en .w:hover, .sub-en .kw:hover { text-decoration: underline dotted; text-underline-offset: .12em; }
 .sub-zh {
   font: 700 clamp(11px, 2.34cqw, 42px)/1.35 var(--serif);
   color: var(--gold);
