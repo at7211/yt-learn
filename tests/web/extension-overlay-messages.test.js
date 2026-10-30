@@ -263,10 +263,10 @@ test('menu clicks open the home page and the settings section', async () => {
   ]);
 });
 
-test('manifest asks for contextMenus and is version 1.3.1', () => {
+test('manifest asks for contextMenus and is version 1.4.0', () => {
   const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
   assert.ok(m.permissions.includes('contextMenus'));
-  assert.equal(m.version, '1.3.1');
+  assert.equal(m.version, '1.4.0');
   // tab.url comes from host permissions (youtube.com, the local server) and activeTab on icon click
   assert.ok(!m.permissions.includes('tabs') && m.permissions.includes('activeTab'));
 });
