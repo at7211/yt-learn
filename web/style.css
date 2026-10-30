@@ -174,6 +174,14 @@ button { font: inherit; }
 .intro-lines { font: 500 clamp(11px, 1.45cqw, 26px)/1.55 var(--tc); color: #e3e6eb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (prefers-reduced-motion: reduce) { .intro { transition: none; } }
 
+/* ---- shortcut hint: a thin strip at the top centre on the first play, gone after a few seconds */
+.hint { left: 50%; top: 1%; transform: translateX(-50%); width: auto; white-space: nowrap;
+  padding: .35cqw .9cqw; border-radius: 999px; background: rgba(10, 12, 18, .82); /* taste-skill-ignore: stage overlay imitates the reference video */
+  font: 500 clamp(11px, 1.2cqw, 22px)/1.4 var(--tc); color: #e8eaee; letter-spacing: .02em;
+  opacity: 0; transition: opacity .6s ease; }
+.hint.show { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .hint { transition: none; } }
+
 /* ---- vocab panel: x 58%–97%, on the shaded right side */
 .panel { left: 58%; width: 39%; top: 4%; height: 80%; font-family: var(--sans); opacity: 0; transition: opacity .7s ease; }
 .panel.live { opacity: 1; }

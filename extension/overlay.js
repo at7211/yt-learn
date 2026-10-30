@@ -10,6 +10,8 @@
 
   const PANEL_LEAD = 1.0; // seconds before the first vocab word that the panel fades in (web/app.js)
   const INTRO_SECONDS = 10; // the 前情提要 card stays this long after the first play
+  const HINT_SECONDS = 8; // the shortcut strip at the top stays this long after the first play
+  const HINT_TEXT = 'Z 中文 · E 英文 · V 單字 · R 重播本句 · [ ] 上一句／下一句';
   const POLL_MS = 2000; // job polling while a lesson is being built
   const ROUTE_POLL_MS = 1000; // fallback for yt-navigate-finish
   const ERROR_PILL_MS = 6000;
@@ -253,8 +255,10 @@
     const zh = el('div', null, 'sub-zh');
     subs.append(en, zh);
 
-    frame.append(shade, intro, panel, subs);
-    return { frame, intro, introTitle, introLines, panel, total, count, rows, track: null, en, zh };
+    const hint = el('div', HINT_TEXT, 'layer hint'); // top strip on the first play: which keys do what
+
+    frame.append(shade, intro, panel, subs, hint);
+    return { frame, intro, introTitle, introLines, panel, total, count, rows, track: null, en, zh, hint };
   }
 
   async function mount(tok, lesson) {
@@ -371,6 +375,7 @@
     M = null;
     if (m.raf) cancelAnimationFrame(m.raf);
     clearTimeout(m.introTimer);
+    clearTimeout(m.hintTimer);
     m.abort.abort();
     if (m.ro) m.ro.disconnect();
     if (m.mo) m.mo.disconnect();
@@ -405,6 +410,9 @@
   }
 
   function showIntro(m) {
+    const hint = m.ui.hint;
+    hint.classList.add('show');
+    m.hintTimer = setTimeout(() => hint.classList.remove('show'), HINT_SECONDS * 1000);
     const box = m.ui.intro;
     if (box.hidden) return;
     box.classList.add('show');

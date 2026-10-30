@@ -17,6 +17,7 @@ function el(tag, text, cls) {
 }
 const PANEL_LEAD = 1.0; // seconds before the first vocab word that the panel fades in
 const INTRO_SECONDS = 10; // how long the 前情提要 card stays after the first play
+const HINT_SECONDS = 8; // how long the shortcut strip at the top stays after the first play
 const PER_PAGE = 18; // review: 3 columns × 6 rows
 
 const S = {
@@ -478,6 +479,9 @@ function renderIntro(intro) {
 }
 
 function showIntro() {
+  const hint = $('hint');
+  hint.classList.add('show');
+  setTimeout(() => hint.classList.remove('show'), HINT_SECONDS * 1000);
   const box = $('intro');
   if (box.hidden) return;
   box.classList.add('show');
