@@ -11,3 +11,4 @@ import './extension-copies.test.js';
 import './overlay-state.test.js';
 import './extension-overlay-messages.test.js';
 import './settings.test.js';
+import './dict.test.js';
