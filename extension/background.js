@@ -8,6 +8,9 @@ const SERVER_DOWN = '本機 server 沒有回應（請確認 python3 server.py �
 const BUSY = '已有一支影片在處理中';
 const TAB_CLOSED = '擷取用的分頁已被關閉';
 const DEFAULT_TITLE = 'yt-learn：把這支影片變成課程';
+const DICT_ORIGIN = 'https://dictionary.cambridge.org/';
+const DICT_W = 520;
+const DICT_H = 760;
 
 const log = (stage, ...a) => console.log('[yt-learn]', stage, ...a);
 const errMsg = (e) => String((e && e.message) || e);
@@ -75,6 +78,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     onPageCapture(videoId, tabId).catch((e) => log('bridge:error', errMsg(e)));
     return false;
   }
+  if (msg.type === 'ytlearn:dict') {
+    const url = typeof msg.url === 'string' ? msg.url : '';
+    if (!url.startsWith(DICT_ORIGIN)) {
+      log('dict:rejected', url);
+      sendResponse({ ok: false, error: '不是劍橋字典的網址' });
+      return false;
+    }
+    openDict(url, msg.screen).then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
+    return true;
+  }
   if (msg.type === 'ytlearn:lesson' || msg.type === 'ytlearn:job' || msg.type === 'ytlearn:build') {
     const videoId = ytLearnParseVideoId(typeof msg.videoId === 'string' ? msg.videoId : '');
     if (!videoId) {
@@ -115,6 +128,12 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
     return true;
   }
   return false;
+});
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  chrome.storage.session.get('dictWindowId').then((got) => {
+    if (got.dictWindowId === windowId) return chrome.storage.session.set({ dictWindowId: null });
+  }).catch((e) => log('dict:forget-failed', errMsg(e)));
 });
 
 const startup = cleanupOwnedTabs();
@@ -217,6 +236,46 @@ async function overlayFetch(type, videoId) {
   } catch (e) {
     return { error: errMsg(e) };
   }
+}
+
+/* ---------- dictionary popup (overlay.js: click a subtitle word → ytlearn:dict) ---------- */
+
+// One small popup window beside the video, reused for later lookups: its id lives in storage.session
+// (dictWindowId) so it survives the worker going to sleep. Lookups are queued so two quick clicks
+// never open two windows.
+let dictQueue = Promise.resolve();
+
+function openDict(url, screen) {
+  const run = dictQueue.then(() => openDictInner(url, screen));
+  dictQueue = run.catch(() => { });
+  return run;
+}
+
+async function openDictInner(url, screen) {
+  const got = await chrome.storage.session.get('dictWindowId');
+  const id = got.dictWindowId;
+  if (typeof id === 'number') {
+    try {
+      const tabs = await chrome.tabs.query({ windowId: id });
+      const tab = tabs && tabs[0];
+      if (tab && typeof tab.id === 'number') {
+        await chrome.tabs.update(tab.id, { url });
+        await chrome.windows.update(id, { focused: true });
+        log('dict:reuse', id, url);
+        return { ok: true, windowId: id };
+      }
+    } catch (e) {
+      log('dict:window-gone', id, errMsg(e));
+    }
+  }
+  // A service worker has no `screen`: the content script sends its screen's available area.
+  const s = screen && typeof screen === 'object' ? screen : {};
+  const opts = { url, type: 'popup', width: DICT_W, height: DICT_H, focused: true };
+  if (Number.isFinite(s.width) && s.width > DICT_W) opts.left = Math.round((Number.isFinite(s.left) ? s.left : 0) + s.width - DICT_W - 20);
+  const win = await chrome.windows.create(opts);
+  await chrome.storage.session.set({ dictWindowId: win && typeof win.id === 'number' ? win.id : null });
+  log('dict:create', win && win.id, url);
+  return { ok: true, windowId: win && win.id };
 }
 
 /* ---------- job ---------- */

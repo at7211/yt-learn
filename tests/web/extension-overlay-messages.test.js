@@ -12,8 +12,10 @@ const VID = 'puh91fohvTA';
 const LESSON = { videoId: VID, cues: [], words: [], vocab: [] };
 
 // routes: { 'GET /path': {status, json} | 'down' }
-function load(routes = {}, { toggleReply, executeScript } = {}) {
-  const calls = { fetched: [], created: [], sent: [], removed: [], sessionSets: [], bodies: {}, menus: [], menuOps: [] };
+function load(routes = {}, { toggleReply, executeScript, windows } = {}) {
+  const calls = { fetched: [], created: [], sent: [], removed: [], sessionSets: [], bodies: {}, menus: [], menuOps: [],
+    winCreated: [], winUpdated: [], tabQueries: [], tabUpdates: [] };
+  let nextWin = 500;
   const listeners = {};
   const on = (name) => ({ addListener: (f) => { listeners[name] = f; } });
   const store = {};
@@ -34,7 +36,9 @@ function load(routes = {}, { toggleReply, executeScript } = {}) {
     tabs: {
       onUpdated: on('updated'), onRemoved: on('removed'),
       create: async (o) => { calls.created.push(o); return { id: 99 }; },
-      remove: async (id) => { calls.removed.push(id); }, update: async () => {}, get: async (id) => ({ id }),
+      remove: async (id) => { calls.removed.push(id); }, get: async (id) => ({ id }),
+      update: async (id, o) => { calls.tabUpdates.push([id, o]); },
+      query: async (q) => { calls.tabQueries.push(q); return windows && windows.query ? windows.query(q) : [{ id: q.windowId * 10 }]; },
       sendMessage: async (tabId, msg) => {
         calls.sent.push({ tabId, msg });
         const r = Array.isArray(toggleReply) ? toggleReply[Math.min(calls.sent.length - 1, toggleReply.length - 1)] : toggleReply;
@@ -45,6 +49,11 @@ function load(routes = {}, { toggleReply, executeScript } = {}) {
     action: { onClicked: on('clicked'), setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {}, setTitle: async () => {} },
     storage: { session: { get: async (k) => ({ [k]: store[k] }), set: async (o) => { calls.sessionSets.push(JSON.stringify(o)); Object.assign(store, o); } } },
     scripting: { executeScript: executeScript || (async () => { throw new Error('not in tests'); }) },
+    windows: {
+      onRemoved: on('winRemoved'),
+      create: async (o) => { calls.winCreated.push(o); return { id: nextWin++ }; },
+      update: async (id, o) => { calls.winUpdated.push([id, o]); if (windows && windows.update) return windows.update(id, o); return { id }; },
+    },
   };
   const ctx = {
     chrome, URL, Promise, Date, JSON, Error, console: { log() {} }, setTimeout, clearTimeout,
@@ -63,7 +72,7 @@ function load(routes = {}, { toggleReply, executeScript } = {}) {
   ctx.importScripts = () => vm.runInContext(YTID, ctx);
   vm.createContext(ctx);
   vm.runInContext(SRC, ctx);
-  return { ctx, calls, listeners };
+  return { ctx, calls, listeners, store };
 }
 
 // sendResponse may be called synchronously (validation errors) or later (fetches): normalise both.
@@ -266,4 +275,79 @@ test('overlay and pill shadow roots are closed', () => {
   const src = readFileSync(new URL('../../extension/overlay.js', import.meta.url), 'utf8');
   assert.equal((src.match(/attachShadow\(\{ mode: 'closed' \}\)/g) || []).length, 2);
   assert.ok(!/mode: 'open'/.test(src));
+});
+
+/* ---------- ytlearn:dict: one reusable popup window for the Cambridge dictionary ---------- */
+
+const DICT = 'https://dictionary.cambridge.org/dictionary/english-chinese-traditional/';
+const plain = (x) => JSON.parse(JSON.stringify(x));
+
+test('ytlearn:dict: first lookup creates a popup beside the video and remembers it; the next one reuses it', async () => {
+  const w = load();
+  const a = await ask(w, { type: 'ytlearn:dict', url: DICT + 'concepts', screen: { left: 0, width: 1920 } });
+  assert.equal(a.ret, true);
+  assert.equal(a.r.ok, true);
+  assert.deepEqual(plain(w.calls.winCreated), [{ url: DICT + 'concepts', type: 'popup', width: 520, height: 760, focused: true, left: 1380 }]);
+  assert.equal(w.store.dictWindowId, 500);
+  const b = await ask(w, { type: 'ytlearn:dict', url: DICT + 'sci-fi' });
+  assert.equal(b.r.ok, true);
+  assert.equal(w.calls.winCreated.length, 1, 'no second window');
+  assert.deepEqual(plain(w.calls.tabQueries), [{ windowId: 500 }]);
+  assert.deepEqual(plain(w.calls.tabUpdates), [[5000, { url: DICT + 'sci-fi' }]]);
+  assert.deepEqual(plain(w.calls.winUpdated), [[500, { focused: true }]]);
+});
+
+test('ytlearn:dict: no screen info -> no left; window update rejects (closed) -> a new window', async () => {
+  const w = load({}, { windows: { update: async () => { throw new Error('No window with id: 500.'); } } });
+  await ask(w, { type: 'ytlearn:dict', url: DICT + 'a' });
+  assert.equal('left' in w.calls.winCreated[0], false);
+  const r = (await ask(w, { type: 'ytlearn:dict', url: DICT + 'b' })).r;
+  assert.equal(r.ok, true);
+  assert.equal(w.calls.winCreated.length, 2);
+  assert.equal(w.calls.winCreated[1].url, DICT + 'b');
+  assert.equal(w.store.dictWindowId, 501);
+});
+
+test('ytlearn:dict: the window has no tabs left -> a new window', async () => {
+  const w = load({}, { windows: { query: async () => [] } });
+  await ask(w, { type: 'ytlearn:dict', url: DICT + 'a' });
+  await ask(w, { type: 'ytlearn:dict', url: DICT + 'b' });
+  assert.equal(w.calls.winCreated.length, 2);
+  assert.deepEqual(w.calls.tabUpdates, []);
+});
+
+test('ytlearn:dict: windows.onRemoved for the popup forgets it -> next lookup creates', async () => {
+  const w = load();
+  await ask(w, { type: 'ytlearn:dict', url: DICT + 'a' });
+  w.listeners.winRemoved(123); // some other window: kept
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(w.store.dictWindowId, 500);
+  w.listeners.winRemoved(500);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(w.store.dictWindowId, null);
+  await ask(w, { type: 'ytlearn:dict', url: DICT + 'b' });
+  assert.equal(w.calls.winCreated.length, 2);
+  assert.deepEqual(w.calls.tabQueries, []);
+});
+
+test('ytlearn:dict: two quick lookups open one window', async () => {
+  const w = load();
+  await Promise.all([ask(w, { type: 'ytlearn:dict', url: DICT + 'a' }), ask(w, { type: 'ytlearn:dict', url: DICT + 'b' })]);
+  assert.equal(w.calls.winCreated.length, 1);
+  assert.deepEqual(plain(w.calls.tabUpdates), [[5000, { url: DICT + 'b' }]]);
+});
+
+test('ytlearn:dict: anything but a Cambridge dictionary URL is ignored', async () => {
+  const w = load();
+  for (const url of ['https://evil.example/', 'http://dictionary.cambridge.org/x', 'https://dictionary.cambridge.org.evil.example/',
+    'javascript:alert(1)', '', undefined, 42]) {
+    const { r, ret } = await ask(w, { type: 'ytlearn:dict', url });
+    assert.equal(ret, false);
+    assert.equal(r.ok, false);
+  }
+  const foreign = await ask(w, { type: 'ytlearn:dict', url: DICT + 'a' }, { id: 'someone-else', tab: { id: 1 } });
+  assert.equal(foreign.r, undefined);
+  assert.deepEqual(w.calls.winCreated, []);
+  assert.deepEqual(w.calls.tabQueries, []);
+  assert.deepEqual(w.calls.tabUpdates, []);
 });
