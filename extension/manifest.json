@@ -42,6 +42,7 @@
         "timing.js",
         "intro.js",
         "overlay-state.js",
+        "dict.js",
         "overlay.css"
       ],
       "matches": [

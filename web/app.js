@@ -4,6 +4,7 @@ import { cueIndexAt, flattenHits, activeHitAt, panelState, seenCount } from './t
 import { parseVideoId } from './ytid.js';
 import { waitForAck, shouldApplyLiveStatus } from './handshake.js';
 import { introRows } from './intro.js';
+import { dictWord, dictUrl, clickWord } from './dict.js';
 import { barState } from './progress.js';
 import { DEFAULTS, MODELS, EFFORTS, PRESETS, normalize, presetOf, summary, shortModel } from './settings.js';
 
@@ -676,6 +677,19 @@ function renderSubtitle(t) {
   }
 }
 
+// Click a subtitle word → pause and look it up in the Cambridge dictionary, in one small popup
+// window that later lookups reuse (named target).
+function onWordClick(e) {
+  const raw = clickWord(e.target);
+  if (!raw) return;
+  e.preventDefault();
+  const word = dictWord(raw);
+  if (!word) return; // a number or punctuation only
+  if (S.ready) S.player.pauseVideo();
+  const win = window.open(dictUrl(word), 'ytlearn-dict', 'popup,width=520,height=760');
+  if (win) win.focus();
+}
+
 // Shrink English when it needs more than two lines, Chinese when it overflows one line.
 function fitSubtitle() {
   const en = $('sub-en'), zh = $('sub-zh');
@@ -893,6 +907,7 @@ function initControls() {
   $('btn-en').onclick = toggleEn;
   $('btn-vocab').onclick = toggleVocab;
   $('btn-fs').onclick = toggleFullscreen;
+  $('sub-en').addEventListener('click', onWordClick); // delegated: the word spans are rebuilt per cue
   // Keep focus off the buttons so Space never double-fires (button click + our handler).
   document.querySelectorAll('#controls button').forEach((b) => b.addEventListener('mousedown', (e) => e.preventDefault()));
   $('review-prev').onclick = () => turnPage(-1);

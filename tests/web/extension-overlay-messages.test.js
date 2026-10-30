@@ -351,3 +351,12 @@ test('ytlearn:dict: anything but a Cambridge dictionary URL is ignored', async (
   assert.deepEqual(w.calls.tabQueries, []);
   assert.deepEqual(w.calls.tabUpdates, []);
 });
+
+test('overlay can import dict.js (web-accessible) and sends ytlearn:dict on a word click', () => {
+  const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
+  assert.ok(m.web_accessible_resources[0].resources.includes('dict.js'));
+  const src = readFileSync(new URL('../../extension/overlay.js', import.meta.url), 'utf8');
+  assert.ok(src.includes("import(url('dict.js'))"));
+  assert.ok(src.includes("type: 'ytlearn:dict'"));
+  assert.ok(src.includes('m.video.pause()'));
+});

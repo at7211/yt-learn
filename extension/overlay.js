@@ -25,8 +25,9 @@
   let T = null; // timing.js
   let I = null; // intro.js
   let O = null; // overlay-state.js
-  const ready = Promise.all([import(url('timing.js')), import(url('intro.js')), import(url('overlay-state.js'))])
-    .then(([t, i, o]) => { T = t; I = i; O = o; S = O.initialState(); });
+  let D = null; // dict.js
+  const ready = Promise.all([import(url('timing.js')), import(url('intro.js')), import(url('overlay-state.js')), import(url('dict.js'))])
+    .then(([t, i, o, d]) => { T = t; I = i; O = o; D = d; S = O.initialState(); });
   let cssText = null;
   let S = null; // overlay-state machine
   let M = null; // the mounted overlay (see mount())
@@ -313,6 +314,9 @@
     video.addEventListener('play', onPlay, sig);
     video.addEventListener('playing', onPlay, sig);
     for (const ev of ['pause', 'ended', 'seeked', 'seeking', 'timeupdate']) video.addEventListener(ev, () => draw(m), sig);
+    m.ui.en.addEventListener('click', (e) => onWordClick(m, e), sig);
+    // a double click on a word must not reach the player (fullscreen)
+    m.ui.en.addEventListener('dblclick', (e) => { if (D.clickWord(e.target)) e.stopPropagation(); }, sig);
     m.ro = new ResizeObserver(() => { m.rowH = 0; m.keys.panel = null; fitSubtitle(m); renderPanel(m, m.t); });
     m.ro.observe(player);
     m.mo = new MutationObserver(() => checkAd(m));
@@ -535,6 +539,23 @@
     m.video.currentTime = Math.max(0, t);
     if (m.video.paused) m.video.play().catch(() => { });
     draw(m);
+  }
+
+  /* ---------- click a subtitle word → pause, Cambridge dictionary in a popup beside the video ---------- */
+
+  function onWordClick(m, e) {
+    if (M !== m) return;
+    const raw = D.clickWord(e.target);
+    if (!raw) return;
+    e.stopPropagation(); // the click stays ours: YouTube's player must not toggle play/pause too
+    e.preventDefault();
+    const word = D.dictWord(raw);
+    if (!word) return; // a number or punctuation only
+    m.video.pause();
+    const sc = window.screen || {};
+    const left = Number.isFinite(sc.availLeft) ? sc.availLeft : 0;
+    send({ type: 'ytlearn:dict', url: D.dictUrl(word), screen: { left, width: sc.availWidth } })
+      .then((r) => { if (!r || !r.ok) log('dict:failed', r && r.error); });
   }
 
   /* ---------- keyboard (capture phase, only our keys, only while mounted) ---------- */
