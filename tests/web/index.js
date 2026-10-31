@@ -12,3 +12,5 @@ import './overlay-state.test.js';
 import './extension-overlay-messages.test.js';
 import './settings.test.js';
 import './dict.test.js';
+import './vtt.test.js';
+import './udemy-capture.test.js';

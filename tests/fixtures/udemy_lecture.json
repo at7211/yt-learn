@@ -1,0 +1,27 @@
+{
+  "_class": "lecture",
+  "id": 5800738,
+  "title": "Getting Help",
+  "asset": {
+    "_class": "asset",
+    "id": 7000672,
+    "title": "getting-help.mp4",
+    "length": 403,
+    "captions": [
+      {
+        "_class": "caption",
+        "id": 1,
+        "locale_id": "tr_TR",
+        "source": "auto",
+        "url": "https://vtt-c.udemycdn.com/7000672/tr_TR/a.vtt?Expires=1&Signature=x&Key-Pair-Id=y"
+      },
+      {
+        "_class": "caption",
+        "id": 2,
+        "locale_id": "en_US",
+        "source": "auto",
+        "url": "https://vtt-c.udemycdn.com/7000672/en_US/b.vtt?Expires=1&Signature=x&Key-Pair-Id=y"
+      }
+    ]
+  }
+}

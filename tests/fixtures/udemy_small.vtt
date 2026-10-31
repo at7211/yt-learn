@@ -1,0 +1,31 @@
+﻿WEBVTT
+
+NOTE This is a comment
+spanning two lines
+
+1
+00:00:01.000 --> 00:00:03.000
+<v Narrator>Welcome to the course.</v>
+
+00:00:03.000 --> 00:00:05.500
+Tom <c.foo>&amp;</c.foo> Jerry
+
+00:00:05.000 --> 00:00:07.000 line:90% position:50%
+Two lines
+here
+
+00:00:07.000 --> 00:00:09.000
+Same start A
+
+00:00:07.000 --> 00:00:08.000
+Same start B
+
+00:00:06.000 --> 00:00:06.500
+Out of order
+
+00:00:09.000 --> 00:00:10.000
+<i></i>
+
+00:00:10.000 --> 00:00:12.000
+The end.
+
