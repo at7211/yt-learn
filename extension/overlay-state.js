@@ -4,17 +4,22 @@
 const ID_RE = /^[A-Za-z0-9_-]{11}$/;
 // Same rule as extension/ytid.js ytLearnParseUdemyUrl and pipeline/ids.py parse_udemy_url (tests/fixtures/lesson_ids.json).
 const UDEMY_URL_RE = /^https:\/\/www\.udemy\.com\/course\/([A-Za-z0-9_-]+)\/learn\/lecture\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
+// Same rule as extension/ytid.js ytLearnParseNetflixUrl and pipeline/ids.py parse_netflix_url.
+const NETFLIX_URL_RE = /^https:\/\/www\.netflix\.com\/watch\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
 
 /* ---------- route ---------- */
 
 // The lesson id of the page, or null: a www.youtube.com watch page -> its 11-char video id, a
-// www.udemy.com lecture page -> 'udemy.<lectureId>'. `flexyId` (YouTube only) is ytd-watch-flexy's
+// www.udemy.com lecture page -> 'udemy.<lectureId>', a www.netflix.com/watch/<digits> page ->
+// 'netflix.<movieId>'. `flexyId` (YouTube only) is ytd-watch-flexy's
 // video-id attribute (null/'' when absent). During an SPA navigation the URL and the attribute can
 // briefly disagree; that is reported as null ("not settled"), and the 1 s route poll picks it up once they agree.
 export function lessonIdFromUrl(href, flexyId) {
   if (typeof href !== 'string') return null;
   const m = UDEMY_URL_RE.exec(href);
   if (m) return 'udemy.' + m[2];
+  const n = NETFLIX_URL_RE.exec(href);
+  if (n) return 'netflix.' + n[1];
   let u;
   try { u = new URL(href); } catch (e) { return null; }
   if (u.protocol !== 'https:' || u.hostname !== 'www.youtube.com' || u.pathname !== '/watch') return null;

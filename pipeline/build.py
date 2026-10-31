@@ -91,7 +91,8 @@ def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
         "duration": duration, "lang": raw["lang"],
         "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "model": model_label, "effort": effort, "promptVersion": prompt_version, "coveredSeconds": covered,
-        "words": words, "cues": cues, "vocab": vocab,
+        "words": [{k: v for k, v in w.items() if k != "ev"} for w in words],  # `ev` is internal
+        "cues": cues, "vocab": vocab,
     }
     for k in ("source", "sourceUrl"):  # optional; validated by validate_raw/validate_lesson
         if k in raw:

@@ -46,10 +46,12 @@ def test_untimed_words_strictly_increasing_and_two_cues_in_one_event_distinct():
     assert words[3]["t"] > words[0]["t"]
 
 
-def test_untimed_tiny_event_still_strictly_increasing():
+def test_untimed_event_shorter_than_one_ms_per_word_stays_in_its_window():
+    # 1 ms for 3 words: strictly increasing is impossible inside the window, so the leftover words
+    # sit at the window end (equal, never out of order). The old code pushed them past it (1.002).
     ev = [{"t": 1000, "d": 1, "segs": [[None, "a b c"]]}]
     ts = [w["t"] for w in normalize_words(ev, 10)]
-    assert all(b > a for a, b in zip(ts, ts[1:]))
+    assert ts == [1.0, 1.001, 1.001]
 
 
 def test_untimed_zero_duration_event_shares_start():
@@ -113,7 +115,7 @@ def test_leading_untimed_run_stops_at_the_next_timed_word_and_drops_speaker_mark
           {"t": 42720, "d": 1000, "segs": [[0, "next"]]}]
     w = normalize_words(ev, 60)
     assert [x["w"] for x in w] == ["I", "can", "go", "lower.", "next"]
-    assert w[0] == {"t": 40.2, "e": 40.4, "w": "I", "timed": False}
+    assert w[0] == {"t": 40.2, "e": 40.4, "w": "I", "timed": False, "ev": 0}
     assert w[1]["t"] == 40.4
     assert all(w[i]["t"] >= w[i - 1]["t"] for i in range(1, len(w)))
 
@@ -141,3 +143,41 @@ def test_bracketed_sound_tags_are_dropped():
           {"t": 3000, "d": 1000, "segs": [[None, ">> [Music]"], [100, "b"], [300, "[Applause]"]]}]
     w = normalize_words(ev, 60)
     assert [x["w"] for x in w] == ["a", "b"]
+
+
+def test_each_word_records_its_source_event_index():
+    ev = [{"t": 0, "d": 1000, "segs": [[None, "one two"]]},
+          {"t": 1000, "d": 1000, "segs": [[None, "[Music]"]]},  # no words: index 1 is skipped, not renumbered
+          {"t": 2000, "d": 1000, "segs": [[0, "three"], [None, ">> four"]]}]
+    w = normalize_words(ev, 10)
+    assert [(x["w"], x["ev"]) for x in w] == [("one", 0), ("two", 0), ("three", 2), ("four", 2)]
+
+
+def test_one_ms_event_with_four_words_never_runs_backwards_or_past_the_next_event():
+    # The old +0.001 push was not bounded by the window end: starts came out 0, .001, .002, .003, then .001.
+    ev = [{"t": 0, "d": 1, "segs": [[None, "a b c d"]]},
+          {"t": 1, "d": 1000, "segs": [[None, "next"]]}]
+    w = normalize_words(ev, 10)
+    ts = [x["t"] for x in w]
+    assert ts == [0, 0.001, 0.001, 0.001, 0.001]
+    assert ts == sorted(ts)
+    assert all(x["t"] <= 0.001 for x in w[:4])
+    assert all(x["t"] <= x["e"] for x in w)
+
+
+def test_eight_ms_window_with_a_long_word_stays_strictly_increasing():
+    # Proportional starts would put a, b, c within the last millisecond; the backward cap spreads them.
+    ev = [{"t": 0, "d": 8, "segs": [[None, "internationalization a b c"]]},
+          {"t": 8, "d": 1000, "segs": [[0, "next"]]}]
+    w = normalize_words(ev, 10)
+    ts = [x["t"] for x in w[:4]]
+    assert all(b > a for a, b in zip(ts, ts[1:])), ts
+    assert ts[-1] < 0.008
+    assert ts == [0, 0.005, 0.006, 0.007]
+
+
+def test_window_exactly_n_ms_gives_one_ms_per_word():
+    ev = [{"t": 1000, "d": 3, "segs": [[None, "x y z"]]}, {"t": 1003, "d": 100, "segs": [[0, "w"]]}]
+    w = normalize_words(ev, 10)
+    assert [x["t"] for x in w[:3]] == [1.0, 1.001, 1.002]
+    assert [x["e"] for x in w[:3]] == [1.001, 1.002, 1.003]

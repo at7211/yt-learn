@@ -15,26 +15,38 @@ def _tokens(text):
 
 
 def _spread_untimed(words, idx, ev_start, ev_end, duration, fixed_e):
+    """Starts by cumulative character length, allotted in whole milliseconds.
+
+    s_k = max(proportional, s_{k-1} + 1 ms), capped from the back at window_end - (n - k) ms, so with
+    span >= n ms the starts are strictly increasing and all < window_end. Only a window shorter than
+    n ms lets the remaining words sit at window_end (equal, never out of order)."""
     if not idx:
         return
+    n = len(idx)
     span = ev_end - ev_start
-    total = sum(len(words[i]["w"]) for i in idx) + len(idx) - 1
+    lo_ms, hi_ms = round(ev_start * 1000), round(ev_end * 1000)
+    total = sum(len(words[i]["w"]) for i in idx) + n - 1
     before = 0
     starts = []
     for i in idx:
-        starts.append(round(ev_start + span * before / total, 3))
+        starts.append(round(round(ev_start + span * before / total, 3) * 1000))
         before += len(words[i]["w"]) + 1
-    for k in range(1, len(starts)):
-        if span > 0 and starts[k] <= starts[k - 1]:
-            starts[k] = round(starts[k - 1] + 0.001, 3)
+    room = hi_ms - lo_ms >= n
+    for k in range(n):
+        s = starts[k] if k == 0 else max(starts[k], starts[k - 1] + 1)
+        starts[k] = min(s, hi_ms - (n - k)) if room else min(s, hi_ms)
+    starts = [ms / 1000 for ms in starts]
     last_end = min(ev_end, duration)
     for k, i in enumerate(idx):
         words[i]["t"] = starts[k]
-        fixed_e[i] = starts[k + 1] if k + 1 < len(idx) else last_end
+        fixed_e[i] = starts[k + 1] if k + 1 < n else last_end
 
 
 def normalize_words(events: list[dict], duration: float) -> list[dict]:
-    """Flatten caption events into words ``{"t", "e", "w", "timed"}`` (seconds).
+    """Flatten caption events into words ``{"t", "e", "w", "timed", "ev"}`` (seconds).
+
+    ``ev`` is the index of the source event in ``events`` (internal: build_lesson drops it before
+    the words go into a lesson; prompts only read ``w`` and ``t``).
 
     Timed word: ``e`` is the ``t`` of the next word whose ``t`` is strictly
     greater than this word's ``t``, capped at ``t + 1.5``. A timed word with no
@@ -47,8 +59,10 @@ def normalize_words(events: list[dict], duration: float) -> list[dict]:
     start mid-event get distinct, increasing start times and a leading untimed
     run never overtakes the timed words that follow it; they stay ``timed=False``.
     Each untimed word's ``e`` is the next untimed word's ``t``; the run's last word
-    gets ``min(window end, duration)``. A zero-length window puts all its words at
-    the window start. ``>>`` speaker-change markers are dropped.
+    gets ``min(window end, duration)``. Starts are whole milliseconds, strictly
+    increasing and before the window end whenever the window is at least one ms per
+    word; a shorter window puts the leftover words at the window end (a zero-length
+    window: all at the window start). ``>>`` speaker-change markers are dropped.
     ``e`` is never less than ``t``.
     """
     words = []
@@ -67,7 +81,7 @@ def normalize_words(events: list[dict], duration: float) -> list[dict]:
                 toks.append(((ev["t"] + offset) / 1000, text.strip()))
         base = len(words)
         for t, tok in toks:
-            words.append({"t": ev_start if t is None else t, "w": tok, "timed": t is not None})
+            words.append({"t": ev_start if t is None else t, "w": tok, "timed": t is not None, "ev": n})
         i = 0
         while i < len(toks):
             if toks[i][0] is not None:

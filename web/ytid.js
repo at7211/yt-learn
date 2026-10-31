@@ -26,9 +26,11 @@ export function canonicalUrl(id) {
 }
 
 // Lesson ids (mirror pipeline/ids.py; shared table tests/fixtures/lesson_ids.json):
-// YouTube 11-char id, or `udemy.<lectureId>` for a Udemy lecture.
-const LESSON_ID_RE = /^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12})$/;
+// YouTube 11-char id, `udemy.<lectureId>` for a Udemy lecture, or `netflix.<movieId>` for a Netflix title.
+const LESSON_ID_RE = /^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12}|netflix\.[0-9]{1,12})$/;
 const UDEMY_ID_RE = /^udemy\.[0-9]{1,12}$/;
+const NETFLIX_ID_RE = /^netflix\.[0-9]{1,12}$/;
+const NETFLIX_URL_RE = /^https:\/\/www\.netflix\.com\/watch\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
 const UDEMY_URL_RE = /^https:\/\/www\.udemy\.com\/course\/([A-Za-z0-9_-]+)\/learn\/lecture\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
 
 // https://www.udemy.com/course/<slug>/learn/lecture/<digits>[/][?...][#...] -> {slug, lectureId} | null
@@ -38,18 +40,34 @@ export function parseUdemyUrl(url) {
   return m ? { slug: m[1], lectureId: m[2] } : null;
 }
 
-// Bare lesson id, YouTube URL or Udemy lecture URL -> lesson id | null
+// https://www.netflix.com/watch/<digits>[/][?...][#...] -> movieId | null
+export function parseNetflixUrl(url) {
+  if (typeof url !== 'string') return null;
+  const m = NETFLIX_URL_RE.exec(url);
+  return m ? m[1] : null;
+}
+
+// Canonical sourceUrl of a Netflix lesson.
+export function netflixWatchUrl(movieId) {
+  return 'https://www.netflix.com/watch/' + movieId;
+}
+
+// Bare lesson id, YouTube URL, Udemy lecture URL or Netflix watch URL -> lesson id | null
 export function parseLessonId(s) {
   if (typeof s !== 'string') return null;
   s = s.trim();
   if (LESSON_ID_RE.test(s)) return s;
   const u = parseUdemyUrl(s);
   if (u) return 'udemy.' + u.lectureId;
+  const n = parseNetflixUrl(s);
+  if (n) return 'netflix.' + n;
   return parseVideoId(s);
 }
 
-// 'youtube' | 'udemy' for a valid lesson id, else null
+// 'youtube' | 'udemy' | 'netflix' for a valid lesson id, else null
 export function lessonSource(id) {
   if (typeof id !== 'string' || !LESSON_ID_RE.test(id)) return null;
-  return UDEMY_ID_RE.test(id) ? 'udemy' : 'youtube';
+  if (UDEMY_ID_RE.test(id)) return 'udemy';
+  if (NETFLIX_ID_RE.test(id)) return 'netflix';
+  return 'youtube';
 }

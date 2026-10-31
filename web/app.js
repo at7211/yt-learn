@@ -1,8 +1,8 @@
 // yt-learn player. Sections: util, home, load, player, render subtitle,
 // render panel, review, lists, controls & keyboard, boot.
 import { cueIndexAt, flattenHits, activeHitAt, panelState, seenCount } from './timing.js';
-import { parseLessonId, lessonSource } from './ytid.js';
-import { udemyLessonLink, listRowSourceLink, canBuildHere, UDEMY_BUILD_MSG, UDEMY_PLAY_HINT } from './lesson-source.js';
+import { parseLessonId } from './ytid.js';
+import { externalSite, listRowSite, listRowSourceLink, canBuildHere } from './lesson-source.js';
 import { waitForAck, shouldApplyLiveStatus } from './handshake.js';
 import { introRows } from './intro.js';
 import { dictWord, dictUrl, clickWord } from './dict.js';
@@ -49,8 +49,9 @@ function initHome(showList) {
     e.preventDefault();
     const err = $('url-err');
     const id = parseLessonId($('url-input').value);
-    if (!id) { err.textContent = '無法辨識的 YouTube 網址'; err.hidden = false; return; }
-    if (!canBuildHere(id)) { err.textContent = UDEMY_BUILD_MSG; err.hidden = false; return; } // a pasted Udemy URL is never submitted
+    if (!id) { err.textContent = '無法辨識的 YouTube、Udemy 或 Netflix 網址'; err.hidden = false; return; }
+    const site = externalSite(id);
+    if (site) { err.textContent = site.buildMsg; err.hidden = false; return; } // a pasted Udemy/Netflix URL is never submitted
     err.hidden = true;
     startJob(id, $('card-home'));
   };
@@ -212,8 +213,9 @@ async function postAdd(id) {
 async function startJob(id, container, opts) {
   const card = mountCard(container, id, opts);
   card.live = null;
-  if (!canBuildHere(id)) { // Udemy lessons are built from the lecture page, never from here
-    card.job = { videoId: id, state: 'error', message: UDEMY_BUILD_MSG };
+  if (!canBuildHere(id)) { // external-site lessons are captured on their own page, never from here
+    const site = externalSite(id);
+    card.job = { videoId: id, state: 'error', message: site ? site.buildMsg : '無法辨識的影片 id' };
     card.noRetry = true;
     renderCard();
     return;
@@ -429,10 +431,10 @@ async function loadLessonList() {
       const text = el('div', null, 'lrow-text');
       text.append(el('div', l.title || l.videoId, 'lrow-title'));
       const sub = [l.channel, l.duration ? fmtTime(l.duration) : null].filter(Boolean).join('・');
-      const isUdemy = l.source === 'udemy';
-      if (sub || isUdemy) {
+      const site = listRowSite(l);
+      if (sub || site) {
         const subEl = el('div', null, 'lrow-sub');
-        if (isUdemy) subEl.append(el('span', 'Udemy', 'lrow-tag'));
+        if (site) subEl.append(el('span', site.name, 'lrow-tag'));
         if (sub) subEl.append(sub);
         text.append(subEl);
       }
@@ -445,7 +447,7 @@ async function loadLessonList() {
       li.append(a);
       const src = listRowSourceLink(l);
       if (src) {
-        const sa = el('a', '回到講座頁 ↗', 'lrow-src');
+        const sa = el('a', site.linkText + ' ↗', 'lrow-src');
         sa.href = src;
         sa.target = '_blank';
         sa.rel = 'noopener noreferrer';
@@ -542,35 +544,36 @@ function setupLesson(lesson, id) {
   buildTranscript();
   buildVocabTable();
   render(0);
-  if (lessonSource(id) === 'udemy') { setupUdemyLesson(lesson, id); return; }
+  const site = externalSite(id);
+  if (site) { setupExternalLesson(lesson, id, site); return; } // never initPlayer() for these
   initPlayer(lesson.videoId || id);
 }
 
-// Udemy lessons have no player here: subtitles only exist as an overlay on the Udemy page.
-// Show the header (done by setupLesson), a notice and the vocab review grid.
-function setupUdemyLesson(lesson, id) {
+// External-site lessons (Udemy, Netflix) have no player here: subtitles only exist as an overlay on
+// that site's page. Show the header (done by setupLesson), a notice and the vocab review grid.
+function setupExternalLesson(lesson, id, site) {
   S.noPlayer = true;
   $('yt').hidden = true;
-  const note = $('udemy-note');
-  const text = el('span', '這堂課只能在 Udemy 頁面上疊字幕');
+  const note = $('site-note');
+  const text = el('span', site.note);
   const nodes = [text];
-  const href = udemyLessonLink(lesson, id);
+  const href = site.link(lesson, id);
   if (href) {
-    const a = el('a', '回到講座頁');
+    const a = el('a', site.linkText);
     a.href = href;
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
     nodes.push('　', a);
   }
-  nodes.push(el('span', UDEMY_PLAY_HINT, 'udemy-hint'));
+  nodes.push(el('span', site.playHint, 'site-hint'));
   note.replaceChildren(...nodes);
   note.hidden = false;
   enterReview();
 }
 
 let hintTimer = 0;
-function udemyPlayHint() {
-  const h = document.querySelector('#udemy-note .udemy-hint');
+function sitePlayHint() {
+  const h = document.querySelector('#site-note .site-hint');
   if (!h) return;
   h.classList.add('show');
   clearTimeout(hintTimer);
@@ -665,7 +668,7 @@ function refresh() {
 }
 
 function seek(t, play = true) {
-  if (S.noPlayer) { udemyPlayHint(); return; }
+  if (S.noPlayer) { sitePlayHint(); return; }
   if (!S.ready) return;
   if (S.review) leaveReview();
   t = Math.max(0, t);

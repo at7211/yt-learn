@@ -48,3 +48,12 @@ test('ytLearnParseUdemyUrl and ytLearnLessonSource agree with lesson_ids.json', 
   assert.equal(ctx.ytLearnParseLessonId(42), null);
   assert.equal(ctx.ytLearnParseUdemyUrl(null), null);
 });
+
+test('ytLearnParseNetflixUrl agrees with lesson_ids.json; netflix watch URLs parse to netflix.<id>', () => {
+  for (const [input, want] of IDS.netflixUrl) assert.equal(ctx.ytLearnParseNetflixUrl(input), want, JSON.stringify(input));
+  assert.equal(ctx.ytLearnParseNetflixUrl(undefined), null);
+  assert.equal(ctx.ytLearnParseLessonId('https://www.netflix.com/watch/81234567?trackId=1'), 'netflix.81234567');
+  assert.equal(ctx.ytLearnLessonSource('netflix.81234567'), 'netflix');
+  assert.equal(ctx.ytLearnNetflixWatchUrl('81234567'), 'https://www.netflix.com/watch/81234567');
+  assert.equal(ctx.ytLearnParseVideoId('https://www.netflix.com/watch/81234567'), null);
+});

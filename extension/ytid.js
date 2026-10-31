@@ -21,25 +21,37 @@
   };
   g.ytLearnCanonicalUrl = (id) => 'https://www.youtube.com/watch?v=' + id;
 
-  /* Lesson ids（與 pipeline/ids.py 同一張表 tests/fixtures/lesson_ids.json）：YouTube 11 碼或 udemy.<lectureId>。 */
-  const LESSON_ID_RE = /^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12})$/;
+  /* Lesson ids（與 pipeline/ids.py 同一張表 tests/fixtures/lesson_ids.json）：YouTube 11 碼、udemy.<lectureId> 或 netflix.<movieId>。 */
+  const LESSON_ID_RE = /^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12}|netflix\.[0-9]{1,12})$/;
   const UDEMY_ID_RE = /^udemy\.[0-9]{1,12}$/;
+  const NETFLIX_ID_RE = /^netflix\.[0-9]{1,12}$/;
+  const NETFLIX_URL_RE = /^https:\/\/www\.netflix\.com\/watch\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
   const UDEMY_URL_RE = /^https:\/\/www\.udemy\.com\/course\/([A-Za-z0-9_-]+)\/learn\/lecture\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
   g.ytLearnParseUdemyUrl = function (url) {
     if (typeof url !== 'string') return null;
     const m = UDEMY_URL_RE.exec(url);
     return m ? { slug: m[1], lectureId: m[2] } : null;
   };
+  g.ytLearnParseNetflixUrl = function (url) {
+    if (typeof url !== 'string') return null;
+    const m = NETFLIX_URL_RE.exec(url);
+    return m ? m[1] : null;
+  };
+  g.ytLearnNetflixWatchUrl = (movieId) => 'https://www.netflix.com/watch/' + movieId;
   g.ytLearnParseLessonId = function (s) {
     if (typeof s !== 'string') return null;
     s = s.trim();
     if (LESSON_ID_RE.test(s)) return s;
     const u = g.ytLearnParseUdemyUrl(s);
     if (u) return 'udemy.' + u.lectureId;
+    const n = g.ytLearnParseNetflixUrl(s);
+    if (n) return 'netflix.' + n;
     return g.ytLearnParseVideoId(s);
   };
   g.ytLearnLessonSource = function (id) {
     if (typeof id !== 'string' || !LESSON_ID_RE.test(id)) return null;
-    return UDEMY_ID_RE.test(id) ? 'udemy' : 'youtube';
+    if (UDEMY_ID_RE.test(id)) return 'udemy';
+    if (NETFLIX_ID_RE.test(id)) return 'netflix';
+    return 'youtube';
   };
 })(globalThis);

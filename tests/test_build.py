@@ -49,6 +49,17 @@ def test_build_copies_source_fields_from_raw():
     assert "source" not in plain and "sourceUrl" not in plain
 
 
+def test_build_netflix_raw_keeps_source_but_never_copies_ref_or_internal_word_keys():
+    ref = {"lang": "zh-Hant", "kind": "official", "events": [{"t": 0, "d": 1000, "text": "自己寫的句子"}]}
+    raw = dict(load("raw_small.json"), videoId="netflix.81234567", source="netflix",
+               sourceUrl="https://www.netflix.com/watch/81234567", ref=ref, refStatus="failed")
+    lesson, _ = build_lesson(raw, fake_provider())
+    assert validate_lesson(lesson) == []
+    assert lesson["source"] == "netflix" and lesson["sourceUrl"] == "https://www.netflix.com/watch/81234567"
+    assert "ref" not in lesson and "refStatus" not in lesson
+    assert all(list(w) == ["t", "w", "timed", "e"] for w in lesson["words"])
+
+
 def test_limit_seconds_sets_covered_seconds():
     raw = load("raw_small.json")
     words = normalize_words(raw["events"], 1378)

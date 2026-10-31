@@ -98,50 +98,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     openDict(url, msg.screen).then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
     return true;
   }
-  if ((msg.type === 'ytlearn:lesson' || msg.type === 'ytlearn:job' || msg.type === 'ytlearn:build') && isNetflixId(msg.videoId)) {
-    // TODO(step 3): ytLearnParseLessonId will know netflix.<id>; until then an enabled Netflix is still unknown here.
-    netflixEnabled().then((on) => sendResponse(on ? { error: '無法辨識的影片 id' } : { disabled: true }),
-      (e) => sendResponse({ error: errMsg(e) }));
-    return true;
-  }
   if (msg.type === 'ytlearn:lesson' || msg.type === 'ytlearn:job' || msg.type === 'ytlearn:build') {
-    const videoId = ytLearnParseLessonId(typeof msg.videoId === 'string' ? msg.videoId : '');
-    if (!videoId) {
-      sendResponse({ error: '無法辨識的影片 id' });
-      return false;
-    }
-    if (msg.type === 'ytlearn:build') {
-      const tabId = sender.tab && sender.tab.id;
-      if (typeof tabId !== 'number') {
-        sendResponse({ ok: false, error: '沒有可擷取的分頁' });
-        return false;
-      }
-      // Overlay on a lesson page: capture in that tab, no onAdded, no new tab, no ownedTabs entry.
-      // The overlay sends the page URL it saw; it must name the same lesson. (No url: a YouTube id
-      // stands for its canonical watch URL, as before.)
-      let requested;
-      if (typeof msg.url === 'string') {
-        const site = siteOfUrl(msg.url);
-        if (!site || ytLearnParseLessonId(msg.url) !== videoId) {
-          sendResponse({ ok: false, error: SWITCHED });
-          return false;
-        }
-        requested = { id: videoId, url: msg.url, site };
-      } else if (ytLearnLessonSource(videoId) === 'youtube') {
-        requested = { id: videoId, url: ytLearnCanonicalUrl(videoId), site: 'youtube' };
-      } else {
-        sendResponse({ ok: false, error: '缺少講座網址' });
-        return false;
-      }
-      log('overlay:build', videoId, 'tab', tabId);
-      runJob(requested, { mode: 'inplace', tabId }).then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
-      return true;
-    }
-    overlayFetch(msg.type, videoId).then(sendResponse);
+    if (!isNetflixId(msg.videoId)) return onLessonMessage(msg, sender, sendResponse);
+    // A turned-off Netflix answers {disabled:true} before anything else; on, it is an ordinary lesson id.
+    netflixEnabled().then((on) => { if (on) onLessonMessage(msg, sender, sendResponse); else sendResponse({ disabled: true }); },
+      (e) => sendResponse({ error: errMsg(e) }));
     return true;
   }
   return false;
 });
+
+// ytlearn:lesson / ytlearn:job / ytlearn:build from the overlay. Returns true when it answers asynchronously.
+function onLessonMessage(msg, sender, sendResponse) {
+  const videoId = ytLearnParseLessonId(typeof msg.videoId === 'string' ? msg.videoId : '');
+  if (!videoId) {
+    sendResponse({ error: '無法辨識的影片 id' });
+    return false;
+  }
+  if (msg.type === 'ytlearn:build') {
+    const tabId = sender.tab && sender.tab.id;
+    if (typeof tabId !== 'number') {
+      sendResponse({ ok: false, error: '沒有可擷取的分頁' });
+      return false;
+    }
+    // Overlay on a lesson page: capture in that tab, no onAdded, no new tab, no ownedTabs entry.
+    // The overlay sends the page URL it saw; it must name the same lesson. (No url: a YouTube id
+    // stands for its canonical watch URL, as before.)
+    let requested;
+    if (typeof msg.url === 'string') {
+      const site = siteOfUrl(msg.url);
+      if (!site || ytLearnParseLessonId(msg.url) !== videoId) {
+        sendResponse({ ok: false, error: SWITCHED });
+        return false;
+      }
+      requested = { id: videoId, url: msg.url, site };
+    } else if (ytLearnLessonSource(videoId) === 'youtube') {
+      requested = { id: videoId, url: ytLearnCanonicalUrl(videoId), site: 'youtube' };
+    } else {
+      sendResponse({ ok: false, error: '缺少講座網址' });
+      return false;
+    }
+    log('overlay:build', videoId, 'tab', tabId);
+    runJob(requested, { mode: 'inplace', tabId }).then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
+    return true;
+  }
+  overlayFetch(msg.type, videoId).then(sendResponse);
+  return true;
+}
 
 chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
   const fromLocal = sender.origin === SERVER || (typeof sender.url === 'string' && sender.url.startsWith(SERVER + '/'));

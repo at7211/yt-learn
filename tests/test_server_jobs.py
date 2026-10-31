@@ -82,9 +82,16 @@ def start_capture(base, vid=V):
 def test_add_bad_url_400(env):
     base, _ = env
     code, j = req(f"{base}/add", {"url": "https://evil.com/x"})
-    assert code == 400 and j == {"ok": False, "errors": ["無法辨識的 YouTube 或 Udemy 網址"]}
+    assert code == 400 and j == {"ok": False, "errors": ["無法辨識的 YouTube、Udemy 或 Netflix 網址"]}
     assert req(f"{base}/add", {"nourl": 1})[0] == 400
     assert req(f"{base}/jobs/{V}")[0] == 404
+
+
+def test_add_accepts_a_netflix_watch_url(env):
+    base, _ = env
+    code, j = req(f"{base}/add", {"url": "https://www.netflix.com/watch/81234567?trackId=1"})
+    assert code == 200 and j["job"]["state"] == "queued" and j["job"]["videoId"] == "netflix.81234567"
+    assert req(f"{base}/add", {"url": "https://www.netflix.com/watch/123abc"})[0] == 400
 
 
 UDEMY_ID = "udemy.5800738"

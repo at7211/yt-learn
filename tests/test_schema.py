@@ -146,3 +146,101 @@ def test_lesson_source_fields():
     assert schema.validate_lesson(dict(les, sourceUrl=UDEMY_URL.replace("5800738", "1")))
     assert schema.validate_lesson(dict(_lesson(), sourceUrl=UDEMY_URL))
     assert schema.validate_lesson(dict(les, videoId="udemy.x"))
+
+
+NETFLIX_URL = "https://www.netflix.com/watch/81234567"
+NETFLIX = {"videoId": "netflix.81234567", "source": "netflix", "sourceUrl": NETFLIX_URL}
+
+
+def test_raw_accepts_netflix_id_with_and_without_source_fields():
+    assert schema.validate_raw(mod(**NETFLIX)) == []
+    assert schema.validate_raw(mod(videoId="netflix.81234567")) == []
+    assert schema.validate_raw(mod(videoId="netflix.81234567", source="netflix")) == []
+
+
+def test_raw_rejects_bad_netflix_ids_and_sources():
+    for bad in ("netflix.abc", "netflix.", "netflix.1234567890123", "Netflix.1", "netflix.1/../x"):
+        assert schema.validate_raw(mod(videoId=bad)), bad
+    assert schema.validate_raw(mod(source="netflix"))  # YouTube id
+    assert schema.validate_raw(mod(videoId="udemy.5800738", source="netflix"))
+    for bad in ("udemy", "youtube", "NETFLIX", "", None):
+        assert schema.validate_raw(mod(videoId="netflix.81234567", source=bad)), bad
+
+
+def test_netflix_source_url_must_be_the_canonical_watch_url():
+    for bad in (
+        NETFLIX_URL + "?trackId=1",  # a real watch URL, but not the canonical one
+        NETFLIX_URL + "/",
+        "https://www.netflix.com/watch/81234568",  # other title
+        "http://www.netflix.com/watch/81234567",
+        "https://netflix.com/watch/81234567",
+        "https://www.netflix.com/title/81234567",
+        UDEMY_URL, "javascript:alert(1)", "", None, 42,
+    ):
+        assert schema.validate_raw(mod(**dict(NETFLIX, sourceUrl=bad))), bad
+    assert schema.validate_raw(mod(sourceUrl=NETFLIX_URL))  # YouTube id
+    assert schema.validate_raw(mod(**dict(UDEMY, sourceUrl=NETFLIX_URL)))
+
+
+def test_lesson_netflix_source_fields():
+    les = dict(_lesson(), **NETFLIX)
+    assert schema.validate_lesson(les) == []
+    assert schema.validate_lesson(dict(les, source="udemy"))
+    assert schema.validate_lesson(dict(les, sourceUrl=NETFLIX_URL + "?x=1"))
+
+
+REF = {"lang": "zh-Hant", "kind": "official",
+       "events": [{"t": 0, "d": 1200, "text": "我們出發吧"}, {"t": 1500, "d": 800, "text": "往北走"}]}
+
+
+def _ref(**kw):
+    r = copy.deepcopy(REF)
+    r.update(kw)
+    return r
+
+
+def _ref_ev(i, **kw):
+    r = copy.deepcopy(REF)
+    r["events"][i].update(kw)
+    return r
+
+
+def test_raw_ref_is_optional_and_accepted_when_valid():
+    assert schema.validate_raw(mod(**NETFLIX, ref=REF)) == []
+    assert schema.validate_raw(mod(ref=REF)) == []
+    assert schema.validate_raw(mod(**NETFLIX, refStatus="missing")) == []
+    assert schema.validate_raw(mod(**NETFLIX, refStatus="failed")) == []
+
+
+def test_raw_ref_rejections():
+    bad_refs = [
+        "ref", None, [], {},
+        _ref(lang="zh-Hans"), _ref(lang=None), _ref(kind="asr"), _ref(kind=None),
+        _ref(events=[]), _ref(events=None), _ref(events="x"), _ref(events=["x"]),
+        _ref_ev(0, t=True), _ref_ev(0, t=-1), _ref_ev(0, t=1.5), _ref_ev(0, t=None),
+        _ref_ev(0, d=0), _ref_ev(0, d=-5), _ref_ev(0, d=False), _ref_ev(0, d=2.0),
+        _ref_ev(1, t=0),  # not strictly increasing (equal)
+        _ref_ev(0, text=""), _ref_ev(0, text=None), _ref_ev(0, text=42),
+        _ref(events=[{"t": i, "d": 1, "text": "字"} for i in range(5001)]),  # > 5000 events
+        _ref(events=[{"t": i, "d": 1, "text": "字" * 2001} for i in range(100)]),  # > 200k chars in total
+    ]
+    for bad in bad_refs:
+        assert schema.validate_raw(mod(ref=bad)), repr(bad)[:120]
+    descending = copy.deepcopy(REF)
+    descending["events"].reverse()
+    assert schema.validate_raw(mod(ref=descending))
+
+
+def test_raw_ref_limits_are_inclusive():
+    assert schema.validate_raw(mod(ref=_ref(events=[{"t": i, "d": 1, "text": "字"} for i in range(5000)]))) == []
+    assert schema.validate_raw(mod(ref=_ref(events=[{"t": i, "d": 1, "text": "字" * 2000} for i in range(100)]))) == []
+
+
+def test_raw_ref_status_rejections():
+    for bad in ("ok", "", None, 1, "MISSING"):
+        assert schema.validate_raw(mod(refStatus=bad)), bad
+
+
+def test_lesson_never_carries_ref_or_ref_status():
+    assert schema.validate_lesson(dict(_lesson(), ref=REF))
+    assert schema.validate_lesson(dict(_lesson(), refStatus="missing"))

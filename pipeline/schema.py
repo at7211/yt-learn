@@ -1,8 +1,14 @@
 """Validation for the raw caption capture format (data/raw/<videoId>.json)."""
-from .ids import LESSON_ID_RE, parse_udemy_url, source_of
+from .ids import LESSON_ID_RE, NETFLIX_ID_RE, netflix_watch_url, parse_udemy_url, source_of
 
 VIDEO_ID_RE = LESSON_ID_RE  # old name
 REQUIRED_META = ("title", "channel", "duration", "lang", "kind")
+# Optional reference track on a raw capture (Netflix official zh-Hant subtitles); lessons never carry it.
+REF_LANGS = ("zh-Hant",)
+REF_KINDS = ("official",)
+REF_MAX_EVENTS = 5000
+REF_MAX_CHARS = 200_000
+REF_STATUSES = ("missing", "failed")  # why a capture has no ref (for logs)
 
 
 def _is_int(v):
@@ -15,21 +21,66 @@ def _is_num(v):
 
 def _source_errors(obj, vid) -> list[str]:
     """Optional `source` / `sourceUrl`. sourceUrl is an outbound link from imported JSON, so it is
-    only allowed for Udemy ids and must be that very lecture's URL; YouTube ids carry no sourceUrl."""
+    only allowed for external-site ids and must point at that very lesson: a Udemy lecture URL, or
+    exactly the canonical Netflix watch URL. YouTube ids carry no sourceUrl."""
     errs = []
     src = source_of(vid)
     if "source" in obj and obj["source"] != src:
         errs.append(f"source must be {src!r} for videoId {vid!r}")
     if "sourceUrl" in obj:
         url = obj["sourceUrl"]
-        if src != "udemy":
-            errs.append("sourceUrl is only allowed for udemy.<lectureId> videoIds")
-        else:
+        if src == "udemy":
             parsed = parse_udemy_url(url)
             if parsed is None:
                 errs.append("sourceUrl must be https://www.udemy.com/course/<slug>/learn/lecture/<id>")
             elif f"udemy.{parsed[1]}" != vid:
                 errs.append("sourceUrl lecture id must match videoId")
+        elif src == "netflix":
+            if url != netflix_watch_url(NETFLIX_ID_RE.fullmatch(vid).group(1)):
+                errs.append("sourceUrl must be https://www.netflix.com/watch/<movieId> of this videoId")
+        else:
+            errs.append("sourceUrl is only allowed for udemy.<lectureId> / netflix.<movieId> videoIds")
+    return errs
+
+
+def _ref_errors(ref) -> list[str]:
+    """Optional `ref` = {lang, kind, events:[{t, d, text}]} (ms; t strictly increasing, d > 0)."""
+    if not isinstance(ref, dict):
+        return ["ref must be an object"]
+    errs = []
+    if ref.get("lang") not in REF_LANGS:
+        errs.append(f"ref.lang must be one of {REF_LANGS}")
+    if ref.get("kind") not in REF_KINDS:
+        errs.append(f"ref.kind must be one of {REF_KINDS}")
+    events = ref.get("events")
+    if not isinstance(events, list) or not events:
+        return errs + ["ref.events must be a non-empty list"]
+    if len(events) > REF_MAX_EVENTS:
+        return errs + [f"ref.events must have at most {REF_MAX_EVENTS} items"]
+    prev_t = None
+    chars = 0
+    for i, ev in enumerate(events):
+        if not isinstance(ev, dict):
+            errs.append(f"ref.events[{i}] must be an object")
+        else:
+            t, d, text = ev.get("t"), ev.get("d"), ev.get("text")
+            if not _is_int(t) or t < 0:
+                errs.append(f"ref.events[{i}].t must be a non-negative int")
+            elif prev_t is not None and t <= prev_t:
+                errs.append(f"ref.events[{i}].t={t} must be later than the previous event ({prev_t})")
+            else:
+                prev_t = t
+            if not _is_int(d) or d <= 0:
+                errs.append(f"ref.events[{i}].d must be a positive int")
+            if not isinstance(text, str) or not text:
+                errs.append(f"ref.events[{i}].text must be a non-empty string")
+            else:
+                chars += len(text)
+        if len(errs) > 50:
+            errs.append("too many errors, stopping")
+            return errs
+    if chars > REF_MAX_CHARS:
+        errs.append(f"ref text must total at most {REF_MAX_CHARS} characters")
     return errs
 
 
@@ -49,6 +100,10 @@ def validate_raw(obj) -> list[str]:
     dur = obj.get("duration")
     if dur not in (None, "") and not (_is_num(dur) and dur >= 0):
         errs.append("duration must be a non-negative number")
+    if "ref" in obj:  # optional; a raw always has events, so "only alongside events" holds by construction
+        errs += _ref_errors(obj["ref"])
+    if "refStatus" in obj and obj["refStatus"] not in REF_STATUSES:
+        errs.append(f"refStatus must be one of {REF_STATUSES}")
     events = obj.get("events")
     if not isinstance(events, list) or not events:
         errs.append("events must be a non-empty list")
@@ -96,6 +151,9 @@ def validate_lesson(obj) -> list[str]:
         errs.append(f"videoId must match {LESSON_ID_RE.pattern}")
     else:
         errs += _source_errors(obj, vid)
+    for k in ("ref", "refStatus"):  # raw-only (capture side); build_lesson does not copy them
+        if k in obj:
+            errs.append(f"{k} belongs to the raw capture, not the lesson")
     for k in ("title", "channel", "lang", "generatedAt", "model"):
         if not (isinstance(obj.get(k), str) and obj[k]):
             errs.append(f"{k} must be a non-empty string")

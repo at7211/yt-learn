@@ -873,14 +873,21 @@ test('desired + permission but unregistered (registration failing) still counts 
   assert.deepEqual(plain((await ask(w, { type: 'ytlearn:lesson', videoId: NID })).r), { disabled: true });
 });
 
-test('entry points while Netflix is on: still not a known lesson id in this step', async () => {
-  const w = load({}, { nf: { local: { netflix: ON }, perm: true } });
+test('entry points while Netflix is on: netflix.<id> is an ordinary lesson id (normal lesson/job/build path)', async () => {
+  const w = load({ ['GET /data/lessons/' + NID + '.json']: { status: 404 }, ['GET /jobs/' + NID]: { status: 404 } },
+    { nf: { local: { netflix: ON }, perm: true } });
   await settle();
-  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:lesson', videoId: NID })).r), { error: '無法辨識的影片 id' });
+  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:lesson', videoId: NID })).r), { missing: true });
+  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:job', videoId: NID })).r), { missing: true });
+  // build: the page URL must name the same lesson; a missing URL is not guessed for a non-YouTube id.
+  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:build', videoId: NID, url: 'https://www.netflix.com/watch/999' })).r),
+    { ok: false, error: '換課了，請回到原講座再試' });
+  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:build', videoId: NID })).r), { ok: false, error: '缺少講座網址' });
+  assert.deepEqual(w.calls.fetched, ['GET /data/lessons/' + NID + '.json', 'GET /jobs/' + NID]);
   const job = await w.ctx.runJob({ id: NID, url: NURL, site: 'netflix' }, { mode: 'inplace', tabId: 7 });
   assert.equal(job.ok, false);
   assert.equal(job.disabled, undefined);
-  assert.deepEqual(w.calls.fetched, []);
+  assert.deepEqual(w.calls.fetched, ['GET /data/lessons/' + NID + '.json', 'GET /jobs/' + NID], 'capture is step 4: no /add');
 });
 
 test('icon on a Netflix watch page while off -> opens netflix-enable.html?tab=<id>; no overlay toggle, no server', async () => {

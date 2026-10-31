@@ -221,7 +221,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         vid = parse_lesson_id(obj.get("url") if isinstance(obj, dict) else None)
         if vid is None:
-            return self._json({"ok": False, "errors": ["無法辨識的 YouTube 或 Udemy 網址"]}, 400)
+            return self._json({"ok": False, "errors": ["無法辨識的 YouTube、Udemy 或 Netflix 網址"]}, 400)
         job = self.jobs.add(vid, self._lesson_ok(vid))
         self._json({"job": JobStore.to_public(job)})
 
