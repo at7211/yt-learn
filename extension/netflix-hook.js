@@ -5,7 +5,7 @@
      step is inside try/catch. Calls with a reviver are never summarised.
    - Keeps summaries (track list + signed subtitle URLs) of up to 10 manifests, keyed by movieId.
    - Answers the isolated world over window.postMessage (ytlearn:nf-get / nf-seek / nf-off), never sends a
-     request, never changes one, never writes to the console.
+     request, never changes one, produces no console output.
    - After ytlearn:nf-off it is a permanent no-op (JSON.parse restored if it is still our wrapper). */
 (() => {
   if (globalThis.__ytlearnNfHook) return;

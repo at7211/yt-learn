@@ -16,3 +16,6 @@ import './vtt.test.js';
 import './udemy-capture.test.js';
 import './lesson-source.test.js';
 import './site.test.js';
+import './netflix-manifest.test.js';
+import './netflix-hook.test.js';
+import './netflix-capture.test.js';
