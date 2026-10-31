@@ -621,6 +621,16 @@ test('reconcile: one script registered with a wrong config -> only that one is r
   }
 });
 
+test('reconcile: a registration reported without its default fields (world/runAt/allFrames/persist omitted) counts as matching', async () => {
+  const { world, runAt, allFrames, persistAcrossSessions, ...bare } = OVERLAY_REG;
+  const w = load({}, { nf: { local: { netflix: ON }, perm: true, registered: [HOOK_REG, bare] } });
+  await settle();
+  assert.deepEqual(w.calls.scriptOps, []);
+  const v = load({}, { nf: { local: { netflix: ON }, perm: true, registered: [{ ...HOOK_REG, world: undefined }, OVERLAY_REG] } });
+  await settle();
+  assert.deepEqual(v.calls.scriptOps, ['unregister:ytlearn-netflix-hook', 'register:ytlearn-netflix-hook'], 'the hook must be MAIN');
+});
+
 test('reconcile: desired but the permission was revoked -> desired=false, gen+1, site-off to ALL tabs, unregister, cleanup=false; never permissions.remove', async () => {
   const w = load({}, { nf: { local: { netflix: ON }, perm: false, registered: [HOOK_REG, OVERLAY_REG], tabs: [{ id: 1 }, { id: 2 }], offFails: [1] } });
   await settle();

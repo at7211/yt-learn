@@ -574,8 +574,12 @@ async function hasNetflixPermission() {
   }
 }
 
+// Chrome may omit fields left at their default when it reports a registration; compare with defaults filled in.
+const NF_SCRIPT_DEFAULTS = { runAt: 'document_idle', world: 'ISOLATED', allFrames: false, persistAcrossSessions: true };
+
 function sameScript(got, want) {
-  return NF_SCRIPT_KEYS.every((k) => JSON.stringify(got[k]) === JSON.stringify(want[k]));
+  const val = (o, k) => (o[k] === undefined ? NF_SCRIPT_DEFAULTS[k] : o[k]);
+  return NF_SCRIPT_KEYS.every((k) => JSON.stringify(val(got, k)) === JSON.stringify(val(want, k)));
 }
 
 // Both scripts registered with exactly NF_SCRIPTS' settings; a mismatch is unregistered and registered again.
