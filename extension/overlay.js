@@ -1,5 +1,8 @@
-/* yt-learn overlay: content script on https://www.youtube.com/* (isolated world, document_idle).
-   On a watch page, the toolbar icon (background.js → ytlearn:toggle) lays the lesson over #movie_player:
+/* yt-learn overlay engine: content script on https://www.youtube.com/* and https://www.udemy.com/*
+   (isolated world, document_idle). Everything site-specific (lesson id from the route, the player
+   {root, video}, ads, the native-caption rule, SPA navigation events) comes from a site adapter
+   (site.js siteFor(location.hostname)). On a lesson page, the toolbar icon (background.js → ytlearn:toggle)
+   lays the lesson over the player root:
    English subtitle with the current vocab hit in orange, 繁中 subtitle, the vocab panel, and the 前情提要 card.
    youtube.com enforces Trusted Types: no innerHTML / outerHTML / insertAdjacentHTML anywhere here —
    DOM is built with createElement / textContent / append only (style.textContent is not a sink).
@@ -13,7 +16,7 @@
   const HINT_SECONDS = 8; // the shortcut strip at the top stays this long after the first play
   const HINT_TEXT = 'Z 中文 · E 英文 · V 單字 · R 重播本句 · [ ] 上一句／下一句';
   const POLL_MS = 2000; // job polling while a lesson is being built
-  const ROUTE_POLL_MS = 1000; // fallback for yt-navigate-finish
+  const ROUTE_POLL_MS = 1000; // fallback for the site's navigation events; also catches player replacement
   const ERROR_PILL_MS = 6000;
   const WAIT_PLAYER_MS = 10000;
   const MAIN_STYLE_ID = 'ytlearn-main-style';
@@ -26,8 +29,15 @@
   let I = null; // intro.js
   let O = null; // overlay-state.js
   let D = null; // dict.js
-  const ready = Promise.all([import(url('timing.js')), import(url('intro.js')), import(url('overlay-state.js')), import(url('dict.js'))])
-    .then(([t, i, o, d]) => { T = t; I = i; O = o; D = d; S = O.initialState(); });
+  let site = null; // site.js adapter for this host (null: unsupported host, the overlay stays idle)
+  const ready = Promise.all([import(url('timing.js')), import(url('intro.js')), import(url('overlay-state.js')), import(url('dict.js')),
+    import(url('site.js'))])
+    .then(([t, i, o, d, st]) => {
+      T = t; I = i; O = o; D = d;
+      site = st.siteFor(location.hostname);
+      if (site) S = O.initialState();
+      else log('overlay:unsupported-host', location.hostname);
+    });
   let cssText = null;
   let S = null; // overlay-state machine
   let M = null; // the mounted overlay (see mount())
@@ -35,6 +45,11 @@
   let pollTimer = null;
   let cancelWait = null; // cancels a pending waitForPlayer (teardown / toggle-off)
   let lastHref = '';
+  // Player identity: playerSeq is bumped whenever a {root, video} found on the page differs from the
+  // last one seen (plain reference compare). It is the `token` the state machine compares.
+  let lastPlayer = null;
+  let playerSeq = 0;
+  let posFix = null; // { root, prev }: root was position:static, we set relative (restored on teardown)
 
   /* ---------- messaging ---------- */
 
@@ -53,30 +68,42 @@
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || msg.type !== 'ytlearn:toggle') return false;
-    // Answer at once: the worker only needs to know we took over. A page whose route we cannot
-    // read (URL and ytd-watch-flexy disagree mid-navigation) is left to the worker's old flow.
-    const id = currentVideoId();
-    sendResponse({ handled: !!id });
-    if (id) onToggle().catch((e) => log('toggle:error', String(e && e.message || e)));
-    return false;
+    // Answer once the imports are done (a freshly injected overlay must not say {handled:false} just
+    // because it is still loading). A page whose route we cannot read (e.g. URL and ytd-watch-flexy
+    // disagree mid-navigation) is left to the worker's fallback flow.
+    ready.then(() => {
+      const id = currentVideoId();
+      sendResponse({ handled: !!id });
+      if (id) onToggle().catch((e) => log('toggle:error', String(e && e.message || e)));
+    }, () => sendResponse({ handled: false }));
+    return true;
   });
 
   /* ---------- route ---------- */
 
+  // The lesson id of the page (null off a lesson page or mid-navigation). Only called after `ready`.
   function currentVideoId() {
-    const flexy = document.querySelector('ytd-watch-flexy');
-    const attr = flexy ? flexy.getAttribute('video-id') : null;
-    // Before overlay-state.js has loaded, fall back to a plain URL check (same rule, minus the flexy check).
-    if (O) return O.watchVideoId(location.href, attr);
-    try {
-      const u = new URL(location.href);
-      return u.pathname === '/watch' && /^[A-Za-z0-9_-]{11}$/.test(u.searchParams.get('v') || '') ? u.searchParams.get('v') : null;
-    } catch (e) { return null; }
+    return site ? site.lessonId(location.href, document) : null;
+  }
+
+  function findPlayer() {
+    return site ? site.findPlayer(document) : null;
+  }
+
+  // -> playerSeq after looking at the page. A player that disappears does not count (the token keeps
+  // naming the last one seen); only a different {root, video} replacing a seen one bumps the sequence.
+  function playerToken() {
+    const f = findPlayer();
+    if (f) {
+      if (lastPlayer && (lastPlayer.root !== f.root || lastPlayer.video !== f.video)) playerSeq++;
+      lastPlayer = f;
+    }
+    return playerSeq;
   }
 
   function syncRoute() {
     if (!S) return;
-    const r = O.navigate(S, currentVideoId());
+    const r = O.navigate(S, currentVideoId(), playerToken());
     if (r.state === S) return;
     S = r.state;
     if (r.teardown) teardownAll();
@@ -114,7 +141,7 @@
     showPill(tok, O.pillText(null));
     let buildFailed = false;
     let pollErrors = 0; // consecutive {error} replies (server gone after ingest); 3 in a row ends the wait
-    send({ type: 'ytlearn:build', videoId: tok.videoId }).then((r) => {
+    send({ type: 'ytlearn:build', videoId: tok.videoId, url: location.href }).then((r) => {
       if (O.isStale(S, tok)) return;
       log('build:result', JSON.stringify(r));
       if (!r || r.ok === false || r.error) {
@@ -162,8 +189,10 @@
   /* ---------- pill (bottom-left of the player) ---------- */
 
   function showPill(tok, text, isError = false) {
-    const player = document.getElementById('movie_player');
+    const found = findPlayer();
+    const player = found && found.root;
     if (!player || O.isStale(S, tok)) return;
+    holdPosition(player);
     if (!P || !P.host.isConnected || P.host.parentNode !== player) {
       removePill();
       const host = document.createElement('div');
@@ -205,16 +234,31 @@
     if (document.getElementById(MAIN_STYLE_ID)) return;
     const s = document.createElement('style');
     s.id = MAIN_STYLE_ID;
-    s.textContent = '#movie_player.' + ON_CLASS + ' .ytp-caption-window-container{opacity:0 !important;pointer-events:none !important}';
+    s.textContent = site.nativeCaptionCss; // hides the site's own captions while ON_CLASS is on the root
     (document.head || document.documentElement).append(s);
+  }
+
+  // Our layers are position:absolute; inset:0 inside the root. A static root gets position:relative
+  // while we are on it (both sites' roots are already positioned today).
+  function holdPosition(root) {
+    if (posFix && posFix.root === root) return;
+    releasePosition();
+    if (getComputedStyle(root).position !== 'static') return;
+    posFix = { root, prev: root.style.position };
+    root.style.position = 'relative';
+  }
+
+  function releasePosition() {
+    if (!posFix) return;
+    posFix.root.style.position = posFix.prev;
+    posFix = null;
   }
 
   function waitForPlayer(tok) {
     return new Promise((resolve) => {
       const find = () => {
-        const player = document.getElementById('movie_player');
-        const video = player && (player.querySelector('video.html5-main-video') || player.querySelector('video'));
-        return player && video ? { player, video } : null;
+        const f = findPlayer();
+        return f ? { player: f.root, video: f.video } : null;
       };
       const now = find();
       if (now) { resolve(now); return; }
@@ -276,6 +320,8 @@
     if (!found) { S = O.markIdle(S, tok); showPill(tok, O.PILL_PREFIX + '找不到播放器', true); return; }
     teardownOverlay();
     const { player, video } = found;
+    lastPlayer = { root: player, video }; // the identity we mount on; the route poll compares against it
+    holdPosition(player);
     ensureMainStyle();
 
     lesson.vocab = lesson.vocab || [];
@@ -346,11 +392,11 @@
     m.raf = requestAnimationFrame(step);
   }
 
-  // Runs on every class change of #movie_player (YouTube flips classes constantly). Only write when
+  // Runs on every class change of the player root (YouTube flips classes constantly). Only write when
   // something differs: DOMTokenList writes always fire a mutation record, and this is that observer.
   function checkAd(m) {
     if (M !== m) return;
-    const ad = O.adShowing(m.player.classList);
+    const ad = site.isAd(m.player);
     if (ad !== m.ad) {
       m.ad = ad;
       m.ui.frame.classList.toggle('ad', ad);
@@ -393,8 +439,9 @@
     if (cancelWait) cancelWait();
     teardownOverlay();
     removePill();
-    const player = document.getElementById('movie_player');
-    if (player) player.classList.remove(ON_CLASS);
+    const found = findPlayer();
+    if (found) found.root.classList.remove(ON_CLASS);
+    releasePosition();
   }
 
   /* ---------- render (ported from web/app.js; operates on m.ui instead of $('id')) ---------- */
@@ -547,7 +594,7 @@
     if (M !== m) return;
     const raw = D.clickWord(e.target);
     if (!raw) return;
-    e.stopPropagation(); // the click stays ours: YouTube's player must not toggle play/pause too
+    e.stopPropagation(); // the click stays ours: the site's player must not toggle play/pause too
     e.preventDefault();
     const word = D.dictWord(raw);
     if (!word) return; // a number or punctuation only
@@ -583,11 +630,17 @@
   /* ---------- boot ---------- */
 
   window.addEventListener('keydown', onKey, true);
-  document.addEventListener('yt-navigate-finish', () => { lastHref = location.href; syncRoute(); });
   setInterval(() => {
-    // Fallback when yt-navigate-finish is missed or renamed; also catches ytd-watch-flexy catching up with the URL.
+    // Fallback when the site's navigation event is missed or renamed (Udemy has none: this poll is its
+    // router); also catches ytd-watch-flexy catching up with the URL, and a player whose {root, video}
+    // was replaced under the same lesson id (Udemy swaps <video>): either change → navigate → remount.
     if (!S) return;
-    if (location.href !== lastHref || currentVideoId() !== S.videoId) { lastHref = location.href; syncRoute(); }
+    if (location.href !== lastHref || currentVideoId() !== S.videoId || playerToken() !== S.token) { lastHref = location.href; syncRoute(); }
   }, ROUTE_POLL_MS);
-  ready.then(() => { lastHref = location.href; syncRoute(); }, (e) => log('overlay:load-failed', String(e && e.message || e)));
+  ready.then(() => {
+    if (!site) return;
+    for (const ev of site.navEvents) document.addEventListener(ev, () => { lastHref = location.href; syncRoute(); });
+    lastHref = location.href;
+    syncRoute();
+  }, (e) => log('overlay:load-failed', String(e && e.message || e)));
 })();

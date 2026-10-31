@@ -263,12 +263,25 @@ test('menu clicks open the home page and the settings section', async () => {
   ]);
 });
 
-test('manifest asks for contextMenus and is version 1.4.0', () => {
+test('manifest asks for contextMenus and is version 1.5.0', () => {
   const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
   assert.ok(m.permissions.includes('contextMenus'));
-  assert.equal(m.version, '1.4.0');
-  // tab.url comes from host permissions (youtube.com, the local server) and activeTab on icon click
+  assert.equal(m.version, '1.5.0');
+  // tab.url comes from host permissions (youtube.com, udemy.com, the local server) and activeTab on icon click
   assert.ok(!m.permissions.includes('tabs') && m.permissions.includes('activeTab'));
+});
+
+test('manifest: udemy.com gets the host permission, the overlay content script and the overlay resources (site.js)', () => {
+  const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
+  const U = 'https://www.udemy.com/*';
+  assert.ok(m.host_permissions.includes(U));
+  const overlay = m.content_scripts.find((c) => c.js.includes('overlay.js'));
+  assert.deepEqual(overlay.matches, ['https://www.youtube.com/*', U]);
+  const war = m.web_accessible_resources[0];
+  assert.ok(war.matches.includes(U));
+  assert.ok(war.resources.includes('site.js'));
+  const src = readFileSync(new URL('../../extension/overlay.js', import.meta.url), 'utf8');
+  assert.ok(src.includes("import(url('site.js'))"));
 });
 
 test('overlay and pill shadow roots are closed', () => {
@@ -359,4 +372,138 @@ test('overlay can import dict.js (web-accessible) and sends ytlearn:dict on a wo
   assert.ok(src.includes("import(url('dict.js'))"));
   assert.ok(src.includes("type: 'ytlearn:dict'"));
   assert.ok(src.includes('m.video.pause()'));
+});
+
+/* ---------- Udemy lecture pages + the requested-id contract ---------- */
+
+const LID = 'udemy.5800738';
+const LURL = 'https://www.udemy.com/course/30-days-of-python/learn/lecture/5800738?start=0#overview';
+const udemyRoutes = (extra = {}) => ({
+  'POST /add': { status: 200, json: { job: { videoId: LID, state: 'queued', attempt: 1, message: '' } } },
+  ['POST /jobs/' + LID + '/claim']: { status: 200, json: { attempt: 1 } },
+  'POST /ingest?attempt=1': { status: 200, json: { ok: true, job: { videoId: LID, state: 'captured', attempt: 1, message: '' } } },
+  ['POST /jobs/' + LID + '/fail']: { status: 200, json: { ok: true } },
+  ...extra,
+});
+const captureScript = (raw, log) => async (o) => {
+  log.push(o);
+  if (o.files) return [{ result: undefined }];
+  return [{ result: { ok: true, raw } }];
+};
+
+test('icon on a Udemy lecture: overlay not handled -> /add with the tab url -> claim -> udemy capture (ISOLATED, vtt.js + udemy-capture.js) -> /ingest', async () => {
+  const raw = { videoId: LID, source: 'udemy', events: [{ t: 0, d: 1000, segs: [[null, 'hi']] }] };
+  const injected = [];
+  const w = load(udemyRoutes(), { toggleReply: { handled: false }, executeScript: captureScript(raw, injected) });
+  await w.ctx.onIconClicked({ id: 7, url: LURL });
+  assert.deepEqual(plain(w.calls.sent), [{ tabId: 7, msg: { type: 'ytlearn:toggle' } }]);
+  assert.deepEqual(w.calls.fetched, ['POST /add', 'POST /jobs/' + LID + '/claim', 'POST /ingest?attempt=1']);
+  assert.deepEqual(plain(w.calls.bodies['POST /add']), { url: LURL });
+  assert.equal(injected.length, 2);
+  assert.deepEqual(plain(injected[0]), { target: { tabId: 7 }, files: ['vtt.js', 'udemy-capture.js'], world: 'ISOLATED' });
+  assert.equal(injected[1].world, 'ISOLATED', 'both phases in the same world');
+  assert.deepEqual(plain(injected[1].args), ['ytLearnUdemyCapture', { expectLessonId: LID, timeoutMs: 25000 }]);
+  // the injected func calls the named global with the options
+  const seen = [];
+  const fake = { ytLearnUdemyCapture: async (o) => { seen.push(o); return raw; } };
+  const r = await vm.runInNewContext('(' + injected[1].func.toString() + ')', { globalThis: fake })(...injected[1].args);
+  assert.deepEqual(plain(r), { ok: true, raw });
+  assert.deepEqual(plain(seen), [{ expectLessonId: LID, timeoutMs: 25000 }]);
+  assert.deepEqual(plain(w.calls.bodies['POST /ingest?attempt=1']), raw);
+  assert.deepEqual(plain(w.calls.created), [{ url: 'http://127.0.0.1:8765/index.html?v=' + LID, active: true }]);
+});
+
+test('icon on a Udemy lecture: overlay handled -> nothing else', async () => {
+  const w = load({}, { toggleReply: { handled: true } });
+  await w.ctx.onIconClicked({ id: 7, url: LURL });
+  assert.equal(w.calls.sent.length, 1);
+  assert.deepEqual(w.calls.fetched, []);
+  assert.deepEqual(w.calls.created, []);
+});
+
+test('icon on a non-lecture Udemy page opens the home page (no background mode for Udemy)', async () => {
+  for (const url of ['https://www.udemy.com/course/30-days-of-python/', 'https://www.udemy.com/', 'https://www.udemy.com/course/x/learn/quiz/5800738']) {
+    const w = load({}, { toggleReply: { handled: true } });
+    await w.ctx.onIconClicked({ id: 7, url });
+    assert.deepEqual(w.calls.sent, [], url);
+    assert.deepEqual(w.calls.fetched, [], url);
+    assert.deepEqual(plain(w.calls.created), [{ url: 'http://127.0.0.1:8765/index.html', active: true }], url);
+  }
+});
+
+test('YouTube watch page: /add gets the tab url; capture stays capture.js in MAIN (both phases)', async () => {
+  const raw = { videoId: VID, events: [{ t: 0, d: 1000, segs: [[0, 'hi']] }] };
+  const injected = [];
+  const url = 'https://www.youtube.com/watch?v=' + VID + '&t=42s';
+  const w = load({
+    'POST /add': { status: 200, json: { job: { videoId: VID, state: 'queued', attempt: 1, message: '' } } },
+    ['POST /jobs/' + VID + '/claim']: { status: 200, json: { attempt: 1 } },
+    'POST /ingest?attempt=1': { status: 200, json: { ok: true, job: { videoId: VID, state: 'captured', attempt: 1, message: '' } } },
+  }, { toggleReply: { handled: false }, executeScript: captureScript(raw, injected) });
+  await w.ctx.onIconClicked({ id: 7, url });
+  assert.deepEqual(plain(w.calls.bodies['POST /add']), { url });
+  assert.deepEqual(plain(injected[0]), { target: { tabId: 7 }, files: ['capture.js'], world: 'MAIN' });
+  assert.equal(injected[1].world, 'MAIN');
+  assert.deepEqual(plain(injected[1].args), ['ytLearnCapture', { expectVideoId: VID, timeoutMs: 25000, inPlace: true }]);
+  assert.deepEqual(w.calls.fetched, ['POST /add', 'POST /jobs/' + VID + '/claim', 'POST /ingest?attempt=1']);
+});
+
+test('/add answers with a different id -> abort before claim/capture', async () => {
+  const injected = [];
+  const w = load(udemyRoutes({ 'POST /add': { status: 200, json: { job: { videoId: 'udemy.1', state: 'queued', attempt: 1, message: '' } } } }),
+    { toggleReply: { handled: false }, executeScript: captureScript({}, injected) });
+  const r = await w.ctx.runJob({ id: LID, url: LURL, site: 'udemy' }, { mode: 'inplace', tabId: 7 });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /不符/);
+  assert.deepEqual(w.calls.fetched, ['POST /add']);
+  assert.deepEqual(injected, []);
+});
+
+test('capture returns another lesson (raw.videoId mismatch) -> /fail with 換課了, no /ingest', async () => {
+  const injected = [];
+  const w = load(udemyRoutes(), { executeScript: captureScript({ videoId: 'udemy.42', events: [] }, injected) });
+  const r = await w.ctx.runJob({ id: LID, url: LURL, site: 'udemy' }, { mode: 'inplace', tabId: 7 });
+  assert.equal(r.ok, false);
+  assert.equal(r.error, '換課了，請回到原講座再試');
+  assert.deepEqual(w.calls.fetched, ['POST /add', 'POST /jobs/' + LID + '/claim', 'POST /jobs/' + LID + '/fail']);
+  assert.deepEqual(plain(w.calls.bodies['POST /jobs/' + LID + '/fail']), { attempt: 1, message: '換課了，請回到原講座再試' });
+});
+
+test('Udemy never runs in background mode', async () => {
+  const w = load(udemyRoutes());
+  const r = await w.ctx.runJob({ id: LID, url: LURL, site: 'udemy' }, { mode: 'background' });
+  assert.equal(r.ok, false);
+  assert.deepEqual(w.calls.fetched, []);
+});
+
+test('ytlearn:build from a Udemy overlay carries the page url; a url naming another lecture is refused', async () => {
+  const raw = { videoId: LID, events: [{ t: 0, d: 1000, segs: [[null, 'hi']] }] };
+  const injected = [];
+  const w = load(udemyRoutes(), { executeScript: captureScript(raw, injected) });
+  const { r, ret } = await ask(w, { type: 'ytlearn:build', videoId: LID, url: LURL }, { id: EXT, tab: { id: 42 } });
+  assert.equal(ret, true);
+  assert.equal(r.ok, true);
+  assert.deepEqual(plain(w.calls.bodies['POST /add']), { url: LURL });
+  assert.equal(injected[0].world, 'ISOLATED');
+  const other = load(udemyRoutes());
+  const bad = await ask(other, { type: 'ytlearn:build', videoId: LID, url: 'https://www.udemy.com/course/x/learn/lecture/1' });
+  assert.equal(bad.ret, false);
+  assert.deepEqual({ ...bad.r }, { ok: false, error: '換課了，請回到原講座再試' });
+  const noUrl = await ask(other, { type: 'ytlearn:build', videoId: LID });
+  assert.equal(noUrl.r.ok, false);
+  assert.deepEqual(other.calls.fetched, []);
+});
+
+test('ytlearn:lesson / ytlearn:job accept udemy ids', async () => {
+  const w = load({ ['GET /data/lessons/' + LID + '.json']: { status: 200, json: { videoId: LID } }, ['GET /jobs/' + LID]: { status: 404 } });
+  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:lesson', videoId: LID })).r), { lesson: { videoId: LID } });
+  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:job', videoId: LID })).r), { missing: true });
+});
+
+test('siteOfUrl', () => {
+  const w = load();
+  assert.equal(w.ctx.siteOfUrl('https://www.youtube.com/watch?v=' + VID), 'youtube');
+  assert.equal(w.ctx.siteOfUrl(LURL), 'udemy');
+  for (const u of ['https://www.youtube.com/shorts/' + VID, 'https://www.udemy.com/course/x/', 'http://www.udemy.com/course/x/learn/lecture/1',
+    'https://mycompany.udemy.com/course/x/learn/lecture/1', '', undefined]) assert.equal(w.ctx.siteOfUrl(u), null, String(u));
 });

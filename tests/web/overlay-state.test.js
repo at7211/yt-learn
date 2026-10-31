@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
-  watchVideoId, initialState, tokenOf, isStale, navigate, toggle, markMounted, markBuilding, markIdle,
+  watchVideoId, lessonIdFromUrl, initialState, tokenOf, isStale, navigate, toggle, markMounted, markBuilding, markIdle,
   pillText, jobPhase, OWN_KEYS, isEditable, keyAction, adShowing, cueForNav, cueSeekTarget,
 } from '../../extension/overlay-state.js';
 
@@ -205,4 +206,65 @@ test('cue navigation targets', () => {
   assert.equal(cueSeekTarget(cues, words, 9.5, 'next'), 9, 'clamped at the last cue');
   assert.equal(cueSeekTarget(cues, words, 9.5, 'zh'), null);
   assert.equal(cueSeekTarget([], [], 3, 'replay'), null);
+});
+
+/* ---------- lesson ids from either site; player identity (token) ---------- */
+
+const L = 'https://www.udemy.com/course/30-days-of-python/learn/lecture/5800738';
+
+test('lessonIdFromUrl: YouTube watch pages and Udemy lecture pages; watchVideoId is the same function', () => {
+  assert.equal(watchVideoId, lessonIdFromUrl);
+  assert.equal(lessonIdFromUrl(W(A)), A);
+  assert.equal(lessonIdFromUrl(W(A), B), null);
+  assert.equal(lessonIdFromUrl(L), 'udemy.5800738');
+  assert.equal(lessonIdFromUrl(L + '?start=0#overview'), 'udemy.5800738');
+  assert.equal(lessonIdFromUrl(L + '/'), 'udemy.5800738');
+  assert.equal(lessonIdFromUrl(L, 'ignored-for-udemy'), 'udemy.5800738');
+  for (const bad of ['https://www.udemy.com/course/30-days-of-python/', 'http://www.udemy.com/course/x/learn/lecture/1',
+    'https://mycompany.udemy.com/course/x/learn/lecture/1', 'https://www.udemy.com/course/x/learn/quiz/1',
+    'https://www.udemy.com/course/x/learn/lecture/1234567890123', 'https://www.udemy.com/course/x/learn/lecture/1/extra', 'udemy.5800738']) {
+    assert.equal(lessonIdFromUrl(bad), null, bad);
+  }
+});
+
+test('lessonIdFromUrl agrees with the shared fixture for Udemy lecture URLs', () => {
+  const fx = JSON.parse(readFileSync(new URL('../fixtures/lesson_ids.json', import.meta.url), 'utf8'));
+  for (const [input, want] of fx.udemyUrl) {
+    if (input.startsWith('https://www.youtube.com/')) continue; // a YouTube id, not a Udemy one
+    assert.equal(lessonIdFromUrl(input), want ? 'udemy.' + want[1] : null, input);
+  }
+});
+
+test('navigate: same id with a different player token resets gen, tears down, and autoloads when on', () => {
+  let s = navigate(initialState(), 'udemy.1', 0).state;
+  assert.equal(s.token, 0);
+  s = toggle(s).state;
+  const tok = tokenOf(s);
+  s = markMounted(s, tok);
+  assert.equal(navigate(s, 'udemy.1', 0).state, s, 'same id, same player: no-op');
+  const r = navigate(s, 'udemy.1', 1);
+  assert.equal(r.state.videoId, 'udemy.1');
+  assert.equal(r.state.token, 1);
+  assert.equal(r.state.gen, s.gen + 1);
+  assert.equal(r.state.mounted, false);
+  assert.equal(r.teardown, true);
+  assert.equal(r.autoload, true, 'remount on the new <video>');
+  assert.equal(isStale(r.state, tok), true, 'work bound to the old player is stale');
+  // off: a replaced player tears down but does not autoload
+  const off = toggle(markMounted(r.state, tokenOf(r.state))).state;
+  const r2 = navigate(off, 'udemy.1', 2);
+  assert.equal(r2.autoload, false);
+  assert.equal(r2.state.gen, off.gen + 1);
+});
+
+test('navigate: the token is ignored off a lesson page; no token behaves as before', () => {
+  const s = initialState();
+  assert.equal(navigate(s, null, 5).state, s);
+  const a = navigate(s, A).state;
+  assert.equal(a.token, null);
+  assert.equal(navigate(a, A).state, a);
+  assert.equal(navigate(a, A, undefined).state, a);
+  const away = navigate(a, null, 3).state;
+  assert.equal(away.videoId, null);
+  assert.equal(navigate(away, null, 4).state, away);
 });

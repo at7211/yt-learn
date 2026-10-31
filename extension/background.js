@@ -6,6 +6,7 @@ const CAPTURE_TIMEOUT_MS = 25000;
 const FETCH_TIMEOUT_MS = 5000;
 const SERVER_DOWN = '本機 server 沒有回應（請確認 python3 server.py 正在執行）';
 const BUSY = '已有一支影片在處理中';
+const SWITCHED = '換課了，請回到原講座再試';
 const TAB_CLOSED = '擷取用的分頁已被關閉';
 const DEFAULT_TITLE = 'yt-learn：把這支影片變成課程';
 const DICT_ORIGIN = 'https://dictionary.cambridge.org/';
@@ -89,7 +90,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'ytlearn:lesson' || msg.type === 'ytlearn:job' || msg.type === 'ytlearn:build') {
-    const videoId = ytLearnParseVideoId(typeof msg.videoId === 'string' ? msg.videoId : '');
+    const videoId = ytLearnParseLessonId(typeof msg.videoId === 'string' ? msg.videoId : '');
     if (!videoId) {
       sendResponse({ error: '無法辨識的影片 id' });
       return false;
@@ -100,9 +101,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, error: '沒有可擷取的分頁' });
         return false;
       }
-      // Overlay on a watch page: capture in that tab, no onAdded, no new tab, no ownedTabs entry.
+      // Overlay on a lesson page: capture in that tab, no onAdded, no new tab, no ownedTabs entry.
+      // The overlay sends the page URL it saw; it must name the same lesson. (No url: a YouTube id
+      // stands for its canonical watch URL, as before.)
+      let requested;
+      if (typeof msg.url === 'string') {
+        const site = siteOfUrl(msg.url);
+        if (!site || ytLearnParseLessonId(msg.url) !== videoId) {
+          sendResponse({ ok: false, error: SWITCHED });
+          return false;
+        }
+        requested = { id: videoId, url: msg.url, site };
+      } else if (ytLearnLessonSource(videoId) === 'youtube') {
+        requested = { id: videoId, url: ytLearnCanonicalUrl(videoId), site: 'youtube' };
+      } else {
+        sendResponse({ ok: false, error: '缺少講座網址' });
+        return false;
+      }
       log('overlay:build', videoId, 'tab', tabId);
-      runJob(videoId, { mode: 'inplace', tabId }).then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
+      runJob(requested, { mode: 'inplace', tabId }).then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
       return true;
     }
     overlayFetch(msg.type, videoId).then(sendResponse);
@@ -124,7 +141,7 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
       return false;
     }
     log('external:capture', videoId);
-    runJob(videoId, { mode: 'background' }).then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
+    runJob(youtubeRequest(videoId), { mode: 'background' }).then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
     return true;
   }
   return false;
@@ -139,6 +156,20 @@ chrome.windows.onRemoved.addListener((windowId) => {
 const startup = cleanupOwnedTabs();
 
 /* ---------- 入口 ---------- */
+
+// 'youtube' for a www.youtube.com watch page, 'udemy' for a www.udemy.com lecture page, else null.
+// Both are pages where the overlay content script runs and the capture happens in place.
+function siteOfUrl(url) {
+  if (typeof url !== 'string') return null;
+  if (url.startsWith('https://www.youtube.com/watch')) return 'youtube';
+  if (ytLearnParseUdemyUrl(url)) return 'udemy';
+  return null;
+}
+
+// A YouTube id that came without a page URL (local page, bridge): its canonical watch URL stands in.
+function youtubeRequest(videoId) {
+  return { id: videoId, url: ytLearnCanonicalUrl(videoId), site: 'youtube' };
+}
 
 // Toggle the overlay in a watch tab. A tab opened before the extension was (re)loaded has no content
 // script, so on "no receiver" inject overlay.js once (it guards against double loading) and ask again.
@@ -160,15 +191,20 @@ async function askOverlay(tabId) {
 
 async function onIconClicked(tab) {
   const url = (tab && tab.url) || '';
-  const videoId = ytLearnParseVideoId(url);
-  log('icon', url, videoId);
-  if (!videoId) {
+  const site = siteOfUrl(url);
+  // Frozen at click time: the job, the capture and the ingest must all be about this lesson.
+  const videoId = ytLearnParseLessonId(url);
+  log('icon', url, videoId, site);
+  // Udemy has no background mode: only a lecture page in a real tab can be captured.
+  const udemy = ytLearnLessonSource(videoId) === 'udemy';
+  if (!videoId || (udemy && (site !== 'udemy' || typeof tab.id !== 'number'))) {
     await chrome.tabs.create({ url: SERVER + '/index.html', active: true });
     return;
   }
-  const inPlace = url.startsWith('https://www.youtube.com/watch') && typeof tab.id === 'number';
+  const requested = { id: videoId, url: site ? url : ytLearnCanonicalUrl(videoId), site: site || 'youtube' };
+  const inPlace = site !== null && typeof tab.id === 'number';
   if (inPlace) {
-    // The overlay content script (overlay.js) takes over on watch pages. No receiver (a tab opened
+    // The overlay content script (overlay.js) takes over on watch/lecture pages. No receiver (a tab opened
     // before the extension was loaded) → fall through to the original flow below.
     const reply = await askOverlay(tab.id);
     if (reply && reply.handled) {
@@ -183,7 +219,7 @@ async function onIconClicked(tab) {
     opened = true;
     chrome.tabs.create({ url: pageUrl, active: true }).catch((e) => log('icon:open-failed', errMsg(e)));
   };
-  const result = await runJob(videoId, inPlace
+  const result = await runJob(requested, inPlace
     ? { mode: 'inplace', tabId: tab.id, onAdded: openPage }
     : { mode: 'background', onAdded: openPage });
   log('icon:result', JSON.stringify(result));
@@ -208,7 +244,7 @@ async function onPageCapture(videoId, pageTabId) {
     emitted = true;
     sendStatus(pageTabId, { videoId, ...s });
   };
-  const result = await runJob(videoId, { mode: 'background', onStatus });
+  const result = await runJob(youtubeRequest(videoId), { mode: 'background', onStatus });
   log('bridge:result', JSON.stringify(result));
   if (result.done) sendStatus(pageTabId, { videoId, attempt: result.job && result.job.attempt, state: 'done', message: '完成' });
   else if (result.inProgress) sendStatus(pageTabId, { videoId, attempt: result.job && result.job.attempt, state: (result.job && result.job.state) || 'capturing', message: '已在處理中' });
@@ -280,12 +316,13 @@ async function openDictInner(url, screen) {
 
 /* ---------- job ---------- */
 
-function runJob(videoId, opts) {
+// requested = {id, url, site}: the lesson the user asked for, frozen when they asked.
+function runJob(requested, opts) {
   if (busy) {
-    log('busy', videoId);
+    log('busy', requested.id);
     return Promise.resolve({ ok: false, error: BUSY });
   }
-  busy = runJobInner(videoId, opts || {})
+  busy = runJobInner(requested, opts || {})
     .catch((e) => ({ ok: false, error: errMsg(e) }))
     .then((result) => {
       if (result.ok) clearBadge();
@@ -295,17 +332,23 @@ function runJob(videoId, opts) {
   return busy;
 }
 
-async function runJobInner(videoId, opts) {
+async function runJobInner(requested, opts) {
   await startup;
+  const videoId = requested.id;
   const mode = opts.mode === 'inplace' ? 'inplace' : 'background';
   const emit = (s) => { try { if (opts.onStatus) opts.onStatus(s); } catch (e) { log('ignored', errMsg(e)); } };
-  const canonical = ytLearnCanonicalUrl(videoId);
+  if (requested.site === 'udemy' && mode !== 'inplace') return { ok: false, error: 'Udemy 講座只能在講座頁上擷取' };
+  const canonical = requested.site === 'youtube' ? ytLearnCanonicalUrl(videoId) : null;
 
-  log('add', videoId, mode);
-  const add = await api('/add', { method: 'POST', body: { url: canonical } });
+  log('add', videoId, mode, requested.url);
+  const add = await api('/add', { method: 'POST', body: { url: requested.url } });
   const job = add.json && add.json.job;
   if (add.status !== 200 || !job) return { ok: false, error: '加入工作失敗：' + serverError(add) };
   log('add:job', JSON.stringify(job));
+  if (job.videoId !== videoId) {
+    log('add:id-mismatch', videoId, job.videoId);
+    return { ok: false, error: '伺服器回傳的課程 id（' + job.videoId + '）與這一頁（' + videoId + '）不符' };
+  }
   try { if (opts.onAdded) opts.onAdded(job); } catch (e) { log('ignored', errMsg(e)); }
   if (job.state === 'done') return { ok: true, done: true, lessonUrl: SERVER + '/index.html?v=' + videoId, job };
   if (job.state !== 'queued') return { ok: true, inProgress: true, job };
@@ -324,8 +367,12 @@ async function runJobInner(videoId, opts) {
   const t0 = Date.now();
   try {
     const raw = mode === 'inplace'
-      ? await captureInPlace(opts.tabId, videoId)
+      ? await captureInPlace(opts.tabId, requested)
       : await captureInBackground(videoId, canonical, attempt, ctx);
+    if (!raw || raw.videoId !== videoId) {
+      log('capture:id-mismatch', videoId, raw && raw.videoId);
+      throw new Error(SWITCHED);
+    }
     log('capture:ok', videoId, raw.events.length, 'events', Date.now() - t0, 'ms');
 
     const ing = await api('/ingest?attempt=' + attempt, { method: 'POST', body: raw });
@@ -353,10 +400,15 @@ async function runJobInner(videoId, opts) {
   }
 }
 
-async function captureInPlace(tabId, videoId) {
+async function captureInPlace(tabId, requested) {
   if (typeof tabId !== 'number') throw new Error('沒有可擷取的分頁');
-  log('capture:inplace', tabId, videoId);
-  return injectCapture(tabId, { expectVideoId: videoId, timeoutMs: CAPTURE_TIMEOUT_MS, inPlace: true });
+  log('capture:inplace', tabId, requested.id, requested.site);
+  if (requested.site === 'udemy') {
+    // Isolated world for both phases: udemy-capture.js needs vtt.js's global in the same world.
+    return injectCapture(tabId, { expectLessonId: requested.id, timeoutMs: CAPTURE_TIMEOUT_MS },
+      { files: ['vtt.js', 'udemy-capture.js'], world: 'ISOLATED', fn: 'ytLearnUdemyCapture' });
+  }
+  return injectCapture(tabId, { expectVideoId: requested.id, timeoutMs: CAPTURE_TIMEOUT_MS, inPlace: true });
 }
 
 async function captureInBackground(videoId, canonical, attempt, ctx) {
@@ -394,19 +446,21 @@ function waitForWatchPage(tabId, ms) {
   });
 }
 
-async function injectCapture(tabId, args) {
+// script: which files to inject and which global to call, both in `world` (default: YouTube's capture.js in MAIN).
+async function injectCapture(tabId, args, script) {
+  const { files, world, fn } = script || { files: ['capture.js'], world: 'MAIN', fn: 'ytLearnCapture' };
   let results;
   let timer = null;
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['capture.js'], world: 'MAIN' });
+    await chrome.scripting.executeScript({ target: { tabId }, files, world });
     const run = chrome.scripting.executeScript({
       target: { tabId },
-      world: 'MAIN',
-      func: (o) => globalThis.ytLearnCapture(o).then(
+      world,
+      func: (name, o) => globalThis[name](o).then(
         (raw) => ({ ok: true, raw }),
         (e) => ({ ok: false, error: String((e && e.message) || e) }),
       ),
-      args: [args],
+      args: [fn, args],
     });
     const guard = new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error('逾時：' + args.timeoutMs / 1000 + ' 秒內沒有取得字幕')), args.timeoutMs + 5000);
