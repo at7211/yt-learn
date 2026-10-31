@@ -268,3 +268,22 @@ test('navigate: the token is ignored off a lesson page; no token behaves as befo
   assert.equal(away.videoId, null);
   assert.equal(navigate(away, null, 4).state, away);
 });
+
+test('navigate: same lesson, new player token while building keeps the build (no teardown, token updated)', () => {
+  let s = navigate(initialState(), A, 1).state;
+  s = toggle(s).state;
+  const tok = tokenOf(s);
+  s = markBuilding(s, tok);
+  assert.equal(s.building, true);
+  const r = navigate(s, A, 2);
+  assert.equal(r.teardown, false);
+  assert.equal(r.autoload, false);
+  assert.equal(r.state.building, true);
+  assert.equal(r.state.token, 2);
+  assert.equal(isStale(r.state, tok), false, 'the in-flight build token stays current');
+  // once mounted, a new player token is a real navigation again
+  const m = markMounted(r.state, tokenOf(r.state));
+  const r2 = navigate(m, A, 3);
+  assert.equal(r2.teardown, true);
+  assert.equal(r2.autoload, true);
+});

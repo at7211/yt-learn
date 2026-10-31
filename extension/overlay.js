@@ -73,7 +73,12 @@
     // disagree mid-navigation) is left to the worker's fallback flow.
     ready.then(() => {
       const id = currentVideoId();
-      sendResponse({ handled: !!id });
+      // No player on the page (an article-type Udemy lecture, YouTube mid-navigation): let the worker's
+      // fallback flow run instead of silently building with nowhere to show the pill. Toggling an
+      // overlay that is already up or building still works even if the player vanished.
+      const handled = !!id && (S.mounted || S.building || !!findPlayer());
+      sendResponse({ handled });
+      if (!handled) return;
       if (id) onToggle().catch((e) => log('toggle:error', String(e && e.message || e)));
     }, () => sendResponse({ handled: false }));
     return true;
@@ -635,7 +640,7 @@
     // router); also catches ytd-watch-flexy catching up with the URL, and a player whose {root, video}
     // was replaced under the same lesson id (Udemy swaps <video>): either change → navigate → remount.
     if (!S) return;
-    if (location.href !== lastHref || currentVideoId() !== S.videoId || playerToken() !== S.token) { lastHref = location.href; syncRoute(); }
+    if (location.href !== lastHref || currentVideoId() !== S.videoId || (S.videoId !== null && playerToken() !== S.token)) { lastHref = location.href; syncRoute(); }
   }, ROUTE_POLL_MS);
   ready.then(() => {
     if (!site) return;

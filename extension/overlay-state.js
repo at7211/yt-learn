@@ -60,6 +60,11 @@ export function navigate(s, videoId, token) {
   if (id === s.videoId && (id === null || tk === (s.token === undefined ? null : s.token))) {
     return { state: s, teardown: false, autoload: false };
   }
+  // Same lesson, new player, while a build is in flight (the <video> was rebuilt by a quality switch or a
+  // re-render): keep the build and its pill; mount() looks the player up again when the lesson arrives.
+  if (id === s.videoId && s.building) {
+    return { state: { ...s, token: tk }, teardown: false, autoload: false };
+  }
   const state = { ...s, videoId: id, token: tk, gen: s.gen + 1, mounted: false, building: false };
   return { state, teardown: s.mounted || s.building || s.videoId !== null, autoload: s.on && id !== null };
 }
