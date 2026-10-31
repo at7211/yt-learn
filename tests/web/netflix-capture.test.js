@@ -171,6 +171,16 @@ test('a reply for another movie, or with a bad subtitle hostname, is refused bef
   assert.equal(evil.calls.length, 0);
 });
 
+test('a reply over the 128 KB cap -> the error names the real size, the state and the track count', async () => {
+  const longUrl = 'https://a.nflxvideo.net/?' + 'q'.repeat(1990);
+  const tracks = Array.from({ length: 80 }, () => ({ ...TRACKS[1], formats: { 'imsc1.1': longUrl } }));
+  const s = setup({ replies: () => ({ ...FOUND, manifest: { ...FOUND.manifest, tracks } }) });
+  const msg = await rejection(s.run());
+  assert.match(msg, /^鉤子回覆太大（1[0-9]{2} KB，上限 128 KB；state found、80 軌）$/);
+  assert.equal(s.calls.length, 0);
+  assertClean(s);
+});
+
 test('replies with another nonce, from another origin, or from another window are ignored', async () => {
   const s = setup({ replies: () => null });
   // inject stray replies directly

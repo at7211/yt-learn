@@ -29,6 +29,12 @@
     ? '沒有指定分頁：請從 Netflix 播放頁按工具列圖示打開這一頁，「診斷」與自動重新載入才有對象。'
     : '對象分頁：#' + tabId;
   if (tabId === null) probeBtn.disabled = true;
+  // ?reason=: why the worker sent the user here (the menu checkbox could not enable Netflix).
+  const reason = params.get('reason');
+  const REASONS = {
+    needPermission: '從右鍵選單啟用時，Netflix 的網站權限剛好被收回了（可能是關閉還在進行中）。請按下面的按鈕再啟用一次。',
+  };
+  const reasonText = reason ? (REASONS[reason] || '從右鍵選單啟用失敗：' + reason.slice(0, 200)) : '';
   enableBtn.textContent = tabId === null ? '啟用' : '啟用並重新載入這個分頁';
 
   function showState(st) {
@@ -36,6 +42,7 @@
     if (st.enabled) say('目前狀態：已啟用。');
     else if (st.desired) say('目前狀態：已授權，但鉤子註冊失敗，稍後會自動重試。');
     else say('目前狀態：未啟用。');
+    if (reasonText && !st.enabled) say(status.textContent + reasonText);
     enableBtn.hidden = !!st.enabled;
   }
 
@@ -58,9 +65,9 @@
       say('已授權，正在啟用…');
       const r = await send({ type: 'ytlearn:netflix-set', desired: true, tab: tabId === null ? undefined : tabId });
       if (r && r.ok) {
-        say(tabId === null ? '已啟用。請重新整理 Netflix 播放頁。' : '已啟用，分頁已重新載入。這一頁即將關閉。');
+        say(r.reloaded ? '已啟用，分頁已重新載入。這一頁即將關閉。' : '已啟用。請重新整理 Netflix 播放頁（原本的分頁已不在 Netflix，沒有自動重新載入）。');
         enableBtn.hidden = true;
-        if (tabId !== null) setTimeout(() => window.close(), 1500);
+        if (r.reloaded) setTimeout(() => window.close(), 1500);
       } else if (r && r.error === 'needPermission') {
         say('權限剛剛被收回了（可能是關閉還在進行中），請再按一次啟用。');
       } else {

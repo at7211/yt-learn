@@ -195,6 +195,15 @@ test('the cache keeps the 10 most recent manifests (LRU by movieId; re-parsing r
   for (const id of [1002, 1004, 1011, 1012]) assert.equal((await get(p, String(id))).state, 'found', String(id));
 });
 
+test('LRU touches on read: the movie being asked about survives later prefetched manifests', async () => {
+  const p = page();
+  for (let i = 1; i <= 10; i++) p.parse(manifestText(1000 + i));
+  assert.equal((await get(p, '1001')).state, 'found'); // read -> most recent
+  p.parse(manifestText(2001)); // evicts 1002, not 1001
+  assert.equal((await get(p, '1001')).state, 'found');
+  assert.equal((await get(p, '1002')).state, 'pending');
+});
+
 test('bridge ignores other windows, other origins and malformed requests', async () => {
   const p = page();
   p.send({ type: 'ytlearn:nf-get', nonce: 'a', movieId: '81234567' }, { source: {} });

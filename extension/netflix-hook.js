@@ -149,6 +149,7 @@
     if (ms !== null) reply.currentMs = ms;
     const s = cache.get(msg.movieId);
     if (s) {
+      remember(s); // touch on read: the episode being watched is never evicted by prefetched manifests
       reply.state = 'found';
       reply.manifest = s;
       Object.assign(reply, titleFor(msg.movieId));

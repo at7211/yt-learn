@@ -88,7 +88,7 @@ function load(routes = {}, { toggleReply, executeScript, windows, nf = {} } = {}
     scripting: {
       executeScript: executeScript || (async () => { throw new Error('not in tests'); }),
       getRegisteredContentScripts: async (f) => [...registered.values()].filter((r) => !f || !f.ids || f.ids.includes(r.id))
-        .map((r) => JSON.parse(JSON.stringify(r))),
+        .map((r) => JSON.parse(JSON.stringify(nf.report ? nf.report(r) : r))),
       registerContentScripts: async (list) => {
         calls.scriptOps.push('register:' + list.map((r) => r.id).join(','));
         if (nf.registerFails) throw new Error('register failed');
@@ -631,6 +631,17 @@ test('reconcile: a registration reported without its default fields (world/runAt
   assert.deepEqual(v.calls.scriptOps, ['unregister:ytlearn-netflix-hook', 'register:ytlearn-netflix-hook'], 'the hook must be MAIN');
 });
 
+test('reconcile: re-registering does not fix what Chrome reports -> logged once as stuck, no further unregister/register in this worker', async () => {
+  const report = (r) => ({ ...r, matches: [...r.matches, 'https://www.netflix.com/watch/*'] }); // Chrome reports it differently
+  const w = load({}, { nf: { local: { netflix: ON }, perm: true, registered: [HOOK_REG, OVERLAY_REG], report } });
+  await settle();
+  assert.deepEqual(w.calls.scriptOps, ['unregister:ytlearn-netflix-hook,ytlearn-netflix-overlay', 'register:ytlearn-netflix-hook,ytlearn-netflix-overlay']);
+  const st = plain(await w.ctx.reconcileNetflix());
+  await w.ctx.reconcileNetflix();
+  assert.equal(w.calls.scriptOps.length, 2, 'no loop');
+  assert.equal(st.enabled, true, 'present-but-mismatching registrations still count as registered');
+});
+
 test('reconcile: desired but the permission was revoked -> desired=false, gen+1, site-off to ALL tabs, unregister, cleanup=false; never permissions.remove', async () => {
   const w = load({}, { nf: { local: { netflix: ON }, perm: false, registered: [HOOK_REG, OVERLAY_REG], tabs: [{ id: 1 }, { id: 2 }], offFails: [1] } });
   await settle();
@@ -692,13 +703,24 @@ test('netflix-set true without the permission -> {ok:false, error:needPermission
 });
 
 test('netflix-set true with the permission -> desired=true gen+1, both registered, then the tab reloads', async () => {
-  const w = load({}, { nf: { local: { netflix: { desired: false, gen: 1, cleanup: false } }, perm: true } });
+  const w = load({}, { nf: { local: { netflix: { desired: false, gen: 1, cleanup: false } }, perm: true, tabUrls: { 7: NURL } } });
   await settle();
   const { r } = await ask(w, { type: 'ytlearn:netflix-set', desired: true, tab: 7 }, PAGE_SENDER);
-  assert.deepEqual(plain(r), { ok: true });
+  assert.deepEqual(plain(r), { ok: true, reloaded: true });
   assert.deepEqual(plain(w.local.netflix), { desired: true, gen: 2, cleanup: false });
   assert.deepEqual(regs(w), [HOOK_REG, OVERLAY_REG]);
   assert.deepEqual(w.calls.reloaded, [7]);
+});
+
+test('netflix-set true: the ?tab is no longer on Netflix (or gone) -> enabled, no reload, reloaded:false', async () => {
+  for (const tabUrls of [{ 7: 'https://www.youtube.com/watch?v=' + VID }, {}]) {
+    const w = load({}, { nf: { perm: true, tabUrls } });
+    await settle();
+    const { r } = await ask(w, { type: 'ytlearn:netflix-set', desired: true, tab: 7 }, PAGE_SENDER);
+    assert.deepEqual(plain(r), { ok: true, reloaded: false });
+    assert.deepEqual(w.calls.reloaded, []);
+    assert.equal(w.registered.size, 2);
+  }
 });
 
 test('netflix-set true but registration fails -> error, desired stays true, no reload', async () => {
@@ -769,7 +791,7 @@ test('set true sent while a disable is running -> serialized after it: the disab
   // the user grants again (the page asks in its click handler) -> set true now succeeds
   w.perm.granted = true;
   const again = await ask(w, { type: 'ytlearn:netflix-set', desired: true, tab: 7 }, PAGE_SENDER);
-  assert.deepEqual(plain(again.r), { ok: true });
+  assert.deepEqual(plain(again.r), { ok: true, reloaded: false }, 'tab 7 has no Netflix url in this fake: not reloaded');
   assert.equal(w.registered.size, 2);
 });
 
@@ -798,12 +820,34 @@ test('menu checkbox: checked -> permissions.request inside the click, then set t
   assert.deepEqual(plain(w.calls.menuUpdates).at(-1), ['ytlearn-netflix', false]);
 });
 
+test('menu checkbox: granted but set true answers needPermission -> the enable page opens with ?reason=needPermission', async () => {
+  const w = load({}, { nf: { perm: false } });
+  await settle();
+  w.ctx.chrome.permissions.request = async () => true; // prompt says yes, but the permission is gone again by the time set runs
+  w.listeners.menuClicked({ menuItemId: 'ytlearn-netflix', checked: true });
+  await settle();
+  assert.deepEqual(plain(w.calls.created), [{ url: ENABLE_PAGE + '?reason=needPermission', active: true }]);
+  assert.deepEqual(w.calls.localSets, []);
+  assert.deepEqual(plain(w.calls.menuUpdates).at(-1), ['ytlearn-netflix', false]);
+});
+
+test('menu checkbox: registration fails -> the enable page opens with the reason; a denied prompt opens nothing', async () => {
+  const w = load({}, { nf: { perm: false, registerFails: true } });
+  await settle();
+  w.listeners.menuClicked({ menuItemId: 'ytlearn-netflix', checked: true });
+  await settle();
+  assert.equal(w.calls.created.length, 1);
+  assert.ok(w.calls.created[0].url.startsWith(ENABLE_PAGE + '?reason='));
+  assert.match(decodeURIComponent(w.calls.created[0].url), /註冊失敗/);
+});
+
 test('menu checkbox: permission denied -> nothing written, checkbox back to unchecked', async () => {
   const w = load({}, { nf: { perm: false, request: () => false } });
   await settle();
   w.listeners.menuClicked({ menuItemId: 'ytlearn-netflix', checked: true });
   await settle();
   assert.deepEqual(w.calls.localSets, []);
+  assert.deepEqual(w.calls.created, [], 'the user said no: no page');
   assert.deepEqual(plain(w.calls.menuUpdates).at(-1), ['ytlearn-netflix', false]);
 });
 

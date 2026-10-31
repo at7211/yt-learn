@@ -583,10 +583,17 @@ function sameScript(got, want) {
 }
 
 // Both scripts registered with exactly NF_SCRIPTS' settings; a mismatch is unregistered and registered again.
+// Set when a re-registration did not make Chrome report the wanted config: from then on (this worker's
+// lifetime) a mismatching-but-present registration is left alone, so reconciles never loop through
+// unregister/register (each round leaves a document_start gap).
+let nfReregisterStuck = false;
+
 async function ensureNetflixRegistered() {
-  const got = await chrome.scripting.getRegisteredContentScripts({ ids: NF_SCRIPTS.map((s) => s.id) });
+  const ids = NF_SCRIPTS.map((s) => s.id);
   const want = new Map(NF_SCRIPTS.map((s) => [s.id, s]));
-  const wrong = got.filter((g) => want.has(g.id) && !sameScript(g, want.get(g.id))).map((g) => g.id);
+  const mismatched = (list) => list.filter((g) => want.has(g.id) && !sameScript(g, want.get(g.id))).map((g) => g.id);
+  const got = await chrome.scripting.getRegisteredContentScripts({ ids });
+  const wrong = nfReregisterStuck ? [] : mismatched(got);
   if (wrong.length) {
     log('netflix:reregister', JSON.stringify(wrong));
     await chrome.scripting.unregisterContentScripts({ ids: wrong });
@@ -596,6 +603,13 @@ async function ensureNetflixRegistered() {
   if (missing.length) {
     await chrome.scripting.registerContentScripts(missing.map((s) => ({ ...s, js: s.js.slice(), matches: s.matches.slice() })));
     log('netflix:registered', JSON.stringify(missing.map((s) => s.id)));
+  }
+  if (wrong.length) {
+    const still = mismatched(await chrome.scripting.getRegisteredContentScripts({ ids }));
+    if (still.length) {
+      nfReregisterStuck = true;
+      log('netflix:reregister-stuck', JSON.stringify(still));
+    }
   }
 }
 
@@ -683,11 +697,18 @@ function setNetflix(desired, reloadTabId) {
     await writeNetflix({ desired: true, gen: s.gen + 1, cleanup: false });
     const st = await reconcileInner();
     if (!st.registered) return { ok: false, error: '註冊失敗，稍後會自動重試' };
+    let reloaded = false;
     if (typeof reloadTabId === 'number') {
-      await chrome.tabs.reload(reloadTabId).catch((e) => log('netflix:reload-failed', errMsg(e)));
+      // Only a tab that is (still) on Netflix: the ?tab id may have navigated away or been reused.
+      const tab = await chrome.tabs.get(reloadTabId).catch(() => null);
+      if (tab && typeof tab.url === 'string' && tab.url.startsWith(NF_HOST)) {
+        await chrome.tabs.reload(reloadTabId).then(() => { reloaded = true; }, (e) => log('netflix:reload-failed', errMsg(e)));
+      } else {
+        log('netflix:reload-skipped', reloadTabId, tab && tab.url);
+      }
     }
     log('netflix:enabled', s.gen + 1);
-    return { ok: true };
+    return { ok: true, reloaded };
   });
 }
 
@@ -741,15 +762,24 @@ function onNetflixMenu(info) {
       return;
     }
     Promise.resolve(asked)
-      .then((granted) => (granted ? setNetflix(true, null) : { ok: false, error: 'denied' }))
+      .then(async (granted) => {
+        if (!granted) return { ok: false, error: 'denied' }; // the user said no: nothing to explain
+        const r = await setNetflix(true, null);
+        // needPermission, registration failure, anything else: the enable page explains and offers a retry
+        if (!r || !r.ok) await openNetflixEnablePage(null, '', (r && r.error) || 'unknown');
+        return r;
+      })
       .then(done).catch(fail);
   } else {
     setNetflix(false).then(done).catch(fail);
   }
 }
 
-function openNetflixEnablePage(tabId, hash) {
-  const url = chrome.runtime.getURL(NF_ENABLE_PAGE) + (typeof tabId === 'number' ? '?tab=' + tabId : '') + (hash || '');
+function openNetflixEnablePage(tabId, hash, reason) {
+  const q = [];
+  if (typeof tabId === 'number') q.push('tab=' + tabId);
+  if (reason) q.push('reason=' + encodeURIComponent(reason));
+  const url = chrome.runtime.getURL(NF_ENABLE_PAGE) + (q.length ? '?' + q.join('&') : '') + (hash || '');
   return chrome.tabs.create({ url, active: true });
 }
 

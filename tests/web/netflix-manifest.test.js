@@ -172,10 +172,13 @@ test('validateGetReply: size, track count, format keys and URL rules', () => {
   assert.notEqual(V(withTracks([{ ...t, lang: 'x'.repeat(257) }])), null, 'string cap');
   assert.notEqual(V(withTracks([{ ...t, forced: 'no' }])), null);
   assert.notEqual(V(withTracks(Array.from({ length: 201 }, () => t))), null, '> 200 tracks');
-  // 64 KB cap on the whole message: 150 tracks with ~2000-char URLs exceed it
+  // 128 KB cap on the whole message, reported with the real size: 80 tracks with ~2000-char URLs exceed it
   const longUrl = 'https://a.nflxvideo.net/?' + 'q'.repeat(1990);
-  assert.notEqual(V(withTracks(Array.from({ length: 150 }, () => ({ ...t, formats: { 'imsc1.1': longUrl } })))), null, '64 KB');
-  assert.equal(V(withTracks(Array.from({ length: 20 }, () => ({ ...t, formats: { 'imsc1.1': longUrl } })))), null);
+  assert.match(V(withTracks(Array.from({ length: 80 }, () => ({ ...t, formats: { 'imsc1.1': longUrl } })))), /^too large: \d{6} bytes$/);
+  assert.equal(V(withTracks(Array.from({ length: 50 }, () => ({ ...t, formats: { 'imsc1.1': longUrl } })))), null, '~100 KB passes');
+  // a realistic manifest: 50 tracks x 2 URLs x ~350 chars
+  const realUrl = 'https://ipv4-c001-tpe001-ix.1.oca.nflxvideo.net/?' + 'o'.repeat(300);
+  assert.equal(V(withTracks(Array.from({ length: 50 }, () => ({ ...t, formats: { 'imsc1.1': realUrl, 'dfxp-ls-sdh': realUrl } })))), null);
 });
 
 test('validateSeekAck: requestId, hook, ok, error', () => {

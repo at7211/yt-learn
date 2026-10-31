@@ -57,6 +57,19 @@ globalThis.ytLearnNetflixCapture = async function (opts) {
   });
   const sleep = (ms) => new Promise((r) => later(r, Math.max(0, Math.min(ms, left()))));
 
+  // Validator reason -> Chinese message. Too large: the real size, plus whatever still reads (state, track count).
+  function replyError(err, reply) {
+    const m = /^too large: (\d+) bytes$/.exec(err);
+    if (!m) return '鉤子回覆格式不對（' + err + '）';
+    const kb = (n) => Math.ceil(n / 1024) + ' KB';
+    const max = globalThis.ytLearnNetflixMaxReplyBytes || 128 * 1024;
+    const extra = [];
+    if (typeof reply.state === 'string' && reply.state.length <= 32) extra.push('state ' + reply.state);
+    const tracks = reply.manifest && Array.isArray(reply.manifest.tracks) ? reply.manifest.tracks.length : null;
+    if (tracks !== null) extra.push(tracks + ' 軌');
+    return '鉤子回覆太大（' + kb(Number(m[1])) + '，上限 ' + kb(max) + (extra.length ? '；' + extra.join('、') : '') + '）';
+  }
+
   async function getManifest(movieId) {
     let last = null;
     while (left() > 0) {
@@ -66,7 +79,7 @@ globalThis.ytLearnNetflixCapture = async function (opts) {
         (d) => d.type === 'ytlearn:nf-manifest' && d.nonce === nonce, Math.min(RETRY_MS, left()));
       if (reply) {
         const err = NF.validateGet(reply, movieId);
-        if (err) throw new Error('鉤子回覆格式不對（' + err + '）');
+        if (err) throw new Error(replyError(err, reply));
         last = reply.state;
         if (reply.state === 'found') return reply;
         if (reply.state === 'unsupported') throw new Error('Netflix 改版了，認不出字幕清單');

@@ -18,7 +18,7 @@
   const MAX_STR = 256;
   const MAX_NAME = 128;
   const MAX_URL = 2048;
-  const MAX_MSG = 64 * 1024;
+  const MAX_MSG = 128 * 1024; // a real manifest summary (~50 tracks × 2 URLs × ~350 chars) is ~40 KB
   const MOVIE_ID_RE = /^[0-9]{1,12}$/;
   const SUSPECT_KEYS = ['textTracks', 'timedtexttracks', 'audioTracks', 'audio_tracks'];
   const STATES = ['found', 'pending', 'unsupported', 'off'];
@@ -170,7 +170,8 @@
 
   function validateGetReply(msg, askedMovieId) {
     if (!isObj(msg) || msg.type !== 'ytlearn:nf-manifest') return 'type';
-    if (byteLength(msg) > MAX_MSG) return 'too large';
+    const bytes = byteLength(msg);
+    if (bytes > MAX_MSG) return 'too large: ' + bytes + ' bytes';
     if (msg.hook !== HOOK_VERSION) return 'hook version';
     if (!shortStr(msg.nonce)) return 'nonce';
     if (msg.movieId !== askedMovieId) return 'movieId';
@@ -203,6 +204,7 @@
 
   g.ytLearnNetflixHookVersion = HOOK_VERSION;
   g.ytLearnNetflixOrigin = ORIGIN;
+  g.ytLearnNetflixMaxReplyBytes = MAX_MSG;
   g.ytLearnNetflixFormats = FORMATS.slice();
   g.ytLearnNetflixSuspect = suspect;
   g.ytLearnNetflixSummarize = summarize;
