@@ -12,6 +12,7 @@ const DEFAULT_TITLE = 'yt-learn：把這支影片變成課程';
 const DICT_ORIGIN = 'https://dictionary.cambridge.org/';
 const DICT_W = 520;
 const DICT_H = 760;
+const NETFLIX_OFF = 'Netflix 尚未啟用';
 
 const log = (stage, ...a) => console.log('[yt-learn]', stage, ...a);
 const errMsg = (e) => String((e && e.message) || e);
@@ -40,19 +41,26 @@ const MENU = [
   { id: 'ytlearn-home', title: '打開 yt-learn 首頁', url: SERVER + '/index.html' },
   { id: 'ytlearn-settings', title: '設定', url: SERVER + '/index.html#settings' },
 ];
+// Checkbox mirroring "Netflix effectively enabled" (reconcileInner keeps it in sync).
+const NF_MENU = { id: 'ytlearn-netflix', title: '在 Netflix 啟用（開關後請重新整理頁面）' };
 
 chrome.runtime.onInstalled.addListener(() => {
   // removeAll first: onInstalled also fires on update/reload, and a duplicate id is an error.
   chrome.contextMenus.removeAll(() => {
-    for (const m of MENU) {
-      chrome.contextMenus.create({ id: m.id, title: m.title, contexts: ['action'] }, () => {
-        if (chrome.runtime.lastError) log('menu:create-failed', m.id, chrome.runtime.lastError.message);
-      });
-    }
+    const created = (id) => () => {
+      if (chrome.runtime.lastError) log('menu:create-failed', id, chrome.runtime.lastError.message);
+    };
+    for (const m of MENU) chrome.contextMenus.create({ id: m.id, title: m.title, contexts: ['action'] }, created(m.id));
+    chrome.contextMenus.create({ id: NF_MENU.id, title: NF_MENU.title, type: 'checkbox', checked: false, contexts: ['action'] }, created(NF_MENU.id));
+    reconcileNetflix().catch((e) => log('netflix:reconcile-failed', errMsg(e)));
   });
 });
 
 chrome.contextMenus.onClicked.addListener((info) => {
+  if (info.menuItemId === NF_MENU.id) {
+    onNetflixMenu(info);
+    return;
+  }
   const m = MENU.find((x) => x.id === info.menuItemId);
   if (!m) return;
   chrome.tabs.create({ url: m.url, active: true }).catch((e) => log('menu:open-failed', errMsg(e)));
@@ -60,6 +68,7 @@ chrome.contextMenus.onClicked.addListener((info) => {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== 'string' || sender.id !== chrome.runtime.id) return false;
+  if (msg.type.startsWith('ytlearn:netflix-')) return onEnablePageMessage(msg, sender, sendResponse);
   if (msg.type === 'ytlearn:ping') {
     log('bridge:ping', sender.tab && sender.tab.id);
     sendResponse({ type: 'ytlearn:ack', version: chrome.runtime.getManifest().version });
@@ -87,6 +96,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
     }
     openDict(url, msg.screen).then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
+    return true;
+  }
+  if ((msg.type === 'ytlearn:lesson' || msg.type === 'ytlearn:job' || msg.type === 'ytlearn:build') && isNetflixId(msg.videoId)) {
+    // TODO(step 3): ytLearnParseLessonId will know netflix.<id>; until then an enabled Netflix is still unknown here.
+    netflixEnabled().then((on) => sendResponse(on ? { error: '無法辨識的影片 id' } : { disabled: true }),
+      (e) => sendResponse({ error: errMsg(e) }));
     return true;
   }
   if (msg.type === 'ytlearn:lesson' || msg.type === 'ytlearn:job' || msg.type === 'ytlearn:build') {
@@ -153,16 +168,23 @@ chrome.windows.onRemoved.addListener((windowId) => {
   }).catch((e) => log('dict:forget-failed', errMsg(e)));
 });
 
+// Site permission revoked from chrome://extensions → converge (desired && no permission → off). The intent is
+// also re-applied at the end of this file on every worker start (not only onStartup).
+chrome.permissions.onRemoved.addListener(() => {
+  reconcileNetflix().catch((e) => log('netflix:reconcile-failed', errMsg(e)));
+});
+
 const startup = cleanupOwnedTabs();
 
 /* ---------- 入口 ---------- */
 
-// 'youtube' for a www.youtube.com watch page, 'udemy' for a www.udemy.com lecture page, else null.
-// Both are pages where the overlay content script runs and the capture happens in place.
+// 'youtube' for a www.youtube.com watch page, 'udemy' for a www.udemy.com lecture page, 'netflix' for a
+// www.netflix.com/watch/<digits> page, else null. Pages where the capture happens in place.
 function siteOfUrl(url) {
   if (typeof url !== 'string') return null;
   if (url.startsWith('https://www.youtube.com/watch')) return 'youtube';
   if (ytLearnParseUdemyUrl(url)) return 'udemy';
+  if (netflixMovieIdOfUrl(url)) return 'netflix';
   return null;
 }
 
@@ -192,6 +214,12 @@ async function askOverlay(tabId) {
 async function onIconClicked(tab) {
   const url = (tab && tab.url) || '';
   const site = siteOfUrl(url);
+  if (site === 'netflix' && typeof tab.id === 'number') return onNetflixIcon(tab);
+  if (site === 'netflix' || url.startsWith(NF_HOST)) {
+    // Netflix has no background mode: only a watch page in a real tab. Other Netflix pages → home.
+    await chrome.tabs.create({ url: SERVER + '/index.html', active: true });
+    return;
+  }
   // Frozen at click time: the job, the capture and the ingest must all be about this lesson.
   const videoId = ytLearnParseLessonId(url);
   log('icon', url, videoId, site);
@@ -262,6 +290,7 @@ function sendStatus(tabId, s) {
 
 // -> {lesson} | {job} | {missing:true} (404) | {error} (server down or bad response)
 async function overlayFetch(type, videoId) {
+  if (isNetflixId(videoId) && !(await netflixEnabled())) return { disabled: true };
   const path = type === 'ytlearn:lesson' ? '/data/lessons/' + videoId + '.json' : '/jobs/' + videoId;
   try {
     const r = await api(path);
@@ -338,6 +367,11 @@ async function runJobInner(requested, opts) {
   const mode = opts.mode === 'inplace' ? 'inplace' : 'background';
   const emit = (s) => { try { if (opts.onStatus) opts.onStatus(s); } catch (e) { log('ignored', errMsg(e)); } };
   if (requested.site === 'udemy' && mode !== 'inplace') return { ok: false, error: 'Udemy 講座只能在講座頁上擷取' };
+  if (requested.site === 'netflix' || isNetflixId(requested.id)) {
+    // Checked before /add: a turned-off Netflix never reaches the server.
+    if (!(await netflixEnabled())) return { ok: false, disabled: true, error: NETFLIX_OFF };
+    return { ok: false, error: 'Netflix 擷取尚未實作' }; // TODO(step 4/5): /add → captureInPlace → gen check → /ingest
+  }
   const canonical = requested.site === 'youtube' ? ytLearnCanonicalUrl(videoId) : null;
 
   log('add', videoId, mode, requested.url);
@@ -480,6 +514,316 @@ async function injectCapture(tabId, args, script) {
   return r.raw;
 }
 
+/* ---------- Netflix (opt-in; chrome.storage.local.netflix = {desired, gen, cleanup}) ----------
+   desired: the user's intent; gen: +1 on every user switch (async work records it and re-checks after each
+   await); cleanup: a disable whose clean-up has not finished. reconcileInner() makes reality (site permission,
+   the two registered content scripts, the menu checkbox) match the intent; every state change runs as ONE task
+   on nfQueue (the dictQueue pattern) and calls only the inner, unqueued helpers. Captures and probes never
+   run on the queue (a long capture must not hold up a disable). There is deliberately no permissions.onAdded
+   listener: the enable flow sends its own set, and listening would race it. */
+
+const NF_HOST = 'https://www.netflix.com/';
+const NF_ORIGIN = 'https://www.netflix.com/*';
+const NF_HOOK_ID = 'ytlearn-netflix-hook';
+const NF_OVERLAY_ID = 'ytlearn-netflix-overlay';
+const NF_SCRIPTS = [
+  { id: NF_HOOK_ID, js: ['netflix-manifest.js', 'netflix-hook.js'], matches: [NF_ORIGIN], runAt: 'document_start', world: 'MAIN', allFrames: false, persistAcrossSessions: true },
+  { id: NF_OVERLAY_ID, js: ['overlay.js'], matches: [NF_ORIGIN], runAt: 'document_idle', world: 'ISOLATED', allFrames: false, persistAcrossSessions: true },
+];
+const NF_SCRIPT_KEYS = ['js', 'matches', 'runAt', 'world', 'allFrames', 'persistAcrossSessions'];
+// Isolated world, both phases. TODO(step 4): 'ttml.js' goes between netflix-manifest.js and netflix-capture.js.
+const NF_CAPTURE = { files: ['netflix-manifest.js', 'netflix-capture.js'], world: 'ISOLATED', fn: 'ytLearnNetflixCapture' };
+const NF_ID_RE = /^netflix\.[0-9]{1,12}$/; // TODO(step 3): use ytLearnParseLessonId / ytLearnLessonSource
+const NF_WATCH_RE = /^https:\/\/www\.netflix\.com\/watch\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
+const NF_ENABLE_PAGE = 'netflix-enable.html';
+
+let nfQueue = Promise.resolve();
+
+function nfEnqueue(fn) {
+  const run = nfQueue.then(fn);
+  nfQueue = run.catch(() => { });
+  return run;
+}
+
+function isNetflixId(id) {
+  return typeof id === 'string' && NF_ID_RE.test(id.trim());
+}
+
+function netflixMovieIdOfUrl(url) {
+  const m = typeof url === 'string' ? NF_WATCH_RE.exec(url) : null;
+  return m ? m[1] : null;
+}
+
+async function readNetflix() {
+  const got = await chrome.storage.local.get('netflix');
+  const n = got && got.netflix;
+  const o = n && typeof n === 'object' ? n : {};
+  return { desired: o.desired === true, gen: Number.isSafeInteger(o.gen) && o.gen >= 0 ? o.gen : 0, cleanup: o.cleanup === true };
+}
+
+async function writeNetflix(s) {
+  await chrome.storage.local.set({ netflix: { desired: s.desired, gen: s.gen, cleanup: s.cleanup } });
+}
+
+async function hasNetflixPermission() {
+  try {
+    return (await chrome.permissions.contains({ origins: [NF_ORIGIN] })) === true;
+  } catch (e) {
+    log('netflix:contains-failed', errMsg(e));
+    return false;
+  }
+}
+
+function sameScript(got, want) {
+  return NF_SCRIPT_KEYS.every((k) => JSON.stringify(got[k]) === JSON.stringify(want[k]));
+}
+
+// Both scripts registered with exactly NF_SCRIPTS' settings; a mismatch is unregistered and registered again.
+async function ensureNetflixRegistered() {
+  const got = await chrome.scripting.getRegisteredContentScripts({ ids: NF_SCRIPTS.map((s) => s.id) });
+  const want = new Map(NF_SCRIPTS.map((s) => [s.id, s]));
+  const wrong = got.filter((g) => want.has(g.id) && !sameScript(g, want.get(g.id))).map((g) => g.id);
+  if (wrong.length) {
+    log('netflix:reregister', JSON.stringify(wrong));
+    await chrome.scripting.unregisterContentScripts({ ids: wrong });
+  }
+  const ok = new Set(got.map((g) => g.id).filter((id) => !wrong.includes(id)));
+  const missing = NF_SCRIPTS.filter((s) => !ok.has(s.id));
+  if (missing.length) {
+    await chrome.scripting.registerContentScripts(missing.map((s) => ({ ...s, js: s.js.slice(), matches: s.matches.slice() })));
+    log('netflix:registered', JSON.stringify(missing.map((s) => s.id)));
+  }
+}
+
+async function ensureNetflixUnregistered() {
+  const got = await chrome.scripting.getRegisteredContentScripts({ ids: NF_SCRIPTS.map((s) => s.id) });
+  if (got.length) {
+    await chrome.scripting.unregisterContentScripts({ ids: got.map((g) => g.id) });
+    log('netflix:unregistered', JSON.stringify(got.map((g) => g.id)));
+  }
+}
+
+function setNetflixMenu(checked) {
+  try {
+    chrome.contextMenus.update(NF_MENU.id, { checked }, () => { void chrome.runtime.lastError; });
+  } catch (e) {
+    log('menu:update-failed', errMsg(e));
+  }
+}
+
+// Tell the overlays to stand down. With the site permission, only Netflix tabs; without it (revoked from
+// chrome://extensions) every tab — overlays on other sites ignore it (site:'netflix'). Errors per tab ignored.
+async function broadcastNetflixOff(perm) {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query(perm ? { url: NF_ORIGIN } : {});
+  } catch (e) {
+    log('netflix:off-query-failed', errMsg(e));
+  }
+  const msg = { type: 'ytlearn:site-off', site: 'netflix' };
+  await Promise.all((tabs || []).filter((t) => t && typeof t.id === 'number')
+    .map((t) => chrome.tabs.sendMessage(t.id, msg).catch(() => { })));
+  log('netflix:site-off', (tabs || []).length, 'tabs');
+}
+
+// -> {enabled, desired, permission, registered}. Not queued: callers are queue tasks.
+async function reconcileInner() {
+  let s = await readNetflix();
+  const perm = await hasNetflixPermission();
+  if (s.desired && !perm) {
+    // Permission taken away outside the extension: same path as a disable, minus permissions.remove.
+    s = { desired: false, gen: s.gen + 1, cleanup: true };
+    await writeNetflix(s);
+    log('netflix:permission-gone', s.gen);
+  }
+  if (s.desired) {
+    let registered = false;
+    try {
+      await ensureNetflixRegistered();
+      registered = true;
+    } catch (e) {
+      // Intent kept: the next reconcile retries; entry points refuse while unregistered.
+      log('netflix:register-failed', errMsg(e));
+    }
+    setNetflixMenu(registered);
+    return { enabled: registered, desired: true, permission: true, registered };
+  }
+  // !desired: never permissions.remove here (only an explicit disable revokes).
+  if (s.cleanup) await broadcastNetflixOff(perm);
+  try {
+    await ensureNetflixUnregistered();
+    if (s.cleanup) await writeNetflix({ desired: false, gen: s.gen, cleanup: false });
+  } catch (e) {
+    log('netflix:unregister-failed', errMsg(e));
+  }
+  setNetflixMenu(false);
+  return { enabled: false, desired: false, permission: perm, registered: false };
+}
+
+function reconcileNetflix() {
+  return nfEnqueue(reconcileInner);
+}
+
+// Entry-point check: reconcile first, then "desired && permission && registered".
+async function netflixEnabled() {
+  const st = await reconcileNetflix();
+  return st.enabled === true;
+}
+
+// Queued. desired:true needs the permission already granted (the caller asked for it in its user gesture).
+function setNetflix(desired, reloadTabId) {
+  if (!desired) return nfEnqueue(disableNetflixInner);
+  return nfEnqueue(async () => {
+    if (!(await hasNetflixPermission())) return { ok: false, error: 'needPermission' };
+    const s = await readNetflix();
+    await writeNetflix({ desired: true, gen: s.gen + 1, cleanup: false });
+    const st = await reconcileInner();
+    if (!st.registered) return { ok: false, error: '註冊失敗，稍後會自動重試' };
+    if (typeof reloadTabId === 'number') {
+      await chrome.tabs.reload(reloadTabId).catch((e) => log('netflix:reload-failed', errMsg(e)));
+    }
+    log('netflix:enabled', s.gen + 1);
+    return { ok: true };
+  });
+}
+
+// (1) intent off + cleanup flag, (2) site-off broadcast, (3) unregister, (4) cleanup done, (5) re-read gen and
+// only then revoke the site permission. Killed after any step → the next reconcile resumes from (2).
+async function disableNetflixInner() {
+  const s0 = await readNetflix();
+  const gen = s0.gen + 1;
+  await writeNetflix({ desired: false, gen, cleanup: true });
+  await broadcastNetflixOff(await hasNetflixPermission());
+  let unregistered = false;
+  try {
+    await ensureNetflixUnregistered();
+    unregistered = true;
+  } catch (e) {
+    log('netflix:unregister-failed', errMsg(e)); // cleanup stays true; reconcile retries
+  }
+  if (unregistered) await writeNetflix({ desired: false, gen, cleanup: false });
+  setNetflixMenu(false);
+  const now = await readNetflix();
+  if (now.gen === gen) {
+    try {
+      await chrome.permissions.remove({ origins: [NF_ORIGIN] });
+    } catch (e) {
+      log('netflix:remove-failed', errMsg(e));
+    }
+  } else {
+    log('netflix:keep-permission', gen, now.gen);
+  }
+  log('netflix:disabled', gen);
+  return { ok: true };
+}
+
+// Menu checkbox. permissions.request must be called right here, inside the click's user gesture.
+function onNetflixMenu(info) {
+  const done = (r) => {
+    log('netflix:menu', JSON.stringify(r));
+    // Whatever happened, make the checkbox show the real state again.
+    return reconcileNetflix();
+  };
+  const fail = (e) => {
+    log('netflix:menu-failed', errMsg(e));
+    reconcileNetflix().catch(() => { });
+  };
+  if (info.checked) {
+    let asked;
+    try {
+      asked = chrome.permissions.request({ origins: [NF_ORIGIN] });
+    } catch (e) {
+      fail(e);
+      return;
+    }
+    Promise.resolve(asked)
+      .then((granted) => (granted ? setNetflix(true, null) : { ok: false, error: 'denied' }))
+      .then(done).catch(fail);
+  } else {
+    setNetflix(false).then(done).catch(fail);
+  }
+}
+
+function openNetflixEnablePage(tabId, hash) {
+  const url = chrome.runtime.getURL(NF_ENABLE_PAGE) + (typeof tabId === 'number' ? '?tab=' + tabId : '') + (hash || '');
+  return chrome.tabs.create({ url, active: true });
+}
+
+async function onNetflixIcon(tab) {
+  if (!(await netflixEnabled())) {
+    log('icon:netflix-off', tab.id);
+    await openNetflixEnablePage(tab.id);
+    return;
+  }
+  // TODO(step 5): ask the overlay first; TODO(step 4): /add → capture instead of the probe.
+  await chrome.storage.session.set({ netflixProbe: { state: 'running', tabId: tab.id, at: Date.now() } });
+  await openNetflixEnablePage(tab.id, '#probe');
+  await runNetflixProbe(tab.id);
+}
+
+// Diagnostic probe in a Netflix watch tab. Result (or error) lands in storage.session.netflixProbe, where the
+// enable page's #probe view reads it. Not on nfQueue; discarded if the user switched Netflix meanwhile.
+async function runNetflixProbe(tabId) {
+  const started = await readNetflix();
+  const save = async (r) => {
+    const rec = { state: 'done', tabId, at: Date.now(), ...r };
+    await chrome.storage.session.set({ netflixProbe: rec });
+    return r;
+  };
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch (e) {
+    return save({ ok: false, error: TAB_CLOSED });
+  }
+  const movieId = netflixMovieIdOfUrl(tab && tab.url);
+  if (!movieId) return save({ ok: false, error: '這個分頁不是 Netflix 播放頁' });
+  log('netflix:probe', tabId, movieId);
+  try {
+    const result = await injectCapture(tabId, { probe: true, expectLessonId: 'netflix.' + movieId, timeoutMs: CAPTURE_TIMEOUT_MS }, NF_CAPTURE);
+    if ((await readNetflix()).gen !== started.gen) return save({ ok: false, error: NETFLIX_OFF });
+    log('netflix:probe-result', JSON.stringify(result));
+    return save({ ok: true, url: tab.url, result });
+  } catch (e) {
+    log('netflix:probe-failed', errMsg(e));
+    return save({ ok: false, url: tab.url, error: errMsg(e) });
+  }
+}
+
+// Messages from extension/netflix-enable.html only (an extension page: it has chrome.permissions).
+function onEnablePageMessage(msg, sender, sendResponse) {
+  const page = chrome.runtime.getURL(NF_ENABLE_PAGE);
+  if (typeof sender.url !== 'string' || !sender.url.startsWith(page)) {
+    log('netflix:rejected', msg.type, sender.url);
+    return false;
+  }
+  const reply = (p) => {
+    p.then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
+    return true;
+  };
+  const tabId = Number.isSafeInteger(msg.tab) && msg.tab >= 0 ? msg.tab : null;
+  if (msg.type === 'ytlearn:netflix-state') return reply(reconcileNetflix());
+  if (msg.type === 'ytlearn:netflix-set') {
+    if (typeof msg.desired !== 'boolean') {
+      sendResponse({ ok: false, error: 'desired 必須是 true 或 false' });
+      return false;
+    }
+    return reply(setNetflix(msg.desired, tabId));
+  }
+  if (msg.type === 'ytlearn:netflix-probe') {
+    if (tabId === null) {
+      sendResponse({ ok: false, error: '沒有指定分頁' });
+      return false;
+    }
+    return reply(netflixEnabled().then(async (on) => {
+      if (!on) return { disabled: true };
+      await chrome.storage.session.set({ netflixProbe: { state: 'running', tabId, at: Date.now() } });
+      return runNetflixProbe(tabId);
+    }));
+  }
+  return false;
+}
+
 /* ---------- server ---------- */
 
 async function api(path, { method = 'GET', body } = {}) {
@@ -539,3 +883,6 @@ async function cleanupOwnedTabs() {
     log('startup:cleanup-failed', errMsg(e));
   }
 }
+
+// Last line on purpose: everything it uses (nfQueue, NF_*) is initialised by now. Runs on every worker start.
+reconcileNetflix().catch((e) => log('netflix:reconcile-failed', errMsg(e)));
