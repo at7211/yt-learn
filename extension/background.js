@@ -809,10 +809,20 @@ async function onNetflixIcon(tab) {
     await openNetflixEnablePage(tab.id);
     return;
   }
-  // TODO(step 5): ask the overlay first; TODO(step 4): /add → capture instead of the probe.
-  await chrome.storage.session.set({ netflixProbe: { state: 'running', tabId: tab.id, at: Date.now() } });
-  await openNetflixEnablePage(tab.id, '#probe');
-  await runNetflixProbe(tab.id);
+  // Like a Udemy lecture (but no local page): the overlay takes over (it also answers {handled:true} once it was switched
+  // off on that page). No receiver / not handled → capture in this tab. Never a local player tab: Netflix
+  // has no local playback, the overlay mounts the lesson once it is built. (The diagnostic probe stays on
+  // the enable page's 「診斷目前分頁」 button: ytlearn:netflix-probe → runNetflixProbe.)
+  const videoId = 'netflix.' + netflixMovieIdOfUrl(tab.url); // onIconClicked routed here: siteOfUrl said netflix
+  const reply = await askOverlay(tab.id);
+  if (reply && reply.handled) {
+    log('icon:overlay', videoId);
+    return;
+  }
+  log('icon', tab.url, videoId, 'netflix');
+  const result = await runJob({ id: videoId, url: tab.url, site: 'netflix' }, { mode: 'inplace', tabId: tab.id });
+  log('icon:result', JSON.stringify(result));
+  if (!result.ok && result.attempt === undefined) showBadgeError(result.error);
 }
 
 // Diagnostic probe in a Netflix watch tab. Result (or error) lands in storage.session.netflixProbe, where the

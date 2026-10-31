@@ -40,10 +40,12 @@ export const watchVideoId = lessonIdFromUrl;
    on       the user's intent: true after turning the overlay on, false after turning it off.
             It survives navigation, so an explicit "off" is never undone by changing videos.
    mounted  the overlay is rendered for (videoId, gen)
-   building a lesson fetch or a capture/build job is in flight for (videoId, gen) */
+   building a lesson fetch or a capture/build job is in flight for (videoId, gen)
+   disabled the site was switched off for this page (Netflix: site-off broadcast or a {disabled:true}
+            reply); permanent until the page reloads — navigate and toggle become no-ops */
 
 export function initialState() {
-  return { videoId: null, token: null, gen: 0, on: false, mounted: false, building: false };
+  return { videoId: null, token: null, gen: 0, on: false, mounted: false, building: false, disabled: false };
 }
 
 export function tokenOf(s) {
@@ -60,6 +62,7 @@ export function isStale(s, tok) {
 // (token changed) counts as a navigation too: the old overlay is bound to a <video> that is gone.
 // Off a lesson page the token is ignored.
 export function navigate(s, videoId, token) {
+  if (s.disabled) return { state: s, teardown: false, autoload: false };
   const id = videoId || null;
   const tk = token === undefined ? null : token;
   if (id === s.videoId && (id === null || tk === (s.token === undefined ? null : s.token))) {
@@ -77,11 +80,33 @@ export function navigate(s, videoId, token) {
 // Icon clicked. -> { state, action: 'teardown' | 'load' | 'none' }.
 // 'load' means: fetch the lesson, mount it, or start a capture when it is missing.
 export function toggle(s) {
-  if (s.videoId === null) return { state: s, action: 'none' };
+  if (s.disabled || s.videoId === null) return { state: s, action: 'none' };
   if (s.mounted || s.building) {
     return { state: { ...s, on: false, mounted: false, building: false, gen: s.gen + 1 }, action: 'teardown' };
   }
   return { state: { ...s, on: true, gen: s.gen + 1 }, action: 'load' };
+}
+
+// Everything on the page is being torn down (overlay, pill, player wait, poll): a new gen, so async work
+// started before (a lesson reply, a waitForPlayer, a build poll) finds itself stale and never mounts late.
+export function teardown(s) {
+  return { ...s, gen: s.gen + 1, mounted: false, building: false };
+}
+
+// Switched off for good on this page (see `disabled` above).
+export function disable(s) {
+  return { ...s, disabled: true, on: false, mounted: false, building: false, gen: s.gen + 1 };
+}
+
+// A chrome.runtime message that switches this page's site off: {type:'ytlearn:site-off', site} naming this site.
+// The worker broadcasts it to every tab when it cannot narrow by URL, so other sites must ignore it.
+export function siteOffApplies(msg, siteName) {
+  return !!msg && msg.type === 'ytlearn:site-off' && typeof siteName === 'string' && msg.site === siteName;
+}
+
+// Any worker reply (lesson / job / build) saying the site is switched off.
+export function replyDisables(reply) {
+  return !!reply && typeof reply === 'object' && reply.disabled === true;
 }
 
 // Results of async work: applied only if the token is still current, otherwise the state is returned as is.

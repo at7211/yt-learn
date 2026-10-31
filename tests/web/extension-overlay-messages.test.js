@@ -985,21 +985,47 @@ test('icon on other Netflix pages -> home page, like Udemy non-lecture pages', a
 const probeResult = { movieId: '81234567', hook: { parsed: 9, suspected: 1, summarized: 1, unknownShape: 0, skippedReviver: 0 }, state: 'found',
   tracks: [{ lang: 'en', type: 'PRIMARY', forced: false, formats: ['imsc1.1'] }], enFetch: { status: 200, bytes: 1234, head: '<?xml' }, seek: { ok: true } };
 
-test('icon on a Netflix watch page while on -> probe (ISOLATED, NF_CAPTURE files) and #probe page; result in storage.session', async () => {
-  const injected = [];
-  const w = load({}, { executeScript: captureScript(probeResult, injected), nf: { local: { netflix: ON }, perm: true, tabUrls: { 7: NURL } } });
+test('icon on a Netflix watch page while on: overlay answers {handled:true} -> nothing else (no job, no tab, no probe)', async () => {
+  const w = load({}, { toggleReply: { handled: true }, nf: { local: { netflix: ON }, perm: true, tabUrls: { 7: NURL } } });
   await settle();
   await w.ctx.onIconClicked({ id: 7, url: NURL });
-  assert.deepEqual(plain(w.calls.created), [{ url: ENABLE_PAGE + '?tab=7#probe', active: true }]);
+  assert.deepEqual(plain(w.calls.sent), [{ tabId: 7, msg: { type: 'ytlearn:toggle' } }]);
+  assert.deepEqual(w.calls.fetched, []);
+  assert.deepEqual(w.calls.created, []);
+  assert.equal(w.store.netflixProbe, undefined, 'the icon no longer runs the probe');
+});
+
+test('icon on a Netflix watch page while on: overlay not handled -> runJob inplace in that tab (NF_CAPTURE); no local page opened', async () => {
+  const injected = [];
+  const w = load(nfRoutes(), { toggleReply: { handled: false }, executeScript: captureScript(nfRaw, injected), nf: { local: { netflix: ON }, perm: true, tabUrls: { 7: NURL } } });
+  await settle();
+  await w.ctx.onIconClicked({ id: 7, url: NURL });
+  assert.equal(w.calls.sent.length, 1);
+  assert.deepEqual(w.calls.fetched, ['POST /add', 'POST /jobs/' + NID + '/claim', 'POST /ingest?attempt=1']);
+  assert.deepEqual(plain(w.calls.bodies['POST /add']), { url: NURL });
   assert.deepEqual(plain(injected[0]), { target: { tabId: 7 }, files: ['netflix-manifest.js', 'ttml.js', 'netflix-capture.js'], world: 'ISOLATED' });
-  assert.equal(injected[1].world, 'ISOLATED');
-  assert.deepEqual(plain(injected[1].args), ['ytLearnNetflixCapture', { probe: true, expectLessonId: NID, timeoutMs: 25000 }]);
-  const rec = plain(w.store.netflixProbe);
-  assert.equal(rec.state, 'done');
-  assert.equal(rec.ok, true);
-  assert.equal(rec.tabId, 7);
-  assert.deepEqual(rec.result, probeResult);
-  assert.deepEqual(w.calls.fetched, [], 'the probe never talks to the server');
+  assert.deepEqual(plain(injected[1].args), ['ytLearnNetflixCapture', { expectLessonId: NID, timeoutMs: 25000 }]);
+  assert.deepEqual(w.calls.created, [], 'Netflix has no local player: no index.html tab');
+  assert.equal(w.store.netflixProbe, undefined);
+});
+
+test('icon on a Netflix watch page while on: no receiver -> overlay.js injected, asked again; still not handled -> job; a lesson already done -> nothing opened', async () => {
+  const injected = [];
+  const w = load(nfRoutes({ 'POST /add': { status: 200, json: { job: { videoId: NID, state: 'done', attempt: 1, message: '完成' } } } }),
+    { toggleReply: [NO_RECEIVER, { handled: false }], executeScript: async (o) => { injected.push(o); return [{}]; }, nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  await w.ctx.onIconClicked({ id: 7, url: NURL });
+  assert.deepEqual(plain(injected), [{ target: { tabId: 7 }, files: ['overlay.js'] }]);
+  assert.equal(w.calls.sent.length, 2);
+  assert.deepEqual(w.calls.fetched, ['POST /add']);
+  assert.deepEqual(w.calls.created, []);
+});
+
+test('background.js: no TODO(step …) markers left; the probe stays reachable from the enable page only', () => {
+  assert.ok(!/TODO\(step/.test(SRC));
+  const icon = SRC.slice(SRC.indexOf('async function onNetflixIcon'), SRC.indexOf('// Diagnostic probe in a Netflix watch tab'));
+  assert.ok(!/runNetflixProbe\(|#probe/.test(icon), 'the icon flow does not start the probe');
+  assert.ok(/ytlearn:netflix-probe/.test(SRC));
 });
 
 test('netflix-probe from the enable page: off -> {disabled:true}; on -> result; not a watch tab -> error', async () => {

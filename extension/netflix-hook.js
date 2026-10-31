@@ -104,15 +104,49 @@
 
   const clip = (s) => (typeof s === 'string' && s.trim() ? s.trim().replace(/\s+/g, ' ').slice(0, MAX_STR) : null);
 
+  // Real shape (measured on a watch page): getVideoMetadataByVideoId(movieId) -> md with
+  // md._metadataObject.video = { title: <show or movie>, type, currentEpisode, seasons: [{ seq, episodes: [{ id, title, seq }] }] }.
+  // Episode -> title 'S<season>E<ep> <episode title>' + show; movie (no matching episode) -> title only.
+  function metadataFor(movieId) {
+    const api = globalThis.netflix.appContext.state.playerApp.getAPI();
+    for (const id of [Number(movieId), movieId]) {
+      try {
+        const md = api.getVideoMetadataByVideoId(id);
+        if (md && md._metadataObject && md._metadataObject.video) return md._metadataObject.video;
+      } catch (e) { /* try the other id form */ }
+    }
+    return null;
+  }
+
+  function episodeTitle(video, movieId) {
+    const seasons = Array.isArray(video.seasons) ? video.seasons : [];
+    for (const season of seasons) {
+      const eps = season && Array.isArray(season.episodes) ? season.episodes : [];
+      for (const ep of eps) {
+        if (!ep || String(ep.id) !== movieId) continue;
+        const name = clip(ep.title);
+        const num = Number.isSafeInteger(season.seq) && Number.isSafeInteger(ep.seq) ? 'S' + season.seq + 'E' + ep.seq : null;
+        if (num && name) return clip(num + ' ' + name);
+        return name || num;
+      }
+    }
+    return null;
+  }
+
   function titleFor(movieId) {
     const out = {};
     try {
-      const md = globalThis.netflix.appContext.state.playerApp.getAPI().getVideoMetadataByVideoId(Number(movieId));
-      const v = md && (md._video || md.video);
-      const title = clip(md && md.title) || clip(v && v.title);
-      const show = clip(md && md._metadata && md._metadata.video && md._metadata.video.title);
-      if (title) out.title = title;
-      if (show && show !== title) out.show = show;
+      const video = metadataFor(movieId);
+      if (video) {
+        const show = clip(video.title);
+        const ep = episodeTitle(video, movieId);
+        if (ep) {
+          out.title = ep;
+          if (show && show !== ep) out.show = show;
+        } else if (show) {
+          out.title = show;
+        }
+      }
     } catch (e) { /* not available */ }
     if (!out.title) {
       try {

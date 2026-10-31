@@ -1,7 +1,9 @@
 /* yt-learn overlay engine: content script on https://www.youtube.com/* and https://www.udemy.com/*
+   (manifest), and on https://www.netflix.com/* while Netflix is switched on (background.js registers it)
    (isolated world, document_idle). Everything site-specific (lesson id from the route, the player
-   {root, video}, ads, the native-caption rule, SPA navigation events) comes from a site adapter
-   (site.js siteFor(location.hostname)). On a lesson page, the toolbar icon (background.js → ytlearn:toggle)
+   {root, video}, ads, the native-caption rule, SPA navigation events, seeking) comes from a site adapter
+   (site.js siteFor(location.hostname)). A site can be switched off for good on this page (Netflix:
+   ytlearn:site-off from the worker, or any reply with {disabled:true}) → disable(). On a lesson page, the toolbar icon (background.js → ytlearn:toggle)
    lays the lesson over the player root:
    English subtitle with the current vocab hit in orange, 繁中 subtitle, the vocab panel, and the 前情提要 card.
    youtube.com enforces Trusted Types: no innerHTML / outerHTML / insertAdjacentHTML anywhere here —
@@ -53,12 +55,15 @@
 
   /* ---------- messaging ---------- */
 
+  // Every worker reply passes through here: {disabled:true} (the site was switched off) disables the
+  // page before the caller sees it, so the caller's isStale check ends whatever it was doing.
   function send(msg) {
     return new Promise((resolve) => {
       try {
         chrome.runtime.sendMessage(msg, (reply) => {
-          if (chrome.runtime.lastError) resolve({ error: '擴充功能未回應，請重新整理此頁' });
-          else resolve(reply || { error: '擴充功能沒有回應' });
+          if (chrome.runtime.lastError) { resolve({ error: '擴充功能未回應，請重新整理此頁' }); return; }
+          if (O && O.replyDisables(reply)) disable('reply:' + msg.type);
+          resolve(reply || { error: '擴充功能沒有回應' });
         });
       } catch (e) {
         resolve({ error: '擴充功能已重新載入，請重新整理此頁' });
@@ -67,11 +72,18 @@
   }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg && msg.type === 'ytlearn:site-off') {
+      // Only the named site's pages act on it (the worker may broadcast to every tab); no reply either way.
+      ready.then(() => { if (site && O.siteOffApplies(msg, site.name)) disable('site-off'); }, () => { });
+      return false;
+    }
     if (!msg || msg.type !== 'ytlearn:toggle') return false;
     // Answer once the imports are done (a freshly injected overlay must not say {handled:false} just
     // because it is still loading). A page whose route we cannot read (e.g. URL and ytd-watch-flexy
     // disagree mid-navigation) is left to the worker's fallback flow.
     ready.then(() => {
+      // Switched off on this page: say handled so the worker does not fall back to a capture, do nothing.
+      if (S && S.disabled) { sendResponse({ handled: true }); return; }
       const id = currentVideoId();
       // No player on the page (an article-type Udemy lecture, YouTube mid-navigation): let the worker's
       // fallback flow run instead of silently building with nowhere to show the pill. Toggling an
@@ -115,8 +127,19 @@
     if (r.autoload) load(O.tokenOf(S), { build: false });
   }
 
+  // Permanent for this page (until reload): every wait, timer and pending seek dropped, the overlay removed,
+  // and on Netflix the MAIN-world hook told to stand down (ytlearn:nf-off makes it a no-op for good).
+  function disable(why) {
+    if (!S || S.disabled) return;
+    S = O.disable(S);
+    log('disabled', why);
+    teardownAll();
+    if (site && site.name === 'netflix') window.postMessage({ type: 'ytlearn:nf-off' }, 'https://www.netflix.com');
+  }
+
   async function onToggle() {
     await ready;
+    if (S.disabled) return;
     syncRoute();
     const r = O.toggle(S);
     S = r.state;
@@ -439,6 +462,8 @@
   }
 
   function teardownAll() {
+    if (S) S = O.teardown(S); // async work started before this (lesson reply, player wait, poll) is now stale
+    if (site && typeof site.cancelSeek === 'function') site.cancelSeek();
     clearTimeout(pollTimer);
     pollTimer = null;
     if (cancelWait) cancelWait();
@@ -587,9 +612,16 @@
     }
   }
 
+  // R / [ / ] / a vocab row. A paused video resumes after the jump (as before). A site adapter with its own
+  // seek (Netflix: through the hook, never video.currentTime) takes over when it returns true.
   function seek(m, t) {
-    m.video.currentTime = Math.max(0, t);
-    if (m.video.paused) m.video.play().catch(() => { });
+    t = Math.max(0, t);
+    const play = m.video.paused;
+    const bySite = typeof site.seek === 'function' && site.seek(m.video, t, { play, lessonId: m.tok.videoId, gen: m.tok.gen }) === true;
+    if (!bySite) {
+      m.video.currentTime = t;
+      if (play) m.video.play().catch(() => { });
+    }
     draw(m);
   }
 
@@ -639,12 +671,14 @@
     // Fallback when the site's navigation event is missed or renamed (Udemy has none: this poll is its
     // router); also catches ytd-watch-flexy catching up with the URL, and a player whose {root, video}
     // was replaced under the same lesson id (Udemy swaps <video>): either change → navigate → remount.
-    if (!S) return;
+    if (!S || S.disabled) return;
     if (location.href !== lastHref || currentVideoId() !== S.videoId || (S.videoId !== null && playerToken() !== S.token)) { lastHref = location.href; syncRoute(); }
   }, ROUTE_POLL_MS);
   ready.then(() => {
     if (!site) return;
-    for (const ev of site.navEvents) document.addEventListener(ev, () => { lastHref = location.href; syncRoute(); });
+    for (const ev of site.navEvents) {
+      (ev.target === 'window' ? window : document).addEventListener(ev.name, () => { lastHref = location.href; syncRoute(); });
+    }
     lastHref = location.href;
     syncRoute();
   }, (e) => log('overlay:load-failed', String(e && e.message || e)));

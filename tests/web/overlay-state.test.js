@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   watchVideoId, lessonIdFromUrl, initialState, tokenOf, isStale, navigate, toggle, markMounted, markBuilding, markIdle,
   pillText, jobPhase, OWN_KEYS, isEditable, keyAction, adShowing, cueForNav, cueSeekTarget,
+  teardown, disable, siteOffApplies, replyDisables,
 } from '../../extension/overlay-state.js';
 
 const A = 'puh91fohvTA';
@@ -300,4 +301,63 @@ test('navigate: same lesson, new player token while building keeps the build (no
   const r2 = navigate(m, A, 3);
   assert.equal(r2.teardown, true);
   assert.equal(r2.autoload, true);
+});
+
+/* ---------- teardown gen bump, persistent disable (Netflix switched off) ---------- */
+
+test('teardown: a new gen, nothing mounted or building; work started before is stale (no late mount)', () => {
+  let s = toggle(navigate(initialState(), 'netflix.81234567', 0).state).state;
+  const tok = tokenOf(s);
+  s = markBuilding(s, tok);
+  const t = teardown(s);
+  assert.equal(t.gen, s.gen + 1);
+  assert.equal(t.mounted, false);
+  assert.equal(t.building, false);
+  assert.equal(t.on, true, 'teardown alone does not change the user intent');
+  assert.equal(t.videoId, s.videoId);
+  assert.equal(isStale(t, tok), true);
+  assert.equal(markMounted(t, tok), t, 'a lesson reply that arrives after the teardown is dropped');
+  assert.equal(s.gen, tok.gen, 'pure: the input state is untouched');
+});
+
+test('initialState is not disabled; disable(): off, torn down, new gen, permanent', () => {
+  assert.equal(initialState().disabled, false);
+  let s = toggle(navigate(initialState(), 'netflix.81234567', 0).state).state;
+  const tok = tokenOf(s);
+  s = markMounted(s, tok);
+  const d = disable(s);
+  assert.deepEqual({ disabled: d.disabled, on: d.on, mounted: d.mounted, building: d.building, gen: d.gen },
+    { disabled: true, on: false, mounted: false, building: false, gen: s.gen + 1 });
+  assert.equal(isStale(d, tok), true, 'pending lesson replies / polls end through isStale');
+  // toggle and navigate are no-ops from now on
+  const t = toggle(d);
+  assert.equal(t.state, d);
+  assert.equal(t.action, 'none');
+  for (const [id, tk] of [['netflix.99', 0], ['netflix.81234567', 5], [null, 0]]) {
+    const r = navigate(d, id, tk);
+    assert.equal(r.state, d);
+    assert.equal(r.teardown, false);
+    assert.equal(r.autoload, false);
+  }
+  assert.equal(teardown(d).disabled, true, 'a later teardown keeps it disabled');
+  assert.equal(markBuilding(d, tok), d);
+});
+
+test('siteOffApplies: only {type:ytlearn:site-off} naming this page\'s site', () => {
+  const off = { type: 'ytlearn:site-off', site: 'netflix' };
+  assert.equal(siteOffApplies(off, 'netflix'), true);
+  assert.equal(siteOffApplies(off, 'youtube'), false, 'a YouTube page ignores the Netflix broadcast');
+  assert.equal(siteOffApplies(off, 'udemy'), false);
+  for (const m of [null, undefined, 'ytlearn:site-off', {}, { type: 'ytlearn:site-off' }, { type: 'ytlearn:toggle', site: 'netflix' }]) {
+    assert.equal(siteOffApplies(m, 'netflix'), false, JSON.stringify(m));
+  }
+  assert.equal(siteOffApplies(off, undefined), false);
+});
+
+test('replyDisables: only disabled === true', () => {
+  assert.equal(replyDisables({ disabled: true }), true);
+  assert.equal(replyDisables({ ok: false, disabled: true, error: 'Netflix 尚未啟用' }), true);
+  for (const r of [null, undefined, {}, { disabled: false }, { disabled: 'true' }, { error: 'x' }, { lesson: {} }, 'disabled']) {
+    assert.equal(replyDisables(r), false, JSON.stringify(r));
+  }
 });

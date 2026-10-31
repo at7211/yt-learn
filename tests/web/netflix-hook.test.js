@@ -148,13 +148,14 @@ test('installing twice is a no-op (no double wrapping)', () => {
 });
 
 test('nf-get: found (new and old names, .result or root) with title and currentMs; pending for another movie', async () => {
-  const p = page({ metadata: (id) => ({ _video: { title: 'Episode ' + id } }) });
+  const p = page({ metadata: (id) => ({ _metadataObject: { video: { title: 'Movie ' + id, type: 'movie' } } }) });
   p.parse(manifestText(81234567));
   const r = await get(p, '81234567');
   assert.equal(r.state, 'found');
   assert.equal(r.hook, 1);
   assert.equal(r.currentMs, 61000);
-  assert.equal(r.title, 'Episode 81234567');
+  assert.equal(r.title, 'Movie 81234567');
+  assert.equal('show' in r, false, 'a movie has no show');
   assert.deepEqual(r.manifest.tracks, [{ lang: 'en', type: 'PRIMARY', name: '', forced: false, formats: { 'imsc1.1': U(1) } }]);
   assert.deepEqual(r.stats, { parsed: 1, suspected: 1, summarized: 1, unknownShape: 0, skippedReviver: 0 });
   p.parse(manifestText(70000001, { old: true, wrap: false }));
@@ -172,6 +173,46 @@ test('nf-get: title falls back to the DOM, then is omitted', async () => {
   const q = page();
   q.parse(manifestText(81234567));
   assert.equal('title' in (await get(q, '81234567')), false);
+});
+
+// The measured shape: md._metadataObject.video {title, type, currentEpisode, seasons[{seq, episodes[{id, title, seq}]}]}.
+const showMeta = (over = {}) => ({
+  getTitle: () => 'Some Show',
+  _metadataObject: { video: { title: 'Some Show', type: 'show', currentEpisode: 81234567, seasons: [
+    { seq: 1, episodes: [{ id: 81234500, title: 'Pilot', seq: 1 }] },
+    { seq: 2, episodes: [{ id: 81234566, title: 'Before', seq: 3 }, { id: 81234567, title: '  The   Thing ', seq: 4 }] },
+  ], ...over } },
+});
+
+test('nf-get: series -> title S<season>E<ep> <episode>, show = series title; numeric id tried first, then the string', async () => {
+  const seen = [];
+  const p = page({ metadata: (id) => { seen.push(typeof id); return showMeta(); } });
+  p.parse(manifestText(81234567));
+  const r = await get(p, '81234567');
+  assert.equal(r.title, 'S2E4 The Thing');
+  assert.equal(r.show, 'Some Show');
+  assert.deepEqual(seen, ['number']);
+  // the numeric lookup has nothing -> the string id is asked too
+  const s = page({ metadata: (id) => (typeof id === 'string' ? showMeta() : null) });
+  s.parse(manifestText(81234567));
+  assert.equal((await get(s, '81234567')).title, 'S2E4 The Thing');
+});
+
+test('nf-get: missing seq -> only the episode title; no matching episode -> the series title alone; broken metadata -> DOM', async () => {
+  const noSeq = page({ metadata: () => ({ _metadataObject: { video: { title: 'Some Show', seasons: [{ episodes: [{ id: '81234567', title: 'Ep' }] }] } } }) });
+  noSeq.parse(manifestText(81234567));
+  const a = await get(noSeq, '81234567');
+  assert.deepEqual([a.title, a.show], ['Ep', 'Some Show']);
+  const other = page({ metadata: () => showMeta({ seasons: [{ seq: 1, episodes: [{ id: 1, title: 'X', seq: 1 }] }] }) });
+  other.parse(manifestText(81234567));
+  const b = await get(other, '81234567');
+  assert.equal(b.title, 'Some Show');
+  assert.equal('show' in b, false);
+  for (const metadata of [() => ({}), () => ({ _metadataObject: { video: { seasons: 'x' } } }), () => ({ _metadataObject: { video: { title: 7, seasons: [null, { episodes: [null] }] } } })]) {
+    const d = page({ metadata, domTitle: 'Dom Title' });
+    d.parse(manifestText(81234567));
+    assert.equal((await get(d, '81234567')).title, 'Dom Title');
+  }
 });
 
 test('unknownShape is per movieId: a suspected-but-unreadable manifest -> unsupported for that movie only; a later good one wins', async () => {
