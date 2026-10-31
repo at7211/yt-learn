@@ -27,20 +27,20 @@
 <main>
   <section id="intro">
     <h1>yt-learn：在 Netflix 啟用</h1>
-    <p>Netflix 的字幕清單只存在播放頁自己解開的資料（manifest）裡，擴充功能拿不到網址，所以需要在 Netflix 播放頁上放一個<strong>唯讀鉤子</strong>。預設是關的，只有你在這裡按下啟用才會開。</p>
-    <h2>鉤子會做的事</h2>
+    <p>Netflix 的字幕清單只存在播放頁自己解開的資料（manifest）裡，擴充功能拿不到網址，所以需要在 Netflix 播放頁上放一個<strong>唯讀 hook</strong>。預設是關的，只有你在這裡按下啟用才會開。</p>
+    <h2>hook 會做的事</h2>
     <ul>
       <li>只讀 manifest 裡的字幕清單（語言、字幕檔網址），在分頁裡最多記住 10 部片。</li>
       <li>按工具列圖示時，才會去抓目前這一集的字幕檔。</li>
     </ul>
-    <h2>鉤子不會做的事</h2>
+    <h2>hook 不會做的事</h2>
     <ul>
       <li>不改 Netflix 的任何請求、不自己發請求。</li>
       <li>不記錄網址、不寫 console、不把資料傳到本機以外的地方。</li>
       <li>不碰影片本身。</li>
     </ul>
     <h2>啟用之後</h2>
-    <p>Netflix 播放頁需要<strong>重新載入</strong>，鉤子才會生效（下面的按鈕會幫你重新載入剛才那個分頁；其它已開著的 Netflix 分頁請自己重新整理）。</p>
+    <p>Netflix 播放頁需要<strong>重新載入</strong>，hook 才會生效（下面的按鈕會幫你重新載入剛才那個分頁；其它已開著的 Netflix 分頁請自己重新整理）。</p>
     <h2>怎麼關掉</h2>
     <p>在工具列圖示上按右鍵，取消勾選「在 Netflix 啟用」。關掉後會撤回 Netflix 的網站權限；如果關閉過程被中斷，網站權限可能會留著，這是無害的（擴充功能在關閉狀態下一律拒絕處理 Netflix），之後再關一次即可撤回。</p>
   </section>

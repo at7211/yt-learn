@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling" xmlns:ttp="http://www.w3.org/ns/ttml#parameter" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" ttp:tickRate="10000000" ttp:timeBase="media" xml:lang="en">
+  <head>
+    <metadata><ttm:title>Invented sample</ttm:title></metadata>
+    <styling><style xml:id="s0" tts:fontStyle="normal"/><style xml:id="s1" tts:fontStyle="italic"/></styling>
+    <layout><region xml:id="r0" tts:origin="10% 80%"/></layout>
+  </head>
+  <body><div>
+    <p xml:id="subtitle1" begin="12340000t" end="34560000t" region="r0" style="s0"><span>First line of a made-up sentence.</span><br/><span>-[door opens]</span></p>
+    <p xml:id="subtitle2" begin="40000000t" end="60000000t" region="r0"><span style="s1">-Pancakes &amp; tea</span><br/><span>-are on the <span style="s1">table</span>.</span></p>
+    <p xml:id="subtitle3" begin="70000000t" end="80000000t">[thunder rumbling]</p>
+    <p xml:id="subtitle4" begin="90000000t" end="110000000t">♪ We sing about the pretend river ♪</p>
+    <p xml:id="subtitle5" begin="120000000t" end="130000000t">(sighs)</p>
+    <p xml:id="subtitle6" begin="140000000t" end="150000000t">Wait (quietly) for me.</p>
+    <p xml:id="subtitle7" begin="160000000t" end="170000000t">Speaker one says hi.</p>
+    <p xml:id="subtitle8" begin="160000000t" end="175000000t">Speaker two waves back.</p>
+    <p xml:id="subtitle9" begin="180000000t" end="200000000t">-[gasps]</p>
+    <p xml:id="subtitle10" begin="210000000t" end="230000000t">It&apos;s &quot;fine&quot;, &lt;really&gt; &#233;t&#xE9;.</p>
+  </div></body>
+</tt>

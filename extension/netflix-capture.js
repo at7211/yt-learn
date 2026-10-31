@@ -1,10 +1,13 @@
-/* isolated world。ytLearnNetflixCapture({probe:true, timeoutMs, expectLessonId?}) -> Promise<probe result>；
-   需先載入 netflix-manifest.js（validator 與挑軌）。正式擷取（TTML 解析、組 raw）在步驟 4 加上，這裡只有 probe：
-   (1) 對 MAIN world 的鉤子送 ytlearn:nf-get，pending 時在總期限內每 500 ms 重問；
-   (2) 挑英文軌，只抓那一個網址（credentials omit、redirect error、最多讀 2 MB），回報 status／bytes／前 80 字；
-   (3) 送 ytlearn:nf-seek（ms = 回覆帶回的 currentMs、play:false），回報 ack。
-   鉤子層的失敗（沒有回覆、一直 pending、認不出、已關閉、回覆格式不對）throw 中文訊息；挑軌、下載、seek 的問題
-   寫進結果（enFetch.error、seek.error），診斷頁才看得到其它欄位。所有等待都有期限，結束時清掉計時器與 listener。 */
+/* isolated world。需先載入 netflix-manifest.js（validator 與挑軌）；正式模式另需 ttml.js。兩種模式：
+   ytLearnNetflixCapture({expectLessonId, timeoutMs}) -> Promise<raw>（正式擷取；錯誤 throw 中文訊息）：
+     movieId 取自網址；checkNav 在起點與回傳前核對 expectLessonId；向 MAIN world 的 hook 送 ytlearn:nf-get
+     （pending 時在總期限內每 500 ms 重問）；挑英文軌、抓 TTML（網址過 ytLearnNfUrlOk、credentials omit、
+     redirect error、最多 2 MB、AbortController 綁總期限）、ytLearnParseTtml；片長（manifest → video.duration）、
+     超界過濾；之後在同一個期限內抓選用的繁中參考軌（任何失敗只會變成 refStatus:'failed'）；組 raw。
+   ytLearnNetflixCapture({probe:true, timeoutMs, expectLessonId?}) -> Promise<probe result>（診斷）：
+     同樣問 hook，只抓英文那一個網址並回報 status／bytes／前 80 字，再送 ytlearn:nf-seek（ms = currentMs、play:false）。
+     hook 層的失敗 throw；挑軌、下載、seek 的問題寫進結果（enFetch.error、seek.error）。
+   所有等待都有期限，結束時清掉計時器與 listener。 */
 globalThis.ytLearnNetflixCapture = async function (opts) {
   opts = opts || {};
   const ORIGIN = 'https://www.netflix.com';
@@ -24,9 +27,14 @@ globalThis.ytLearnNetflixCapture = async function (opts) {
     validateGet: globalThis.ytLearnNfValidateGetReply,
     validateAck: globalThis.ytLearnNfValidateSeekAck,
     pick: globalThis.ytLearnNetflixPickTrack,
+    urlOk: globalThis.ytLearnNfUrlOk,
   };
-  if (typeof NF.validateGet !== 'function' || typeof NF.pick !== 'function') throw new Error('netflix-manifest.js 未載入');
-  if (!opts.probe) throw new Error('Netflix 正式擷取尚未實作'); // TODO(step 4): TTML + raw
+  const META_MS = 5000;
+  const ZH_MIN_MS = 1000; // less than this left after English: the reference track counts as failed
+  const REF_MAX_EVENTS = 5000; // pipeline/schema.py REF_MAX_EVENTS / REF_MAX_CHARS
+  const REF_MAX_CHARS = 200000;
+  const timeoutError = () => new Error('逾時：' + timeoutMs / 1000 + ' 秒內沒有取得字幕');
+  if (typeof NF.validateGet !== 'function' || typeof NF.pick !== 'function' || typeof NF.urlOk !== 'function') throw new Error('netflix-manifest.js 未載入');
 
   const movieIdNow = () => {
     const m = /^\/watch\/([0-9]{1,12})(?:\/|$)/.exec(location.pathname);
@@ -60,14 +68,14 @@ globalThis.ytLearnNetflixCapture = async function (opts) {
   // Validator reason -> Chinese message. Too large: the real size, plus whatever still reads (state, track count).
   function replyError(err, reply) {
     const m = /^too large: (\d+) bytes$/.exec(err);
-    if (!m) return '鉤子回覆格式不對（' + err + '）';
+    if (!m) return 'hook 回覆格式不對（' + err + '）';
     const kb = (n) => Math.ceil(n / 1024) + ' KB';
     const max = globalThis.ytLearnNetflixMaxReplyBytes || 128 * 1024;
     const extra = [];
     if (typeof reply.state === 'string' && reply.state.length <= 32) extra.push('state ' + reply.state);
     const tracks = reply.manifest && Array.isArray(reply.manifest.tracks) ? reply.manifest.tracks.length : null;
     if (tracks !== null) extra.push(tracks + ' 軌');
-    return '鉤子回覆太大（' + kb(Number(m[1])) + '，上限 ' + kb(max) + (extra.length ? '；' + extra.join('、') : '') + '）';
+    return 'hook 回覆太大（' + kb(Number(m[1])) + '，上限 ' + kb(max) + (extra.length ? '；' + extra.join('、') : '') + '）';
   }
 
   async function getManifest(movieId) {
@@ -83,12 +91,12 @@ globalThis.ytLearnNetflixCapture = async function (opts) {
         last = reply.state;
         if (reply.state === 'found') return reply;
         if (reply.state === 'unsupported') throw new Error('Netflix 改版了，認不出字幕清單');
-        if (reply.state === 'off') throw new Error('Netflix 鉤子已關閉（請重新載入頁面）');
+        if (reply.state === 'off') throw new Error('Netflix hook 已關閉（請重新載入頁面）');
         await sleep(RETRY_MS - (Date.now() - t0));
       }
     }
     if (last === 'pending') throw new Error('還沒收到這部片的字幕清單');
-    throw new Error('Netflix 鉤子不在（請重新載入頁面）');
+    throw new Error('Netflix hook 不在（請重新載入頁面）');
   }
 
   async function readCapped(res) {
@@ -138,20 +146,118 @@ globalThis.ytLearnNetflixCapture = async function (opts) {
     const requestId = rand();
     const ack = await request({ type: 'ytlearn:nf-seek', requestId, expectedMovieId: movieId, ms, play: false },
       (d) => d.type === 'ytlearn:nf-seek-ack' && d.requestId === requestId, Math.max(1, Math.min(SEEK_ACK_MS, left())));
-    if (!ack) return { ok: false, error: '鉤子沒有回覆 seek' };
+    if (!ack) return { ok: false, error: 'hook 沒有回覆 seek' };
     const err = NF.validateAck(ack, requestId);
     if (err) return { ok: false, error: 'seek 回覆格式不對（' + err + '）' };
     return ack.ok ? { ok: true } : { ok: false, error: ack.error || 'unknown' };
   }
 
-  window.addEventListener('message', onMessage);
-  try {
-    const movieId = movieIdNow();
-    if (!movieId) throw new Error('這不是 Netflix 播放頁');
-    if (opts.expectLessonId && 'netflix.' + movieId !== opts.expectLessonId) throw new Error('換集了，請回到原本那一集再試');
+  /* ---------- formal capture ---------- */
 
-    const reply = await getManifest(movieId);
+  // One subtitle file -> its text. Throws Chinese messages; aborts at the shared deadline.
+  async function fetchText(url) {
+    if (!NF.urlOk(url)) throw new Error('字幕網址不對');
+    const ac = new AbortController();
+    later(() => ac.abort(), Math.max(1, left()));
+    let bytes;
+    try {
+      const res = await fetch(url, { credentials: 'omit', redirect: 'error', signal: ac.signal });
+      if (!(res.status >= 200 && res.status < 300)) throw new Error('字幕檔下載失敗（HTTP ' + res.status + '）');
+      bytes = await readCapped(res);
+    } catch (e) {
+      if (ac.signal.aborted) throw timeoutError();
+      const msg = String((e && e.message) || e);
+      throw new Error(/^字幕檔/.test(msg) ? msg : '字幕檔下載失敗（' + msg + '）');
+    }
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch (e) {
+      throw new Error('字幕檔不是 UTF-8');
+    }
+  }
+
+  // The reference track must pass the same limits as pipeline/schema.py's _ref_errors, or it is left out.
+  function refOk(events) {
+    if (!Array.isArray(events) || !events.length || events.length > REF_MAX_EVENTS) return false;
+    let chars = 0;
+    let prev = -1;
+    for (const e of events) {
+      if (!Number.isSafeInteger(e.t) || e.t < 0 || e.t <= prev) return false;
+      if (!Number.isSafeInteger(e.d) || e.d <= 0) return false;
+      if (typeof e.text !== 'string' || !e.text) return false;
+      // code points, like Python len(); stop as soon as the total is over the cap
+      for (const ch of e.text) { void ch; if (++chars > REF_MAX_CHARS) return false; }
+      prev = e.t;
+    }
+    return true;
+  }
+
+  async function videoDuration() {
+    const okNum = (n) => typeof n === 'number' && Number.isFinite(n) && n > 0;
+    const video = document.querySelector('video');
+    if (!video) return 0;
+    if (!okNum(video.duration)) {
+      await new Promise((resolve) => {
+        const done = () => { video.removeEventListener('loadedmetadata', done); resolve(); };
+        video.addEventListener('loadedmetadata', done);
+        later(done, Math.max(0, Math.min(META_MS, left())));
+      });
+    }
+    return okNum(video.duration) ? video.duration : 0;
+  }
+
+  // Optional zh-Hant reference: {ref} | {refStatus:'missing'|'failed'}. Never throws.
+  async function reference(tracks, parse) {
+    const zh = NF.pick(tracks, 'zh-Hant');
+    if (!zh) return { refStatus: 'missing' };
+    try {
+      if (left() < ZH_MIN_MS) return { refStatus: 'failed' };
+      const events = parse(await fetchText(zh.url)).events;
+      if (!refOk(events)) return { refStatus: 'failed' };
+      return { ref: { lang: 'zh-Hant', kind: 'official', events: events.map((e) => ({ t: e.t, d: e.d, text: e.text })) } };
+    } catch (e) {
+      return { refStatus: 'failed' };
+    }
+  }
+
+  async function capture(movieId, reply) {
+    const parse = globalThis.ytLearnParseTtml;
+    if (typeof parse !== 'function') throw new Error('ttml.js 未載入');
+    const m = reply.manifest;
+    if (m.movieId !== movieId) throw new Error('換集了，請回到原本那一集再試');
+    const en = NF.pick(m.tracks, 'en');
+    if (!en) throw new Error('這部片沒有英文字幕');
+    let events = parse(await fetchText(en.url)).events; // parse errors go up as they are
+    if (!events.length) throw new Error('字幕內容為空');
+
+    const okNum = (n) => typeof n === 'number' && Number.isFinite(n) && n > 0;
+    let duration = okNum(m.durationMs) ? m.durationMs / 1000 : 0;
+    if (!duration) duration = await videoDuration();
+    if (!duration) throw new Error('讀不到影片長度');
+    const beyond = events.filter((e) => e.t > duration * 1000).length;
+    if (beyond > events.length / 2) throw new Error('字幕時間超出影片長度');
+    if (beyond) events = events.filter((e) => e.t <= duration * 1000);
+
+    const ref = await reference(m.tracks, parse);
     checkNav(movieId);
+    return {
+      videoId: 'netflix.' + movieId,
+      source: 'netflix',
+      sourceUrl: 'https://www.netflix.com/watch/' + movieId,
+      title: reply.title || 'Netflix ' + movieId,
+      channel: reply.show || 'Netflix',
+      duration,
+      lang: 'en',
+      kind: 'manual',
+      capturedAt: new Date().toISOString(),
+      events: events.map((e) => ({ t: e.t, d: e.d, segs: [[null, e.text]] })),
+      ...ref,
+    };
+  }
+
+  /* ---------- probe ---------- */
+
+  async function probe(movieId, reply) {
     const tracks = reply.manifest.tracks;
     const result = {
       movieId,
@@ -171,6 +277,17 @@ globalThis.ytLearnNetflixCapture = async function (opts) {
     else result.seek = { ms: Math.round(reply.currentMs), ...(await seek(movieId, Math.round(reply.currentMs))) };
     checkNav(movieId);
     return result;
+  }
+
+  window.addEventListener('message', onMessage);
+  try {
+    const movieId = movieIdNow();
+    if (!movieId) throw new Error('這不是 Netflix 播放頁');
+    if (opts.expectLessonId && 'netflix.' + movieId !== opts.expectLessonId) throw new Error('換集了，請回到原本那一集再試');
+
+    const reply = await getManifest(movieId);
+    checkNav(movieId);
+    return opts.probe ? await probe(movieId, reply) : await capture(movieId, reply);
   } finally {
     window.removeEventListener('message', onMessage);
     waiters.clear();

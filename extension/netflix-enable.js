@@ -40,7 +40,7 @@
   function showState(st) {
     if (!st || st.error) { say('讀不到目前狀態：' + ((st && st.error) || '未知')); return; }
     if (st.enabled) say('目前狀態：已啟用。');
-    else if (st.desired) say('目前狀態：已授權，但鉤子註冊失敗，稍後會自動重試。');
+    else if (st.desired) say('目前狀態：已授權，但 hook 註冊失敗，稍後會自動重試。');
     else say('目前狀態：未啟用。');
     if (reasonText && !st.enabled) say(status.textContent + reasonText);
     enableBtn.hidden = !!st.enabled;
@@ -100,7 +100,7 @@
   function summaryLines(res) {
     const lines = [];
     const h = res.hook || {};
-    lines.push(yes(h.summarized >= 1) + ' 鉤子摘要到 manifest：summarized = ' + h.summarized + '（parsed ' + h.parsed + '、suspected ' + h.suspected
+    lines.push(yes(h.summarized >= 1) + ' hook 摘要到 manifest：summarized = ' + h.summarized + '（parsed ' + h.parsed + '、suspected ' + h.suspected
       + '、unknownShape ' + h.unknownShape + '）');
     lines.push(yes(h.skippedReviver === 0) + ' 帶 reviver 的 JSON.parse：skippedReviver = ' + h.skippedReviver);
     lines.push('片名：' + (res.title || '（無）') + (res.show ? ' — ' + res.show : '') + '　movieId ' + res.movieId);

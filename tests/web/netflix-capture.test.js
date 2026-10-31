@@ -1,4 +1,4 @@
-// extension/netflix-manifest.js + extension/netflix-capture.js (probe mode) in a vm context standing in for the
+// extension/netflix-manifest.js + extension/ttml.js + extension/netflix-capture.js (probe and formal mode) in a vm context standing in for the
 // isolated world. The MAIN-world hook is either a scripted fake or, in the last test, the real netflix-hook.js
 // in a second context sharing the same fake window.postMessage bus.
 import { test } from 'node:test';
@@ -134,9 +134,9 @@ test('probe happy path: stats, tracks, one English fetch (PRIMARY, imsc1.1, cred
   assertClean(s);
 });
 
-test('no reply at all -> 「Netflix 鉤子不在（請重新載入頁面）」 (asked repeatedly within the deadline)', async () => {
+test('no reply at all -> 「Netflix hook 不在（請重新載入頁面）」 (asked repeatedly within the deadline)', async () => {
   const s = setup({ replies: () => null });
-  assert.equal(await rejection(s.run({ timeoutMs: 1200 })), 'Netflix 鉤子不在（請重新載入頁面）');
+  assert.equal(await rejection(s.run({ timeoutMs: 1200 })), 'Netflix hook 不在（請重新載入頁面）');
   assert.ok(s.seen.gets.length >= 2);
   assertClean(s);
 });
@@ -164,10 +164,10 @@ test('unsupported -> 「Netflix 改版了，認不出字幕清單」; off -> hoo
 
 test('a reply for another movie, or with a bad subtitle hostname, is refused before any fetch', async () => {
   const other = setup({ replies: () => ({ ...FOUND, manifest: { ...FOUND.manifest, movieId: '1' } }) });
-  assert.match(await rejection(other.run()), /鉤子回覆格式不對（manifest\.movieId）/);
+  assert.match(await rejection(other.run()), /hook 回覆格式不對（manifest\.movieId）/);
   assert.equal(other.calls.length, 0);
   const evil = setup({ replies: () => ({ ...FOUND, manifest: { ...FOUND.manifest, tracks: [{ ...TRACKS[1], formats: { 'imsc1.1': 'https://evil.example/x' } }] } }) });
-  assert.match(await rejection(evil.run()), /鉤子回覆格式不對（url）/);
+  assert.match(await rejection(evil.run()), /hook 回覆格式不對（url）/);
   assert.equal(evil.calls.length, 0);
 });
 
@@ -176,7 +176,7 @@ test('a reply over the 128 KB cap -> the error names the real size, the state an
   const tracks = Array.from({ length: 80 }, () => ({ ...TRACKS[1], formats: { 'imsc1.1': longUrl } }));
   const s = setup({ replies: () => ({ ...FOUND, manifest: { ...FOUND.manifest, tracks } }) });
   const msg = await rejection(s.run());
-  assert.match(msg, /^鉤子回覆太大（1[0-9]{2} KB，上限 128 KB；state found、80 軌）$/);
+  assert.match(msg, /^hook 回覆太大（1[0-9]{2} KB，上限 128 KB；state found、80 軌）$/);
   assert.equal(s.calls.length, 0);
   assertClean(s);
 });
@@ -192,7 +192,7 @@ test('replies with another nonce, from another origin, or from another window ar
     for (const f of s.w.listeners.slice()) f({ source: s.w.win, origin: 'https://evil.example', data: { ...stray, nonce } });
     for (const f of s.w.listeners.slice()) f({ source: {}, origin: ORIGIN, data: { ...stray, nonce } });
   }, 50);
-  assert.equal(await rejection(p), 'Netflix 鉤子不在（請重新載入頁面）');
+  assert.equal(await rejection(p), 'Netflix hook 不在（請重新載入頁面）');
 });
 
 test('2 MB cap: Content-Length, a streamed body and a plain arrayBuffer over the cap are all refused', async () => {
@@ -235,19 +235,16 @@ test('no English track -> enFetch.error 「這部片沒有英文字幕」, nothi
 
 test('seek: refused ack, no ack, no player session', async () => {
   assert.deepEqual(plain((await setup({ seekAck: () => ({ ok: false, error: 'urlMismatch' }) }).run()).seek), { ms: 61234, ok: false, error: 'urlMismatch' });
-  assert.deepEqual(plain((await setup({ seekAck: () => null }).run()).seek), { ms: 61234, ok: false, error: '鉤子沒有回覆 seek' });
+  assert.deepEqual(plain((await setup({ seekAck: () => null }).run()).seek), { ms: 61234, ok: false, error: 'hook 沒有回覆 seek' });
   const noSession = setup({ replies: () => { const { currentMs, ...rest } = FOUND; return rest; } });
   const r = await noSession.run();
   assert.deepEqual(plain(r.seek), { ok: false, error: '找不到播放器 session' });
   assert.equal(noSession.seen.seeks.length, 0);
 });
 
-test('not a watch page, another episode than expected, or a non-probe call -> errors', async () => {
+test('probe: not a watch page, another episode than expected -> errors', async () => {
   assert.equal(await rejection(setup({ path: '/browse' }).run()), '這不是 Netflix 播放頁');
   assert.equal(await rejection(setup().run({ expectLessonId: 'netflix.1' })), '換集了，請回到原本那一集再試');
-  const s = setup();
-  assert.match(await rejection(s.w.win.ytLearnNetflixCapture({ timeoutMs: 1000 })), /尚未實作/);
-  assert.equal(s.seen.gets.length, 0);
 });
 
 test('end to end with the real hook: MAIN world parses a manifest, the probe finds it, fetches, seeks via the player API', async () => {
@@ -277,4 +274,231 @@ test('end to end with the real hook: MAIN world parses a manifest, the probe fin
   assert.ok(r.enFetch.head.includes('<tt'));
   assert.deepEqual(r.seek, { ms: 42000, ok: true });
   assert.deepEqual(player.seeks, [42000]);
+});
+
+/* ---------- formal capture: ytLearnNetflixCapture({expectLessonId, timeoutMs}) -> raw ---------- */
+
+const TTMLJS = read('../../extension/ttml.js');
+const EN_TTML = read('../fixtures/netflix_small.ttml');
+const MANIFEST = (() => { const { _comment, ...m } = JSON.parse(read('../fixtures/netflix_manifest.json')); return m; })();
+const EN_URL = MANIFEST.tracks[1].formats['imsc1.1'];
+const ZH_URL = MANIFEST.tracks[3].formats['imsc1.1'];
+const ttml = (ps) => '<?xml version="1.0" encoding="UTF-8"?><tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttp="http://www.w3.org/ns/ttml#parameter" ttp:tickRate="10000000" ttp:timeBase="media"><body><div>' + ps + '</div></body></tt>';
+const ZH_TTML = ttml('<p begin="12340000t" end="34560000t">編出來的第一句。</p><p begin="40000000t" end="60000000t">桌上有<span>煎餅</span>和茶。</p>');
+const ZH_EVENTS = [{ t: 1234, d: 2222, text: '編出來的第一句。' }, { t: 4000, d: 2000, text: '桌上有煎餅和茶。' }];
+const EN_EVENTS = [
+  { t: 1234, d: 2222, segs: [[null, 'First line of a made-up sentence.']] },
+  { t: 4000, d: 2000, segs: [[null, 'Pancakes & tea are on the table.']] },
+  { t: 9000, d: 2000, segs: [[null, 'We sing about the pretend river']] },
+  { t: 14000, d: 1000, segs: [[null, 'Wait (quietly) for me.']] },
+  { t: 16000, d: 1500, segs: [[null, 'Speaker one says hi. Speaker two waves back.']] },
+  { t: 21000, d: 2000, segs: [[null, 'It\'s "fine", <really> été.']] },
+];
+const CFOUND = { state: 'found', manifest: MANIFEST, currentMs: 1000, title: 'An invented episode' };
+const withManifest = (patch) => () => ({ ...CFOUND, manifest: { ...MANIFEST, ...patch } });
+
+// routes: {url: text | {status, body?} | (init) => Promise<response>}; anything else -> network error.
+function routeFetch(routes, calls) {
+  return async (url, init) => {
+    calls.push({ url, init });
+    const r = routes[url];
+    if (typeof r === 'function') return r(init);
+    if (r === undefined) throw new TypeError('Failed to fetch');
+    const { status = 200, body = '' } = typeof r === 'string' ? { body: r } : r;
+    const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body;
+    return { status, ok: status >= 200 && status < 300, headers: { get: () => String(bytes.length) }, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+  };
+}
+
+function setupCap({ replies = () => CFOUND, routes = { [EN_URL]: EN_TTML, [ZH_URL]: ZH_TTML }, path, extra, ttmlLoaded = true } = {}) {
+  const b = bus();
+  const calls = [];
+  const w = world(b, { path, fetchImpl: routeFetch(routes, calls), extra });
+  vm.runInContext(LIB, w.ctx);
+  if (ttmlLoaded) vm.runInContext(TTMLJS, w.ctx);
+  vm.runInContext(CAP, w.ctx);
+  const seen = fakeHook(b, { replies });
+  const run = (o) => w.win.ytLearnNetflixCapture({ expectLessonId: 'netflix.81234567', timeoutMs: 1500, ...o });
+  return { b, w, seen, calls, run };
+}
+const noCapturedAt = ({ capturedAt, ...rest }) => rest;
+
+test('capture happy path: raw shape (Udemy fields + source/sourceUrl), English PRIMARY imsc1.1, zh-Hant ref, fetch rules', async () => {
+  const s = setupCap();
+  const raw = plain(await s.run());
+  assert.match(raw.capturedAt, /^\d{4}-\d\d-\d\dT/);
+  assert.deepEqual(noCapturedAt(raw), {
+    videoId: 'netflix.81234567',
+    source: 'netflix',
+    sourceUrl: 'https://www.netflix.com/watch/81234567',
+    title: 'An invented episode',
+    channel: 'Netflix',
+    duration: 1500,
+    lang: 'en',
+    kind: 'manual',
+    events: EN_EVENTS,
+    ref: { lang: 'zh-Hant', kind: 'official', events: ZH_EVENTS },
+  });
+  assert.ok(!('refStatus' in raw));
+  assert.deepEqual(s.calls.map((c) => c.url), [EN_URL, ZH_URL], 'English first, then the reference');
+  for (const c of s.calls) {
+    assert.equal(c.init.credentials, 'omit');
+    assert.equal(c.init.redirect, 'error');
+    assert.ok(c.init.signal);
+  }
+  assert.equal(s.seen.seeks.length, 0, 'the formal capture does not seek');
+  assertClean(s);
+});
+
+test('capture: hook errors are the probe\'s (no reply, pending -> found, always pending, unsupported, off)', async () => {
+  const none = setupCap({ replies: () => null });
+  assert.equal(await rejection(none.run({ timeoutMs: 1200 })), 'Netflix hook 不在（請重新載入頁面）');
+  assertClean(none);
+  const later = setupCap({ replies: (n) => (n < 2 ? { state: 'pending' } : CFOUND) });
+  assert.equal((await later.run({ timeoutMs: 3000 })).videoId, 'netflix.81234567');
+  assert.equal(later.seen.gets.length, 3);
+  assert.equal(await rejection(setupCap({ replies: () => ({ state: 'pending' }) }).run({ timeoutMs: 1200 })), '還沒收到這部片的字幕清單');
+  assert.equal(await rejection(setupCap({ replies: () => ({ state: 'unsupported' }) }).run()), 'Netflix 改版了，認不出字幕清單');
+  assert.equal(await rejection(setupCap({ replies: () => ({ state: 'off' }) }).run()), 'Netflix hook 已關閉（請重新載入頁面）');
+});
+
+test('capture: manifest for another movie, or a subtitle URL on another host -> refused, nothing fetched', async () => {
+  const other = setupCap({ replies: withManifest({ movieId: '1' }) });
+  assert.equal(await rejection(other.run()), 'hook 回覆格式不對（manifest.movieId）');
+  assert.equal(other.calls.length, 0);
+  const evil = setupCap({ replies: withManifest({ tracks: [{ ...MANIFEST.tracks[1], formats: { 'imsc1.1': 'https://evil.example/x' } }] }) });
+  assert.equal(await rejection(evil.run()), 'hook 回覆格式不對（url）');
+  assert.equal(evil.calls.length, 0);
+});
+
+test('capture: 2 MB cap, HTTP failure, network failure, non-UTF-8 bytes', async () => {
+  const big = new Uint8Array(2 * 1024 * 1024 + 1);
+  assert.equal(await rejection(setupCap({ routes: { [EN_URL]: { body: big } } }).run()), '字幕檔超過 2 MB');
+  assert.equal(await rejection(setupCap({ routes: { [EN_URL]: { status: 404, body: 'nope' } } }).run()), '字幕檔下載失敗（HTTP 404）');
+  assert.equal(await rejection(setupCap({ routes: {} }).run()), '字幕檔下載失敗（Failed to fetch）');
+  assert.equal(await rejection(setupCap({ routes: { [EN_URL]: { body: new Uint8Array([0x3c, 0xff, 0xfe]) } } }).run()), '字幕檔不是 UTF-8');
+});
+
+test('capture: no usable English track (only forced / other languages) -> 「這部片沒有英文字幕」, nothing fetched', async () => {
+  const s = setupCap({ replies: withManifest({ tracks: [MANIFEST.tracks[2], MANIFEST.tracks[3]] }) });
+  assert.equal(await rejection(s.run()), '這部片沒有英文字幕');
+  assert.equal(s.calls.length, 0);
+  assertClean(s);
+});
+
+test('capture: ttml.js missing, a parse error (as is), empty subtitles', async () => {
+  assert.equal(await rejection(setupCap({ ttmlLoaded: false }).run()), 'ttml.js 未載入');
+  const bad = await rejection(setupCap({ routes: { [EN_URL]: '<!DOCTYPE tt><tt/>' } }).run());
+  assert.match(bad, /^不支援的字幕檔結構：.*DOCTYPE/);
+  assert.equal(await rejection(setupCap({ routes: { [EN_URL]: ttml('<p begin="0t" end="10000000t">[music]</p>') } }).run()), '字幕內容為空');
+});
+
+test('capture: zh-Hant reference degrades to refStatus "failed" (download, parse, 5001 cues, > 200k chars); English unaffected', async () => {
+  const many = ttml(Array.from({ length: 5001 }, (_, i) => `<p begin="${i}s" end="${i}.5s">第${i}句</p>`).join(''));
+  const long = ttml(`<p begin="1s" end="2s">${'長'.repeat(100001)}</p><p begin="3s" end="4s">${'長'.repeat(100001)}</p>`);
+  const cases = {
+    'HTTP 500': { status: 500 },
+    'network': undefined,
+    'parse error': ttml('<p begin="1s" end="2s"><ruby>字</ruby></p>'),
+    '5001 cues': many,
+    '> 200k chars': long,
+    'empty': ttml('<p begin="1s" end="2s">♪</p>'),
+  };
+  for (const [name, zh] of Object.entries(cases)) {
+    const routes = { [EN_URL]: EN_TTML };
+    if (zh !== undefined) routes[ZH_URL] = zh;
+    const s = setupCap({ routes });
+    const raw = plain(await s.run({ timeoutMs: 5000 }));
+    assert.equal(raw.refStatus, 'failed', name);
+    assert.ok(!('ref' in raw), name);
+    assert.deepEqual(raw.events, EN_EVENTS, name);
+    assert.deepEqual(s.calls.map((c) => c.url), [EN_URL, ZH_URL], name);
+    assertClean(s);
+  }
+  // exactly 5000 cues is accepted
+  const ok = ttml(Array.from({ length: 5000 }, (_, i) => `<p begin="${i}s" end="${i}.5s">第${i}句</p>`).join(''));
+  const s = setupCap({ routes: { [EN_URL]: EN_TTML, [ZH_URL]: ok } });
+  assert.equal(plain(await s.run({ timeoutMs: 5000 })).ref.events.length, 5000);
+});
+
+test('capture: no zh-Hant track -> refStatus "missing", no ref, nothing else fetched', async () => {
+  const s = setupCap({ replies: withManifest({ tracks: MANIFEST.tracks.slice(0, 3) }) });
+  const raw = plain(await s.run());
+  assert.equal(raw.refStatus, 'missing');
+  assert.ok(!('ref' in raw));
+  assert.deepEqual(s.calls.map((c) => c.url), [EN_URL]);
+});
+
+test('capture: zh shares the deadline — too little time left after English -> refStatus "failed" without fetching zh', async () => {
+  const slowEn = () => new Promise((r) => setTimeout(() => r(routeFetch({ [EN_URL]: EN_TTML }, [])(EN_URL, {})), 700));
+  const s = setupCap({ routes: { [EN_URL]: slowEn, [ZH_URL]: ZH_TTML } });
+  const t0 = Date.now();
+  const raw = plain(await s.run({ timeoutMs: 1500 }));
+  assert.ok(Date.now() - t0 < 1500, 'within the deadline');
+  assert.equal(raw.refStatus, 'failed');
+  assert.deepEqual(s.calls.map((c) => c.url), [EN_URL]);
+  assert.deepEqual(raw.events, EN_EVENTS);
+  assertClean(s);
+});
+
+test('capture: a hanging zh download is aborted at the shared deadline -> refStatus "failed", English still returned', async () => {
+  const hang = (init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+  const s = setupCap({ routes: { [EN_URL]: EN_TTML, [ZH_URL]: hang } });
+  const t0 = Date.now();
+  const raw = plain(await s.run({ timeoutMs: 1500 }));
+  assert.ok(Date.now() - t0 < 2000);
+  assert.equal(raw.refStatus, 'failed');
+  assert.deepEqual(raw.events, EN_EVENTS);
+  assertClean(s);
+});
+
+test('capture: another episode at the start, or the page switching episodes during the capture', async () => {
+  const s = setupCap();
+  assert.equal(await rejection(s.run({ expectLessonId: 'netflix.1' })), '換集了，請回到原本那一集再試');
+  assert.equal(s.seen.gets.length, 0);
+  assert.equal(await rejection(setupCap({ path: '/browse' }).run()), '這不是 Netflix 播放頁');
+  let w;
+  const switching = setupCap({ routes: { [EN_URL]: EN_TTML, [ZH_URL]: async () => { w.ctx.location.pathname = '/watch/999'; return { status: 404, headers: { get: () => null }, arrayBuffer: async () => new ArrayBuffer(0) }; } } });
+  w = switching.w;
+  assert.equal(await rejection(switching.run()), '換集了，請回到原本那一集再試');
+});
+
+test('capture: duration falls back to video.duration (waiting for loadedmetadata), else 「讀不到影片長度」', async () => {
+  const video = { duration: NaN, ls: [], addEventListener(n, f) { this.ls.push(f); }, removeEventListener(n, f) { this.ls = this.ls.filter((x) => x !== f); } };
+  setTimeout(() => { video.duration = 1200.5; for (const f of video.ls.slice()) f(); }, 100);
+  const s = setupCap({ replies: withManifest({ durationMs: null }), extra: { document: { querySelector: (q) => (q === 'video' ? video : null) } } });
+  assert.equal((await s.run()).duration, 1200.5);
+  assert.equal(video.ls.length, 0, 'listener removed');
+  assertClean(s);
+  assert.equal(await rejection(setupCap({ replies: withManifest({ durationMs: null }) }).run()), '讀不到影片長度');
+  const never = { duration: NaN, addEventListener() {}, removeEventListener() {} };
+  const t0 = Date.now();
+  assert.equal(await rejection(setupCap({ replies: withManifest({ durationMs: null }), extra: { document: { querySelector: () => never } } }).run({ timeoutMs: 800 })), '讀不到影片長度');
+  assert.ok(Date.now() - t0 < 1500, 'waits at most until the deadline');
+});
+
+test('capture: cues past the duration are dropped when few, refused when more than half', async () => {
+  const few = plain(await setupCap({ replies: withManifest({ durationMs: 15000 }) }).run());
+  assert.deepEqual(few.events.map((e) => e.t), [1234, 4000, 9000, 14000]);
+  assert.equal(few.duration, 15);
+  assert.equal(await rejection(setupCap({ replies: withManifest({ durationMs: 5000 }) }).run()), '字幕時間超出影片長度');
+});
+
+test('capture: title / channel fallbacks', async () => {
+  const noTitle = plain(await setupCap({ replies: () => { const { title, ...r } = CFOUND; return r; } }).run());
+  assert.equal(noTitle.title, 'Netflix 81234567');
+  assert.equal(noTitle.channel, 'Netflix');
+  const show = plain(await setupCap({ replies: () => ({ ...CFOUND, show: 'An invented show' }) }).run());
+  assert.equal(show.title, 'An invented episode');
+  assert.equal(show.channel, 'An invented show');
+});
+
+test('capture: zh ref character cap counts code points like Python len() (astral characters near 200,000)', async () => {
+  const two = (a, b) => ttml(`<p begin="1s" end="2s">${'𠀋'.repeat(a)}</p><p begin="3s" end="4s">${'𠀋'.repeat(b)}</p>`);
+  const at = plain(await setupCap({ routes: { [EN_URL]: EN_TTML, [ZH_URL]: two(100000, 100000) } }).run({ timeoutMs: 5000 }));
+  assert.ok(at.ref, 'exactly 200,000 code points (400,000 UTF-16 units) is accepted');
+  assert.equal([...at.ref.events.map((e) => e.text).join('')].length, 200000);
+  const over = plain(await setupCap({ routes: { [EN_URL]: EN_TTML, [ZH_URL]: two(100000, 100001) } }).run({ timeoutMs: 5000 }));
+  assert.equal(over.refStatus, 'failed');
+  assert.ok(!('ref' in over));
 });

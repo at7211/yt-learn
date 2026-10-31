@@ -883,11 +883,84 @@ test('entry points while Netflix is on: netflix.<id> is an ordinary lesson id (n
   assert.deepEqual(plain((await ask(w, { type: 'ytlearn:build', videoId: NID, url: 'https://www.netflix.com/watch/999' })).r),
     { ok: false, error: '換課了，請回到原講座再試' });
   assert.deepEqual(plain((await ask(w, { type: 'ytlearn:build', videoId: NID })).r), { ok: false, error: '缺少講座網址' });
+  // build from a message without a tab never reaches /add (no background mode for Netflix)
+  const noTab = await ask(w, { type: 'ytlearn:build', videoId: NID, url: NURL }, { id: EXT });
+  assert.deepEqual(plain(noTab.r), { ok: false, error: '沒有可擷取的分頁' });
   assert.deepEqual(w.calls.fetched, ['GET /data/lessons/' + NID + '.json', 'GET /jobs/' + NID]);
-  const job = await w.ctx.runJob({ id: NID, url: NURL, site: 'netflix' }, { mode: 'inplace', tabId: 7 });
-  assert.equal(job.ok, false);
-  assert.equal(job.disabled, undefined);
-  assert.deepEqual(w.calls.fetched, ['GET /data/lessons/' + NID + '.json', 'GET /jobs/' + NID], 'capture is step 4: no /add');
+});
+
+const nfRoutes = (extra = {}) => ({
+  'POST /add': { status: 200, json: { job: { videoId: NID, state: 'queued', attempt: 1, message: '' } } },
+  ['POST /jobs/' + NID + '/claim']: { status: 200, json: { attempt: 1 } },
+  'POST /ingest?attempt=1': { status: 200, json: { ok: true, job: { videoId: NID, state: 'captured', attempt: 1, message: '' } } },
+  ['POST /jobs/' + NID + '/fail']: { status: 200, json: { ok: true } },
+  ...extra,
+});
+const nfRaw = { videoId: NID, source: 'netflix', sourceUrl: 'https://www.netflix.com/watch/81234567', title: 'T', channel: 'Netflix', duration: 1500,
+  lang: 'en', kind: 'manual', capturedAt: '2026-11-01T00:00:00.000Z', events: [{ t: 0, d: 1000, segs: [[null, 'hi']] }], refStatus: 'missing' };
+
+test('Netflix build (overlay message, on): /add -> claim -> capture (ISOLATED, NF_CAPTURE files, expectLessonId) -> /ingest', async () => {
+  const injected = [];
+  const w = load(nfRoutes(), { executeScript: captureScript(nfRaw, injected), nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  const { r, ret } = await ask(w, { type: 'ytlearn:build', videoId: NID, url: NURL }, { id: EXT, tab: { id: 42 } });
+  assert.equal(ret, true);
+  assert.equal(r.ok, true);
+  assert.deepEqual(w.calls.fetched, ['POST /add', 'POST /jobs/' + NID + '/claim', 'POST /ingest?attempt=1']);
+  assert.deepEqual(plain(w.calls.bodies['POST /add']), { url: NURL });
+  assert.deepEqual(plain(injected[0]), { target: { tabId: 42 }, files: ['netflix-manifest.js', 'ttml.js', 'netflix-capture.js'], world: 'ISOLATED' });
+  assert.equal(injected[1].world, 'ISOLATED');
+  assert.deepEqual(plain(injected[1].args), ['ytLearnNetflixCapture', { expectLessonId: NID, timeoutMs: 25000 }]);
+  assert.deepEqual(plain(w.calls.bodies['POST /ingest?attempt=1']), nfRaw);
+});
+
+test('Netflix job: switched off and on again during the capture (gen changed) -> /fail, {disabled:true}, no /ingest', async () => {
+  let w;
+  const executeScript = async (o) => {
+    if (o.files) return [{}];
+    w.local.netflix = { desired: true, gen: ON.gen + 1, cleanup: false };
+    return [{ result: { ok: true, raw: nfRaw } }];
+  };
+  w = load(nfRoutes(), { executeScript, nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  const r = plain(await w.ctx.runJob({ id: NID, url: NURL, site: 'netflix' }, { mode: 'inplace', tabId: 7 }));
+  assert.equal(r.ok, false);
+  assert.equal(r.disabled, true);
+  assert.equal(r.error, 'Netflix 尚未啟用');
+  assert.deepEqual(w.calls.fetched, ['POST /add', 'POST /jobs/' + NID + '/claim', 'POST /jobs/' + NID + '/fail']);
+  assert.deepEqual(plain(w.calls.bodies['POST /jobs/' + NID + '/fail']), { attempt: 1, message: 'Netflix 尚未啟用' });
+  // switched off (desired false) during the capture: same
+  let v;
+  v = load(nfRoutes(), { executeScript: async (o) => { if (o.files) return [{}]; v.local.netflix = { desired: false, gen: ON.gen + 1, cleanup: true }; return [{ result: { ok: true, raw: nfRaw } }]; },
+    nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  const r2 = plain(await v.ctx.runJob({ id: NID, url: NURL, site: 'netflix' }, { mode: 'inplace', tabId: 7 }));
+  assert.deepEqual({ ok: r2.ok, disabled: r2.disabled }, { ok: false, disabled: true });
+  assert.ok(!v.calls.fetched.includes('POST /ingest?attempt=1'));
+});
+
+test('Netflix job: no tab / background mode -> 「Netflix 沒有背景模式…」 before /add; another movie in raw -> /fail', async () => {
+  const w = load(nfRoutes(), { nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  for (const opts of [{ mode: 'background' }, { mode: 'inplace' }]) {
+    const r = plain(await w.ctx.runJob({ id: NID, url: NURL, site: 'netflix' }, opts));
+    assert.deepEqual(r, { ok: false, error: 'Netflix 沒有背景模式，請在 Netflix 播放頁按圖示' });
+  }
+  assert.deepEqual(w.calls.fetched, []);
+  const injected = [];
+  const m = load(nfRoutes(), { executeScript: captureScript({ ...nfRaw, videoId: 'netflix.1' }, injected), nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  const r = plain(await m.ctx.runJob({ id: NID, url: NURL, site: 'netflix' }, { mode: 'inplace', tabId: 7 }));
+  assert.equal(r.ok, false);
+  assert.equal(r.disabled, undefined);
+  assert.deepEqual(m.calls.fetched, ['POST /add', 'POST /jobs/' + NID + '/claim', 'POST /jobs/' + NID + '/fail']);
+});
+
+test('NF_CAPTURE: manifest helpers, TTML parser, then the capture, all in the isolated world', () => {
+  const w = load();
+  assert.deepEqual(plain(vm.runInContext('NF_CAPTURE', w.ctx)), { files: ['netflix-manifest.js', 'ttml.js', 'netflix-capture.js'], world: 'ISOLATED', fn: 'ytLearnNetflixCapture' });
+  assert.equal(vm.runInContext("isNetflixId(' netflix.81234567 ')", w.ctx), true);
+  assert.equal(vm.runInContext("isNetflixId('udemy.81234567')", w.ctx), false);
 });
 
 test('icon on a Netflix watch page while off -> opens netflix-enable.html?tab=<id>; no overlay toggle, no server', async () => {
@@ -912,13 +985,13 @@ test('icon on other Netflix pages -> home page, like Udemy non-lecture pages', a
 const probeResult = { movieId: '81234567', hook: { parsed: 9, suspected: 1, summarized: 1, unknownShape: 0, skippedReviver: 0 }, state: 'found',
   tracks: [{ lang: 'en', type: 'PRIMARY', forced: false, formats: ['imsc1.1'] }], enFetch: { status: 200, bytes: 1234, head: '<?xml' }, seek: { ok: true } };
 
-test('icon on a Netflix watch page while on -> probe (ISOLATED, netflix-manifest.js + netflix-capture.js) and #probe page; result in storage.session', async () => {
+test('icon on a Netflix watch page while on -> probe (ISOLATED, NF_CAPTURE files) and #probe page; result in storage.session', async () => {
   const injected = [];
   const w = load({}, { executeScript: captureScript(probeResult, injected), nf: { local: { netflix: ON }, perm: true, tabUrls: { 7: NURL } } });
   await settle();
   await w.ctx.onIconClicked({ id: 7, url: NURL });
   assert.deepEqual(plain(w.calls.created), [{ url: ENABLE_PAGE + '?tab=7#probe', active: true }]);
-  assert.deepEqual(plain(injected[0]), { target: { tabId: 7 }, files: ['netflix-manifest.js', 'netflix-capture.js'], world: 'ISOLATED' });
+  assert.deepEqual(plain(injected[0]), { target: { tabId: 7 }, files: ['netflix-manifest.js', 'ttml.js', 'netflix-capture.js'], world: 'ISOLATED' });
   assert.equal(injected[1].world, 'ISOLATED');
   assert.deepEqual(plain(injected[1].args), ['ytLearnNetflixCapture', { probe: true, expectLessonId: NID, timeoutMs: 25000 }]);
   const rec = plain(w.store.netflixProbe);
@@ -945,11 +1018,11 @@ test('netflix-probe from the enable page: off -> {disabled:true}; on -> result; 
 });
 
 test('netflix-probe: capture error is reported, and a switch during the probe discards the result', async () => {
-  const failing = load({}, { executeScript: async (o) => (o.files ? [{}] : [{ result: { ok: false, error: 'Netflix 鉤子不在（請重新載入頁面）' } }]),
+  const failing = load({}, { executeScript: async (o) => (o.files ? [{}] : [{ result: { ok: false, error: 'Netflix hook 不在（請重新載入頁面）' } }]),
     nf: { local: { netflix: ON }, perm: true, tabUrls: { 7: NURL } } });
   await settle();
   const r = plain((await ask(failing, { type: 'ytlearn:netflix-probe', tab: 7 }, PAGE_SENDER)).r);
-  assert.deepEqual({ ok: r.ok, error: r.error }, { ok: false, error: 'Netflix 鉤子不在（請重新載入頁面）' });
+  assert.deepEqual({ ok: r.ok, error: r.error }, { ok: false, error: 'Netflix hook 不在（請重新載入頁面）' });
   let w;
   const executeScript = async (o) => {
     if (o.files) return [{}];
@@ -983,8 +1056,8 @@ test('manifest: Netflix is optional (optional_host_permissions), never static; n
 });
 
 test('extension code never uses innerHTML (netflix files included)', () => {
-  for (const f of ['netflix-manifest.js', 'netflix-hook.js', 'netflix-capture.js', 'netflix-enable.js', 'background.js']) {
+  for (const f of ['netflix-manifest.js', 'netflix-hook.js', 'netflix-capture.js', 'netflix-enable.js', 'background.js', 'ttml.js']) {
     const src = readFileSync(new URL('../../extension/' + f, import.meta.url), 'utf8');
-    assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML/.test(src), f);
+    assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|DOMParser/.test(src), f);
   }
 });

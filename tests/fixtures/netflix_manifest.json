@@ -1,0 +1,11 @@
+{
+  "_comment": "Invented nf-get 'found' reply manifest (the shape netflix-hook.js summarises to). URLs are placeholders.",
+  "movieId": "81234567",
+  "durationMs": 1500000,
+  "tracks": [
+    { "lang": "en", "type": "ASSISTIVE", "name": "English (CC)", "forced": false, "formats": { "imsc1.1": "https://ipv4-c003-tpe001-ix.1.oca.nflxvideo.net/?o=1&v=3" } },
+    { "lang": "en", "type": "PRIMARY", "name": "English", "forced": false, "formats": { "dfxp-ls-sdh": "https://ipv4-c002-tpe001-ix.1.oca.nflxvideo.net/?o=1&v=2", "imsc1.1": "https://ipv4-c001-tpe001-ix.1.oca.nflxvideo.net/?o=1&v=1" } },
+    { "lang": "en", "type": "PRIMARY", "name": "English (forced)", "forced": true, "formats": { "imsc1.1": "https://ipv4-c005-tpe001-ix.1.oca.nflxvideo.net/?o=1&v=5" } },
+    { "lang": "zh-Hant", "type": "PRIMARY", "name": "中文（繁體）", "forced": false, "formats": { "imsc1.1": "https://ipv4-c004-tpe001-ix.1.oca.nflxvideo.net/?o=1&v=4" } }
+  ]
+}

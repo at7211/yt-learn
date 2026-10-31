@@ -19,3 +19,4 @@ import './site.test.js';
 import './netflix-manifest.test.js';
 import './netflix-hook.test.js';
 import './netflix-capture.test.js';
+import './ttml.test.js';

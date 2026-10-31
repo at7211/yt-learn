@@ -13,6 +13,7 @@ const DICT_ORIGIN = 'https://dictionary.cambridge.org/';
 const DICT_W = 520;
 const DICT_H = 760;
 const NETFLIX_OFF = 'Netflix 尚未啟用';
+const NETFLIX_NO_BACKGROUND = 'Netflix 沒有背景模式，請在 Netflix 播放頁按圖示';
 
 const log = (stage, ...a) => console.log('[yt-learn]', stage, ...a);
 const errMsg = (e) => String((e && e.message) || e);
@@ -370,10 +371,13 @@ async function runJobInner(requested, opts) {
   const mode = opts.mode === 'inplace' ? 'inplace' : 'background';
   const emit = (s) => { try { if (opts.onStatus) opts.onStatus(s); } catch (e) { log('ignored', errMsg(e)); } };
   if (requested.site === 'udemy' && mode !== 'inplace') return { ok: false, error: 'Udemy 講座只能在講座頁上擷取' };
+  // Netflix: the generation it was on when the job started; checked again right before /ingest.
+  let nfGen = null;
   if (requested.site === 'netflix' || isNetflixId(requested.id)) {
     // Checked before /add: a turned-off Netflix never reaches the server.
     if (!(await netflixEnabled())) return { ok: false, disabled: true, error: NETFLIX_OFF };
-    return { ok: false, error: 'Netflix 擷取尚未實作' }; // TODO(step 4/5): /add → captureInPlace → gen check → /ingest
+    if (mode !== 'inplace' || typeof opts.tabId !== 'number') return { ok: false, error: NETFLIX_NO_BACKGROUND };
+    nfGen = (await readNetflix()).gen;
   }
   const canonical = requested.site === 'youtube' ? ytLearnCanonicalUrl(videoId) : null;
 
@@ -402,6 +406,7 @@ async function runJobInner(requested, opts) {
 
   const ctx = { tabId: null, owned: false };
   const t0 = Date.now();
+  let nfOff = false;
   try {
     const raw = mode === 'inplace'
       ? await captureInPlace(opts.tabId, requested)
@@ -411,6 +416,16 @@ async function runJobInner(requested, opts) {
       throw new Error(SWITCHED);
     }
     log('capture:ok', videoId, raw.events.length, 'events', Date.now() - t0, 'ms');
+    if (nfGen !== null) {
+      log('capture:ref', raw.refStatus || 'ok');
+      // Turned off (or off and on again) while capturing: this capture belongs to a dead generation.
+      const now = await readNetflix();
+      if (!now.desired || now.gen !== nfGen) {
+        log('netflix:gen-changed', nfGen, now.gen);
+        nfOff = true;
+        throw new Error(NETFLIX_OFF);
+      }
+    }
 
     const ing = await api('/ingest?attempt=' + attempt, { method: 'POST', body: raw });
     log('ingest', ing.status, JSON.stringify(ing.json));
@@ -427,7 +442,7 @@ async function runJobInner(requested, opts) {
       log('fail:unreachable', errMsg(e2));
     }
     emit({ attempt, state: 'error', message });
-    return { ok: false, error: message, attempt };
+    return nfOff ? { ok: false, disabled: true, error: message, attempt } : { ok: false, error: message, attempt };
   } finally {
     if (ctx.owned && ctx.tabId !== null) {
       await chrome.tabs.remove(ctx.tabId).catch(() => { });
@@ -444,6 +459,9 @@ async function captureInPlace(tabId, requested) {
     // Isolated world for both phases: udemy-capture.js needs vtt.js's global in the same world.
     return injectCapture(tabId, { expectLessonId: requested.id, timeoutMs: CAPTURE_TIMEOUT_MS },
       { files: ['vtt.js', 'udemy-capture.js'], world: 'ISOLATED', fn: 'ytLearnUdemyCapture' });
+  }
+  if (requested.site === 'netflix' || isNetflixId(requested.id)) {
+    return injectCapture(tabId, { expectLessonId: requested.id, timeoutMs: CAPTURE_TIMEOUT_MS }, NF_CAPTURE);
   }
   return injectCapture(tabId, { expectVideoId: requested.id, timeoutMs: CAPTURE_TIMEOUT_MS, inPlace: true });
 }
@@ -534,9 +552,8 @@ const NF_SCRIPTS = [
   { id: NF_OVERLAY_ID, js: ['overlay.js'], matches: [NF_ORIGIN], runAt: 'document_idle', world: 'ISOLATED', allFrames: false, persistAcrossSessions: true },
 ];
 const NF_SCRIPT_KEYS = ['js', 'matches', 'runAt', 'world', 'allFrames', 'persistAcrossSessions'];
-// Isolated world, both phases. TODO(step 4): 'ttml.js' goes between netflix-manifest.js and netflix-capture.js.
-const NF_CAPTURE = { files: ['netflix-manifest.js', 'netflix-capture.js'], world: 'ISOLATED', fn: 'ytLearnNetflixCapture' };
-const NF_ID_RE = /^netflix\.[0-9]{1,12}$/; // TODO(step 3): use ytLearnParseLessonId / ytLearnLessonSource
+// Isolated world, both phases (capture and probe); netflix-capture.js needs the other two files' globals.
+const NF_CAPTURE = { files: ['netflix-manifest.js', 'ttml.js', 'netflix-capture.js'], world: 'ISOLATED', fn: 'ytLearnNetflixCapture' };
 const NF_WATCH_RE = /^https:\/\/www\.netflix\.com\/watch\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
 const NF_ENABLE_PAGE = 'netflix-enable.html';
 
@@ -549,7 +566,7 @@ function nfEnqueue(fn) {
 }
 
 function isNetflixId(id) {
-  return typeof id === 'string' && NF_ID_RE.test(id.trim());
+  return typeof id === 'string' && ytLearnLessonSource(id.trim()) === 'netflix';
 }
 
 function netflixMovieIdOfUrl(url) {
