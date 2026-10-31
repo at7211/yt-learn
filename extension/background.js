@@ -14,6 +14,7 @@ const DICT_W = 520;
 const DICT_H = 760;
 const NETFLIX_OFF = 'Netflix 尚未啟用';
 const NETFLIX_NO_BACKGROUND = 'Netflix 沒有背景模式，請在 Netflix 播放頁按圖示';
+const NETFLIX_NO_PLAYER = '找不到 Netflix 播放器，請重新整理頁面';
 
 const log = (stage, ...a) => console.log('[yt-learn]', stage, ...a);
 const errMsg = (e) => String((e && e.message) || e);
@@ -44,6 +45,8 @@ const MENU = [
 ];
 // Checkbox mirroring "Netflix effectively enabled" (reconcileInner keeps it in sync).
 const NF_MENU = { id: 'ytlearn-netflix', title: '在 Netflix 啟用（開關後請重新整理頁面）' };
+// Runs the diagnostic probe on the current tab (the enable page needs ?tab=, which the icon only gives while off).
+const NF_PROBE_MENU = { id: 'ytlearn-netflix-probe', title: '診斷目前的 Netflix 分頁' };
 
 chrome.runtime.onInstalled.addListener(() => {
   // removeAll first: onInstalled also fires on update/reload, and a duplicate id is an error.
@@ -53,13 +56,18 @@ chrome.runtime.onInstalled.addListener(() => {
     };
     for (const m of MENU) chrome.contextMenus.create({ id: m.id, title: m.title, contexts: ['action'] }, created(m.id));
     chrome.contextMenus.create({ id: NF_MENU.id, title: NF_MENU.title, type: 'checkbox', checked: false, contexts: ['action'] }, created(NF_MENU.id));
+    chrome.contextMenus.create({ id: NF_PROBE_MENU.id, title: NF_PROBE_MENU.title, contexts: ['action'] }, created(NF_PROBE_MENU.id));
     reconcileNetflix().catch((e) => log('netflix:reconcile-failed', errMsg(e)));
   });
 });
 
-chrome.contextMenus.onClicked.addListener((info) => {
+chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === NF_MENU.id) {
     onNetflixMenu(info);
+    return;
+  }
+  if (info.menuItemId === NF_PROBE_MENU.id) {
+    onNetflixProbeMenu(tab).catch((e) => log('probe-menu:error', errMsg(e)));
     return;
   }
   const m = MENU.find((x) => x.id === info.menuItemId);
@@ -197,10 +205,11 @@ function youtubeRequest(videoId) {
   return { id: videoId, url: ytLearnCanonicalUrl(videoId), site: 'youtube' };
 }
 
-// Toggle the overlay in a watch tab. A tab opened before the extension was (re)loaded has no content
-// script, so on "no receiver" inject overlay.js once (it guards against double loading) and ask again.
-async function askOverlay(tabId) {
-  const ask = () => chrome.tabs.sendMessage(tabId, { type: 'ytlearn:toggle' });
+// Toggle the overlay in a watch tab ({type:'ytlearn:mount', videoId}: turn it on only, never off, and only on that lesson). A tab opened before
+// the extension was (re)loaded has no content script, so on "no receiver" inject overlay.js once (it guards
+// against double loading) and ask again.
+async function askOverlay(tabId, msg = { type: 'ytlearn:toggle' }) {
+  const ask = () => chrome.tabs.sendMessage(tabId, msg);
   try {
     return await ask();
   } catch (e) {
@@ -817,12 +826,45 @@ async function onNetflixIcon(tab) {
   const reply = await askOverlay(tab.id);
   if (reply && reply.handled) {
     log('icon:overlay', videoId);
+    clearBadge(); // e.g. the 「找不到 Netflix 播放器」 badge from before the refresh it asked for
     return;
   }
   log('icon', tab.url, videoId, 'netflix');
-  const result = await runJob({ id: videoId, url: tab.url, site: 'netflix' }, { mode: 'inplace', tabId: tab.id });
+  const requested = { id: videoId, url: tab.url, site: 'netflix' };
+  const result = await runJob(requested, { mode: 'inplace', tabId: tab.id });
   log('icon:result', JSON.stringify(result));
-  if (!result.ok && result.attempt === undefined) showBadgeError(result.error);
+  if (!result.ok) {
+    if (result.attempt === undefined) showBadgeError(result.error);
+    return;
+  }
+  // Built (or already done / in progress) without an overlay: ask once more so it mounts if a player exists
+  // now; otherwise say so instead of finishing silently.
+  // mount, not toggle: an overlay the user turned on meanwhile must stay on; videoId: a tab that moved on to
+  // another episode is left alone (the mount never builds a lesson for an episode nobody asked for).
+  const again = await askOverlay(tab.id, { type: 'ytlearn:mount', videoId: requested.id });
+  if (again && again.handled) {
+    log('icon:overlay-after-job', videoId);
+    clearBadge();
+    return;
+  }
+  showBadgeError(NETFLIX_NO_PLAYER);
+}
+
+// Action menu 「診斷目前的 Netflix 分頁」: not a watch page → the enable page without ?tab (its note explains);
+// off → the enable page for that tab (shows 未啟用); on → run the probe and show #probe.
+async function onNetflixProbeMenu(tab) {
+  const tabId = tab && typeof tab.id === 'number' ? tab.id : null;
+  if (tabId === null || !netflixMovieIdOfUrl(tab.url)) {
+    await openNetflixEnablePage(null);
+    return;
+  }
+  if (!(await netflixEnabled())) {
+    await openNetflixEnablePage(tabId);
+    return;
+  }
+  await chrome.storage.session.set({ netflixProbe: { state: 'running', tabId, at: Date.now() } });
+  await openNetflixEnablePage(tabId, '#probe');
+  await runNetflixProbe(tabId);
 }
 
 // Diagnostic probe in a Netflix watch tab. Result (or error) lands in storage.session.netflixProbe, where the

@@ -77,7 +77,9 @@
       ready.then(() => { if (site && O.siteOffApplies(msg, site.name)) disable('site-off'); }, () => { });
       return false;
     }
-    if (!msg || msg.type !== 'ytlearn:toggle') return false;
+    // ytlearn:toggle = the icon; ytlearn:mount = the worker after a capture it ran itself (turn on, never off).
+    if (!msg || (msg.type !== 'ytlearn:toggle' && msg.type !== 'ytlearn:mount')) return false;
+    const mountOnly = msg.type === 'ytlearn:mount';
     // Answer once the imports are done (a freshly injected overlay must not say {handled:false} just
     // because it is still loading). A page whose route we cannot read (e.g. URL and ytd-watch-flexy
     // disagree mid-navigation) is left to the worker's fallback flow.
@@ -85,13 +87,15 @@
       // Switched off on this page: say handled so the worker does not fall back to a capture, do nothing.
       if (S && S.disabled) { sendResponse({ handled: true }); return; }
       const id = currentVideoId();
+      // A mount for another lesson (the tab moved on to another episode while the worker captured): leave it.
+      if (mountOnly && id !== msg.videoId) { sendResponse({ handled: true }); return; }
       // No player on the page (an article-type Udemy lecture, YouTube mid-navigation): let the worker's
       // fallback flow run instead of silently building with nowhere to show the pill. Toggling an
       // overlay that is already up or building still works even if the player vanished.
       const handled = !!id && (S.mounted || S.building || !!findPlayer());
       sendResponse({ handled });
       if (!handled) return;
-      if (id) onToggle().catch((e) => log('toggle:error', String(e && e.message || e)));
+      if (id) onToggle(mountOnly).catch((e) => log('toggle:error', String(e && e.message || e)));
     }, () => sendResponse({ handled: false }));
     return true;
   });
@@ -137,13 +141,13 @@
     if (site && site.name === 'netflix') window.postMessage({ type: 'ytlearn:nf-off' }, 'https://www.netflix.com');
   }
 
-  async function onToggle() {
+  async function onToggle(mountOnly = false) {
     await ready;
     if (S.disabled) return;
     syncRoute();
-    const r = O.toggle(S);
+    const r = mountOnly ? O.mountOnly(S) : O.toggle(S);
     S = r.state;
-    log('toggle', S.videoId, r.action);
+    log(mountOnly ? 'mount' : 'toggle', S.videoId, r.action);
     if (r.action === 'teardown') teardownAll();
     else if (r.action === 'load') { teardownAll(); load(O.tokenOf(S), { build: true }); }
   }
@@ -618,7 +622,8 @@
     t = Math.max(0, t);
     const play = m.video.paused;
     const bySite = typeof site.seek === 'function' && site.seek(m.video, t, { play, lessonId: m.tok.videoId, gen: m.tok.gen }) === true;
-    if (!bySite) {
+    // Defense in depth: on Netflix video.currentTime is never written (error M7375), whatever the adapter said.
+    if (!bySite && site.name !== 'netflix') {
       m.video.currentTime = t;
       if (play) m.video.play().catch(() => { });
     }

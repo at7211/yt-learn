@@ -87,6 +87,13 @@ export function toggle(s) {
   return { state: { ...s, on: true, gen: s.gen + 1 }, action: 'load' };
 }
 
+// ytlearn:mount (the worker's ask after a capture it ran without the overlay): turn on like toggle, but an
+// overlay that is already on (mounted or building) is left alone instead of being turned off.
+export function mountOnly(s) {
+  if (s.disabled || s.videoId === null || s.mounted || s.building) return { state: s, action: 'none' };
+  return toggle(s);
+}
+
 // Everything on the page is being torn down (overlay, pill, player wait, poll): a new gen, so async work
 // started before (a lesson reply, a waitForPlayer, a build poll) finds itself stale and never mounts late.
 export function teardown(s) {

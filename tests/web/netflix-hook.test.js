@@ -21,7 +21,7 @@ const manifestText = (movieId, { old = false, wrap = true } = {}) => {
 };
 
 // player: {movieId, currentMs, durationMs, sessionId} | null
-function page({ path = '/watch/81234567', player = { movieId: 81234567, currentMs: 61000, durationMs: 1500000 }, metadata, domTitle, beforeHook } = {}) {
+function page({ path = '/watch/81234567', player = { movieId: 81234567, currentMs: 61000, durationMs: 1500000 }, metadata, domTitle, domEl, beforeHook } = {}) {
   const posted = [];
   const listeners = [];
   const calls = { seek: [], play: [] };
@@ -34,7 +34,7 @@ function page({ path = '/watch/81234567', player = { movieId: 81234567, currentM
       setTimeout(() => { for (const f of listeners.slice()) f({ source: win, origin: ORIGIN, data: plain(data) }); }, 0);
     },
     document: {
-      querySelector: (s) => (s === '[data-uia="video-title"]' && domTitle ? { textContent: domTitle, querySelector: () => null } : null),
+      querySelector: (s) => (s !== '[data-uia="video-title"]' ? null : domEl || (domTitle ? { textContent: domTitle, querySelector: () => null } : null)),
     },
   };
   if (player) {
@@ -213,6 +213,51 @@ test('nf-get: missing seq -> only the episode title; no matching episode -> the 
     d.parse(manifestText(81234567));
     assert.equal((await get(d, '81234567')).title, 'Dom Title');
   }
+});
+
+test('nf-get: a series whose seasons lack this episode (lazy seasons) -> DOM title first (show kept), series name last; a movie keeps its metadata title', async () => {
+  const lazy = () => showMeta({ seasons: [{ seq: 1, episodes: [{ id: 1, title: 'X', seq: 1 }] }] });
+  const d = page({ metadata: lazy, domTitle: 'S3:E2 Later' });
+  d.parse(manifestText(81234567));
+  const a = await get(d, '81234567');
+  assert.deepEqual([a.title, a.show], ['S3:E2 Later', 'Some Show']);
+  const n = page({ metadata: lazy });
+  n.parse(manifestText(81234567));
+  const b = await get(n, '81234567');
+  assert.equal(b.title, 'Some Show');
+  assert.equal('show' in b, false);
+  const movie = page({ metadata: () => ({ _metadataObject: { video: { title: 'A Movie', type: 'movie', seasons: [] } } }), domTitle: 'Dom Title' });
+  movie.parse(manifestText(81234567));
+  const c = await get(movie, '81234567');
+  assert.equal(c.title, 'A Movie');
+  assert.equal('show' in c, false);
+});
+
+// Fake DOM nodes: text nodes and elements with childNodes; textContent concatenates like the real DOM.
+const txt = (t) => ({ nodeType: 3, textContent: t, childNodes: [] });
+const elm = (tag, kids) => ({ nodeType: 1, tagName: tag, childNodes: kids, get textContent() { return kids.map((k) => k.textContent).join(''); },
+  querySelector: (q) => (q === 'h4' ? findTag(kids, 'H4') : null) });
+const findTag = (kids, tag) => { for (const k of kids) { if (k.tagName === tag) return k; const f = k.childNodes && findTag(k.childNodes, tag); if (f) return f; } return null; };
+
+test('nf-get DOM fallback: <h4>show</h4><span>S3:E2</span><span>episode</span> -> title without the show, parts spaced; h4 -> show', async () => {
+  const el = elm('DIV', [elm('H4', [txt('Some Show')]), elm('SPAN', [txt('S3:E2')]), elm('SPAN', [txt('  The  Episode ')])]);
+  assert.equal(el.textContent, 'Some ShowS3:E2  The  Episode ', 'what textContent alone would give');
+  const p = page({ domEl: el });
+  p.parse(manifestText(81234567));
+  const r = await get(p, '81234567');
+  assert.deepEqual([r.title, r.show], ['S3:E2 The Episode', 'Some Show']);
+  // h4 nested deeper, plus a bare text node
+  const el2 = elm('DIV', [elm('DIV', [elm('H4', [txt('Show')]), txt('E1')]), elm('SPAN', [txt('Pilot')])]);
+  const q = page({ domEl: el2 });
+  q.parse(manifestText(81234567));
+  const r2 = await get(q, '81234567');
+  assert.deepEqual([r2.title, r2.show], ['E1 Pilot', 'Show']);
+  // a movie: no h4 -> the whole text, no show
+  const m = page({ domEl: elm('DIV', [elm('SPAN', [txt('A Movie')])]) });
+  m.parse(manifestText(81234567));
+  const r3 = await get(m, '81234567');
+  assert.equal(r3.title, 'A Movie');
+  assert.equal('show' in r3, false);
 });
 
 test('unknownShape is per movieId: a suspected-but-unreadable manifest -> unsupported for that movie only; a later good one wins', async () => {

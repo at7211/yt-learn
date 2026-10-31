@@ -138,7 +138,7 @@ export const netflix = Object.freeze({
   lessonId: (url) => netflixLessonId(url),
   findPlayer: netflixFindPlayer,
   isAd: () => false,
-  nativeCaptionCss: NF_ROOT + '.' + ON_CLASS + ' .player-timedtext{opacity:0}',
+  nativeCaptionCss: NF_ROOT + '.' + ON_CLASS + ' .player-timedtext{opacity:0 !important}', // Netflix sets inline styles on these nodes
   // pushState episode changes fire nothing; the engine's 1 s route poll catches them.
   navEvents: Object.freeze([Object.freeze({ target: 'window', name: 'popstate' })]),
   // Never video.currentTime on Netflix (it trips error M7375): the hook calls the player API instead.

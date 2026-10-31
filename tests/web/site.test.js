@@ -119,7 +119,7 @@ test('netflix.findPlayer: .watch-video--player-view and the first video inside i
 
 test('netflix: never an ad, hides .player-timedtext while on, popstate on window, has its own seek', () => {
   assert.equal(netflix.isAd(elem({}, {}, ['ad-showing'])), false);
-  assert.equal(netflix.nativeCaptionCss, '.watch-video--player-view.ytlearn-on .player-timedtext{opacity:0}');
+  assert.equal(netflix.nativeCaptionCss, '.watch-video--player-view.ytlearn-on .player-timedtext{opacity:0 !important}');
   assert.deepEqual(netflix.navEvents.map((e) => ({ ...e })), [{ target: 'window', name: 'popstate' }]);
   assert.equal(typeof netflix.seek, 'function');
   assert.equal(typeof netflix.cancelSeek, 'function');

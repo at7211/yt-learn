@@ -19,7 +19,7 @@ const LESSON = { videoId: VID, cues: [], words: [], vocab: [] };
 function load(routes = {}, { toggleReply, executeScript, windows, nf = {} } = {}) {
   const calls = { fetched: [], created: [], sent: [], removed: [], sessionSets: [], bodies: {}, menus: [], menuOps: [],
     winCreated: [], winUpdated: [], tabQueries: [], tabUpdates: [], localSets: [], permOps: [], scriptOps: [],
-    menuUpdates: [], reloaded: [], order: [] };
+    menuUpdates: [], reloaded: [], order: [], titles: [] };
   const local = JSON.parse(JSON.stringify(nf.local || {}));
   const perm = { granted: nf.perm === true };
   const registered = new Map((nf.registered || []).map((r) => [r.id, JSON.parse(JSON.stringify(r))]));
@@ -72,7 +72,7 @@ function load(routes = {}, { toggleReply, executeScript, windows, nf = {} } = {}
         return r;
       },
     },
-    action: { onClicked: on('clicked'), setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {}, setTitle: async () => {} },
+    action: { onClicked: on('clicked'), setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {}, setTitle: async (o) => { calls.titles.push(o.title); } },
     storage: {
       session: { get: async (k) => ({ [k]: store[k] }), set: async (o) => { calls.sessionSets.push(JSON.stringify(o)); Object.assign(store, o); } },
       local: {
@@ -293,16 +293,17 @@ test('ping still answered synchronously', async () => {
   assert.equal(r.version, '1.3.1');
 });
 
-test('install builds the action menu items (two links + the Netflix checkbox) after removeAll, and reinstall does not duplicate them', () => {
+test('install builds the action menu items (two links + the Netflix checkbox + the probe item) after removeAll, and reinstall does not duplicate them', () => {
   const w = load();
   w.listeners.installed({ reason: 'install' });
   w.listeners.installed({ reason: 'update' });
-  assert.deepEqual(w.calls.menuOps, ['removeAll', 'create:ytlearn-home', 'create:ytlearn-settings', 'create:ytlearn-netflix',
-    'removeAll', 'create:ytlearn-home', 'create:ytlearn-settings', 'create:ytlearn-netflix']);
+  assert.deepEqual(w.calls.menuOps, ['removeAll', 'create:ytlearn-home', 'create:ytlearn-settings', 'create:ytlearn-netflix', 'create:ytlearn-netflix-probe',
+    'removeAll', 'create:ytlearn-home', 'create:ytlearn-settings', 'create:ytlearn-netflix', 'create:ytlearn-netflix-probe']);
   assert.deepEqual(JSON.parse(JSON.stringify(w.calls.menus)), [
     { id: 'ytlearn-home', title: '打開 yt-learn 首頁', contexts: ['action'] },
     { id: 'ytlearn-settings', title: '設定', contexts: ['action'] },
     { id: 'ytlearn-netflix', title: '在 Netflix 啟用（開關後請重新整理頁面）', type: 'checkbox', checked: false, contexts: ['action'] },
+    { id: 'ytlearn-netflix-probe', title: '診斷目前的 Netflix 分頁', contexts: ['action'] },
   ]);
 });
 
@@ -995,35 +996,103 @@ test('icon on a Netflix watch page while on: overlay answers {handled:true} -> n
   assert.equal(w.store.netflixProbe, undefined, 'the icon no longer runs the probe');
 });
 
-test('icon on a Netflix watch page while on: overlay not handled -> runJob inplace in that tab (NF_CAPTURE); no local page opened', async () => {
+const NO_PLAYER = 'yt-learn：找不到 Netflix 播放器，請重新整理頁面';
+
+test('icon on a Netflix watch page while on: overlay not handled -> runJob inplace (NF_CAPTURE); then asks the overlay again; handled -> no badge, no local page', async () => {
   const injected = [];
-  const w = load(nfRoutes(), { toggleReply: { handled: false }, executeScript: captureScript(nfRaw, injected), nf: { local: { netflix: ON }, perm: true, tabUrls: { 7: NURL } } });
+  const w = load(nfRoutes(), { toggleReply: [{ handled: false }, { handled: true }], executeScript: captureScript(nfRaw, injected), nf: { local: { netflix: ON }, perm: true, tabUrls: { 7: NURL } } });
   await settle();
   await w.ctx.onIconClicked({ id: 7, url: NURL });
-  assert.equal(w.calls.sent.length, 1);
+  assert.deepEqual(plain(w.calls.sent.map((x) => x.msg)), [{ type: 'ytlearn:toggle' }, { type: 'ytlearn:mount', videoId: NID }], 'asked again after the job, mount-only, for the captured episode');
   assert.deepEqual(w.calls.fetched, ['POST /add', 'POST /jobs/' + NID + '/claim', 'POST /ingest?attempt=1']);
   assert.deepEqual(plain(w.calls.bodies['POST /add']), { url: NURL });
   assert.deepEqual(plain(injected[0]), { target: { tabId: 7 }, files: ['netflix-manifest.js', 'ttml.js', 'netflix-capture.js'], world: 'ISOLATED' });
   assert.deepEqual(plain(injected[1].args), ['ytLearnNetflixCapture', { expectLessonId: NID, timeoutMs: 25000 }]);
   assert.deepEqual(w.calls.created, [], 'Netflix has no local player: no index.html tab');
+  assert.ok(!w.calls.titles.includes(NO_PLAYER));
   assert.equal(w.store.netflixProbe, undefined);
 });
 
-test('icon on a Netflix watch page while on: no receiver -> overlay.js injected, asked again; still not handled -> job; a lesson already done -> nothing opened', async () => {
-  const injected = [];
-  const w = load(nfRoutes({ 'POST /add': { status: 200, json: { job: { videoId: NID, state: 'done', attempt: 1, message: '完成' } } } }),
-    { toggleReply: [NO_RECEIVER, { handled: false }], executeScript: async (o) => { injected.push(o); return [{}]; }, nf: { local: { netflix: ON }, perm: true } });
+test('icon on a Netflix watch page while on: job ok but the overlay still declines -> badge 「找不到 Netflix 播放器」', async () => {
+  const w = load(nfRoutes(), { toggleReply: { handled: false }, executeScript: captureScript(nfRaw, []), nf: { local: { netflix: ON }, perm: true } });
   await settle();
   await w.ctx.onIconClicked({ id: 7, url: NURL });
-  assert.deepEqual(plain(injected), [{ target: { tabId: 7 }, files: ['overlay.js'] }]);
-  assert.equal(w.calls.sent.length, 2);
-  assert.deepEqual(w.calls.fetched, ['POST /add']);
+  assert.deepEqual(plain(w.calls.sent.map((x) => x.msg.type)), ['ytlearn:toggle', 'ytlearn:mount']);
+  assert.ok(w.calls.titles.includes(NO_PLAYER));
   assert.deepEqual(w.calls.created, []);
 });
 
-test('background.js: no TODO(step …) markers left; the probe stays reachable from the enable page only', () => {
+test('icon on a Netflix watch page while on: no receiver (twice) -> job (already done) -> still no receiver -> badge; nothing opened', async () => {
+  const injected = [];
+  const w = load(nfRoutes({ 'POST /add': { status: 200, json: { job: { videoId: NID, state: 'done', attempt: 1, message: '完成' } } } }),
+    { toggleReply: NO_RECEIVER, executeScript: async (o) => { injected.push(o); throw new Error('Cannot access contents of the page'); }, nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  await w.ctx.onIconClicked({ id: 7, url: NURL });
+  assert.deepEqual(plain(injected), [{ target: { tabId: 7 }, files: ['overlay.js'] }, { target: { tabId: 7 }, files: ['overlay.js'] }]);
+  assert.deepEqual(plain(w.calls.sent.map((x) => x.msg.type)), ['ytlearn:toggle', 'ytlearn:mount'], 'injection fails, so each ask is sent once');
+  assert.deepEqual(w.calls.fetched, ['POST /add']);
+  assert.ok(w.calls.titles.includes(NO_PLAYER));
+  assert.deepEqual(w.calls.created, []);
+});
+
+test('icon on a Netflix watch page: after a 「找不到 Netflix 播放器」 badge, an overlay-handled click (after the refresh) resets the title', async () => {
+  const w = load(nfRoutes(), { toggleReply: [{ handled: false }, { handled: false }, { handled: true }], executeScript: captureScript(nfRaw, []), nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  await w.ctx.onIconClicked({ id: 7, url: NURL });
+  assert.equal(w.calls.titles.at(-1), NO_PLAYER);
+  const fetched = w.calls.fetched.length;
+  await w.ctx.onIconClicked({ id: 7, url: NURL });
+  assert.equal(w.calls.titles.at(-1), 'yt-learn：把這支影片變成課程', 'DEFAULT_TITLE again');
+  assert.equal(w.calls.fetched.length, fetched, 'the overlay took it: no job');
+  // the post-job mount handled -> also cleared
+  const v = load(nfRoutes(), { toggleReply: [{ handled: false }, { handled: true }], executeScript: captureScript(nfRaw, []), nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  await v.ctx.onIconClicked({ id: 7, url: NURL });
+  assert.ok(!v.calls.titles.includes(NO_PLAYER));
+  assert.equal(v.calls.titles.at(-1), 'yt-learn：把這支影片變成課程');
+});
+
+test('icon on a Netflix watch page while on: the job fails -> its own error, the overlay is not asked again', async () => {
+  const w = load({}, { toggleReply: { handled: false }, nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  await w.ctx.onIconClicked({ id: 7, url: NURL });
+  assert.equal(w.calls.sent.length, 1);
+  assert.ok(!w.calls.titles.includes(NO_PLAYER));
+  assert.deepEqual(w.calls.titles, ['yt-learn：本機 server 沒有回應（請確認 python3 server.py 正在執行）']);
+});
+
+test('menu 「診斷目前的 Netflix 分頁」: not a watch page -> enable page without ?tab; off -> ?tab=<id>; on -> probe + #probe', async () => {
+  const notWatch = load({}, { nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  notWatch.listeners.menuClicked({ menuItemId: 'ytlearn-netflix-probe' }, { id: 7, url: 'https://www.netflix.com/browse' });
+  notWatch.listeners.menuClicked({ menuItemId: 'ytlearn-netflix-probe' }, undefined);
+  await settle();
+  assert.deepEqual(plain(notWatch.calls.created), [{ url: ENABLE_PAGE, active: true }, { url: ENABLE_PAGE, active: true }]);
+  const off = load({}, { nf: { perm: false } });
+  await settle();
+  off.listeners.menuClicked({ menuItemId: 'ytlearn-netflix-probe' }, { id: 7, url: NURL });
+  await settle();
+  assert.deepEqual(plain(off.calls.created), [{ url: ENABLE_PAGE + '?tab=7', active: true }]);
+  assert.equal(off.store.netflixProbe, undefined);
+  const injected = [];
+  const on = load({}, { executeScript: captureScript(probeResult, injected), nf: { local: { netflix: ON }, perm: true, tabUrls: { 7: NURL } } });
+  await settle();
+  on.listeners.menuClicked({ menuItemId: 'ytlearn-netflix-probe' }, { id: 7, url: NURL });
+  await settle();
+  assert.deepEqual(plain(on.calls.created), [{ url: ENABLE_PAGE + '?tab=7#probe', active: true }]);
+  assert.ok(on.calls.sessionSets.some((x) => JSON.parse(x).netflixProbe && JSON.parse(x).netflixProbe.state === 'running'));
+  assert.deepEqual(plain(injected[0]), { target: { tabId: 7 }, files: ['netflix-manifest.js', 'ttml.js', 'netflix-capture.js'], world: 'ISOLATED' });
+  assert.equal(injected[1].world, 'ISOLATED');
+  assert.deepEqual(plain(injected[1].args), ['ytLearnNetflixCapture', { probe: true, expectLessonId: NID, timeoutMs: 25000 }]);
+  const rec = plain(on.store.netflixProbe);
+  assert.deepEqual({ state: rec.state, ok: rec.ok, tabId: rec.tabId }, { state: 'done', ok: true, tabId: 7 });
+  assert.deepEqual(rec.result, probeResult);
+  assert.deepEqual(on.calls.fetched, [], 'the probe never talks to the server');
+});
+
+test('background.js: no TODO(step …) markers left; the icon never starts the probe (enable page + action menu do)', () => {
   assert.ok(!/TODO\(step/.test(SRC));
-  const icon = SRC.slice(SRC.indexOf('async function onNetflixIcon'), SRC.indexOf('// Diagnostic probe in a Netflix watch tab'));
+  const icon = SRC.slice(SRC.indexOf('async function onNetflixIcon'), SRC.indexOf('// Action menu 「診斷目前的 Netflix 分頁」'));
   assert.ok(!/runNetflixProbe\(|#probe/.test(icon), 'the icon flow does not start the probe');
   assert.ok(/ytlearn:netflix-probe/.test(SRC));
 });
@@ -1038,6 +1107,12 @@ test('netflix-probe from the enable page: off -> {disabled:true}; on -> result; 
   const r = plain((await ask(on, { type: 'ytlearn:netflix-probe', tab: 7 }, PAGE_SENDER)).r);
   assert.equal(r.ok, true);
   assert.deepEqual(r.result, probeResult);
+  assert.deepEqual(plain(injected[0]), { target: { tabId: 7 }, files: ['netflix-manifest.js', 'ttml.js', 'netflix-capture.js'], world: 'ISOLATED' });
+  assert.equal(injected[1].world, 'ISOLATED');
+  assert.deepEqual(plain(injected[1].target), { tabId: 7 });
+  assert.deepEqual(plain(injected[1].args), ['ytLearnNetflixCapture', { probe: true, expectLessonId: NID, timeoutMs: 25000 }]);
+  assert.equal(plain(on.store.netflixProbe).state, 'done');
+  assert.deepEqual(on.calls.fetched, [], 'the probe never talks to the server');
   const notWatch = plain((await ask(on, { type: 'ytlearn:netflix-probe', tab: 8 }, PAGE_SENDER)).r);
   assert.deepEqual(notWatch, { ok: false, error: '這個分頁不是 Netflix 播放頁' });
   assert.equal(injected.length, 2, 'only the watch tab got the probe');

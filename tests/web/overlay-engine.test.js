@@ -3,7 +3,7 @@
 // engine runs against the real site.js / overlay-state.js / timing.js. Covers what only the engine can show:
 // persistent disable (site-off, {disabled:true} replies), toggle after disable, seek routing (Netflix never
 // writes video.currentTime), and the navEvents {target, name} binding.
-import { test } from 'node:test';
+import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -16,6 +16,32 @@ const YURL = 'https://www.youtube.com/watch?v=puh91fohvTA';
 const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 const plain = (x) => JSON.parse(JSON.stringify(x));
 let modSeq = 0;
+const booted = [];
+// site.js's default Netflix seeker runs a real 1 s ack timer in this process: drop it after every test.
+afterEach(() => { while (booted.length) booted.pop().cleanup(); });
+
+// Controllable clock for the vm: setTimeout / setInterval queue up, tick(ms) runs what falls due in order.
+function fakeClock() {
+  let now = 0;
+  let nextId = 1;
+  const timers = new Map(); // id -> { at, f, every }
+  const add = (f, ms, every) => { const id = nextId++; const d = Math.max(0, Number(ms) || 0); timers.set(id, { at: now + d, f, every: every ? Math.max(1, d) : 0 }); return id; };
+  const clear = (id) => { timers.delete(id); };
+  const tick = (ms) => {
+    const end = now + ms;
+    for (;;) {
+      let next = null;
+      for (const [id, t] of timers) if (t.at <= end && (!next || t.at < next[1].at || (t.at === next[1].at && id < next[0]))) next = [id, t];
+      if (!next) break;
+      const [id, t] = next;
+      now = t.at;
+      if (t.every) t.at += t.every; else timers.delete(id);
+      t.f();
+    }
+    now = end;
+  };
+  return { setTimeout: (f, ms) => add(f, ms, false), setInterval: (f, ms) => add(f, ms, true), clearTimeout: clear, clearInterval: clear, tick, pending: () => timers.size };
+}
 
 function fakeEl(tag = 'div') {
   const classes = new Set();
@@ -63,7 +89,7 @@ const LESSON = (id) => ({
   cues: [{ a: 0, b: 0, tokens: ['hello'], zh: '哈囉' }, { a: 1, b: 1, tokens: ['world'], zh: '世界' }],
 });
 
-async function boot(href, { replies = {}, hold = [] } = {}) {
+async function boot(href, { replies = {}, hold = [], position = 'absolute', adapt = null } = {}) {
   const u = new URL(href);
   const n = ++modSeq;
   const winListeners = {};
@@ -99,22 +125,30 @@ async function boot(href, { replies = {}, hold = [] } = {}) {
       onMessage: { addListener: (f) => { onMessage = f; } },
       sendMessage: (msg, cb) => {
         sentMsgs.push(plain(msg));
-        const r = replies[msg.type];
+        const r = typeof replies[msg.type] === 'function' ? replies[msg.type](msg) : replies[msg.type];
         if (hold.includes(msg.type)) held.push(() => cb(r));
         else setImmediate(() => cb(r));
       },
     },
   };
   const base = new URL('../../extension/', import.meta.url);
+  const clock = fakeClock();
+  const location = { hostname: u.hostname, href };
+  let siteMod = null;
   const ctx = {
-    chrome, document, window: win, location: { hostname: u.hostname, href },
+    chrome, document, window: win, location,
     console: { log: (...a) => logs.push(a.slice(1)) },
-    __imp: (f) => import(new URL(f, base).href + (f === 'site.js' ? '?n=' + n : '')),
-    setInterval: () => 0, setTimeout: () => 0, clearTimeout: () => { },
+    __imp: (f) => import(new URL(f, base).href + (f === 'site.js' ? '?n=' + n : '')).then((m) => {
+      if (f !== 'site.js') return m;
+      siteMod = m;
+      // adapt: hand the engine a modified adapter (e.g. a broken Netflix seek) to test the engine's own guards
+      return adapt ? { ...m, siteFor: (h) => { const a = m.siteFor(h); return a && adapt(a); } } : m;
+    }),
+    setInterval: clock.setInterval, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, clearInterval: clock.clearInterval,
     requestAnimationFrame: () => 0, cancelAnimationFrame: () => { },
     MutationObserver: class { observe() { } disconnect() { } },
     ResizeObserver: class { observe() { } disconnect() { } },
-    getComputedStyle: () => ({ position: 'absolute', lineHeight: '20' }),
+    getComputedStyle: () => ({ position, lineHeight: '20' }),
     fetch: async () => ({ text: async () => '/* css */' }),
     AbortController, Promise, Map, Set, Number, String, Math, Object, Array, JSON, Error,
   };
@@ -122,8 +156,8 @@ async function boot(href, { replies = {}, hold = [] } = {}) {
   vm.createContext(ctx);
   vm.runInContext(ENGINE, ctx);
   await flush();
-  const toggle = () => new Promise((resolve) => {
-    const ret = onMessage({ type: 'ytlearn:toggle' }, {}, (r) => resolve(plain(r)));
+  const toggle = (type = 'ytlearn:toggle', extra = {}) => new Promise((resolve) => {
+    const ret = onMessage({ type, ...(type === 'ytlearn:mount' && !('videoId' in extra) ? { videoId: lessonOf(location.href) } : {}), ...extra }, {}, (r) => resolve(plain(r)));
     assert.equal(ret, true, 'toggle answers asynchronously');
   });
   const message = (msg) => onMessage(msg, {}, () => { throw new Error('site-off must not be answered'); });
@@ -131,9 +165,14 @@ async function boot(href, { replies = {}, hold = [] } = {}) {
     const ev = { code, preventDefault() { }, stopImmediatePropagation() { }, composedPath: () => [] };
     for (const f of winListeners.keydown || []) f(ev);
   };
-  return { video, root, posted, sentMsgs, held, logs, toggle, message, key, winListeners, docListeners, win };
+  const cleanup = () => { if (siteMod) siteMod.netflix.cancelSeek(); };
+  booted.push({ cleanup });
+  const tick = async (ms) => { clock.tick(ms); await flush(); };
+  const setReply = (type, r) => { replies[type] = r; };
+  return { setReply, clock, tick, location, cleanup, video, root, posted, sentMsgs, held, logs, toggle, message, key, winListeners, docListeners, win };
 }
 
+const lessonOf = (href) => { const m = /\/watch\/([0-9]+)/.exec(href); return m ? 'netflix.' + m[1] : new URL(href).searchParams.get('v'); };
 const nfOff = (b) => b.posted.filter((p) => p.data.type === 'ytlearn:nf-off');
 const overlayHost = (b) => b.root.children.find((c) => c.id === 'ytlearn-overlay');
 
@@ -264,4 +303,134 @@ test('engine: a lesson reply that arrives after the page was torn down never mou
   await flush();
   assert.equal(overlayHost(so), undefined);
   assert.equal(so.root.children.length, 0);
+});
+
+/* ---------- with the clock: job poll, pushState episode change, posFix ---------- */
+
+test('engine on Netflix: a job poll answered {disabled:true} disables the page; no poll fires afterwards', async () => {
+  const b = await boot(NURL, { replies: { 'ytlearn:lesson': { missing: true }, 'ytlearn:build': { ok: true, inProgress: true },
+    'ytlearn:job': { job: { videoId: 'netflix.81234567', state: 'capturing', attempt: 1, message: '' } } } });
+  const replies = (t) => b.sentMsgs.filter((m) => m.type === t).length;
+  await b.toggle();
+  await flush();
+  assert.deepEqual(b.sentMsgs.map((m) => m.type), ['ytlearn:lesson', 'ytlearn:build']);
+  assert.ok(b.root.children.some((c) => c.id === 'ytlearn-pill'), 'pill shown while building');
+  b.sentMsgs.length = 0;
+  await b.tick(1999);
+  assert.equal(replies('ytlearn:job'), 0, 'not before POLL_MS');
+  await b.tick(1);
+  assert.equal(replies('ytlearn:job'), 1);
+  // the reply table is read at send time: the next poll is answered {disabled:true}
+  b.setReply('ytlearn:job', { disabled: true });
+  await b.tick(2000);
+  assert.equal(replies('ytlearn:job'), 2);
+  assert.equal(nfOff(b).length, 1, 'disabled by the poll reply');
+  assert.equal(b.root.children.length, 0, 'pill gone');
+  await b.tick(20000);
+  assert.equal(replies('ytlearn:job'), 2, 'no poll after the disable');
+  assert.equal(replies('ytlearn:lesson'), 0);
+});
+
+test('engine on Netflix: pushState episode change (href changes, no event) -> within 1 s the old overlay is torn down and the new id is routed', async () => {
+  const b = await boot(NURL, { replies: { 'ytlearn:lesson': (msg) => (msg.videoId === 'netflix.81234567' ? { lesson: LESSON('netflix.81234567') } : { missing: true }) } });
+  await b.toggle();
+  await flush();
+  assert.ok(overlayHost(b));
+  b.location.href = NF + '/watch/81234568';
+  await b.tick(999);
+  assert.ok(overlayHost(b), 'not yet: the route poll runs every 1000 ms');
+  await b.tick(1);
+  assert.equal(overlayHost(b), undefined, 'old overlay torn down');
+  assert.deepEqual(b.sentMsgs.at(-1), { type: 'ytlearn:lesson', videoId: 'netflix.81234568' }, 'the new episode is routed (autoload, no capture)');
+  assert.ok(!b.sentMsgs.some((m) => m.type === 'ytlearn:build'), 'a missing lesson does not start a capture on its own');
+  assert.equal(b.root.children.length, 0, 'no pill for a silent autoload miss');
+});
+
+test('engine on YouTube: a static player root gets position:relative while mounted and its old value back on teardown', async () => {
+  const b = await boot(YURL, { position: 'static', replies: { 'ytlearn:lesson': { lesson: LESSON('puh91fohvTA') } } });
+  b.root.style.position = '';
+  await b.toggle();
+  await flush();
+  assert.ok(overlayHost(b));
+  assert.equal(b.root.style.position, 'relative');
+  await b.toggle();
+  await flush();
+  assert.equal(overlayHost(b), undefined);
+  assert.equal(b.root.style.position, '', 'restored');
+});
+
+test('engine on Netflix: defense in depth — even an adapter whose seek returns false (or is missing) never gets video.currentTime written', async () => {
+  for (const adapt of [(a) => ({ ...a, seek: () => false }), (a) => { const { seek, ...rest } = a; void seek; return rest; }]) {
+    const b = await boot(NURL, { adapt, replies: { 'ytlearn:lesson': { lesson: LESSON('netflix.81234567') } } });
+    await b.toggle();
+    await flush();
+    assert.ok(overlayHost(b));
+    b.video.currentTime = 11;
+    b.video.sets.length = 0;
+    b.key('KeyR');
+    b.key('BracketRight');
+    assert.deepEqual(b.video.sets, [], 'no currentTime write on Netflix');
+    assert.equal(b.video.plays, 0);
+  }
+  // the same broken adapter on YouTube still seeks by currentTime (the guard is Netflix-only)
+  const y = await boot(YURL, { adapt: (a) => ({ ...a, seek: () => false }), replies: { 'ytlearn:lesson': { lesson: LESSON('puh91fohvTA') } } });
+  await y.toggle();
+  await flush();
+  y.video.currentTime = 11;
+  y.video.sets.length = 0;
+  y.key('KeyR');
+  assert.deepEqual(y.video.sets, [10]);
+});
+
+test('engine: ytlearn:mount leaves a mounted or building overlay on, turns an off one on, and is a no-op once disabled', async () => {
+  const b = await boot(NURL, { replies: { 'ytlearn:lesson': { lesson: LESSON('netflix.81234567') } } });
+  await b.toggle();
+  await flush();
+  const host = overlayHost(b);
+  assert.ok(host);
+  assert.deepEqual(await b.toggle('ytlearn:mount'), { handled: true });
+  await flush();
+  assert.equal(overlayHost(b), host, 'same overlay, still mounted (a toggle would have removed it)');
+  assert.equal(b.sentMsgs.length, 1, 'no new lesson request');
+  // building: the pending build is kept
+  const k = await boot(NURL, { replies: { 'ytlearn:lesson': { missing: true }, 'ytlearn:build': { ok: true, inProgress: true } }, hold: ['ytlearn:build'] });
+  await k.toggle();
+  await flush();
+  assert.ok(k.root.children.some((c) => c.id === 'ytlearn-pill'));
+  assert.deepEqual(await k.toggle('ytlearn:mount'), { handled: true });
+  await flush();
+  assert.ok(k.root.children.some((c) => c.id === 'ytlearn-pill'), 'pill (build) still there');
+  assert.deepEqual(k.sentMsgs.map((m) => m.type), ['ytlearn:lesson', 'ytlearn:build']);
+  // off (turned off by the user) -> mount turns it on like a toggle
+  await b.toggle();
+  await flush();
+  assert.equal(overlayHost(b), undefined);
+  assert.deepEqual(await b.toggle('ytlearn:mount'), { handled: true });
+  await flush();
+  assert.ok(overlayHost(b), 'mounted again');
+  // disabled -> handled, nothing happens
+  b.message({ type: 'ytlearn:site-off', site: 'netflix' });
+  await flush();
+  const sent = b.sentMsgs.length;
+  assert.deepEqual(await b.toggle('ytlearn:mount'), { handled: true });
+  await flush();
+  assert.equal(b.sentMsgs.length, sent);
+  assert.equal(overlayHost(b), undefined);
+});
+
+test('engine: ytlearn:mount for another episode (the tab moved on) -> {handled:true}, nothing loaded or built', async () => {
+  const b = await boot(NF + '/watch/81234568', { replies: { 'ytlearn:lesson': { missing: true }, 'ytlearn:build': { ok: true } } });
+  assert.deepEqual(await b.toggle('ytlearn:mount', { videoId: 'netflix.81234567' }), { handled: true });
+  await flush();
+  assert.deepEqual(b.sentMsgs, [], 'no lesson request, no build for an episode nobody asked for');
+  assert.equal(b.root.children.length, 0);
+  for (const extra of [{ videoId: undefined }, { videoId: 81234568 }]) {
+    assert.deepEqual(await b.toggle('ytlearn:mount', extra), { handled: true });
+    await flush();
+    assert.deepEqual(b.sentMsgs, [], JSON.stringify(extra));
+  }
+  // the matching id mounts as before
+  assert.deepEqual(await b.toggle('ytlearn:mount', { videoId: 'netflix.81234568' }), { handled: true });
+  await flush();
+  assert.deepEqual(b.sentMsgs.map((m) => m.type), ['ytlearn:lesson', 'ytlearn:build']);
 });

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   watchVideoId, lessonIdFromUrl, initialState, tokenOf, isStale, navigate, toggle, markMounted, markBuilding, markIdle,
   pillText, jobPhase, OWN_KEYS, isEditable, keyAction, adShowing, cueForNav, cueSeekTarget,
-  teardown, disable, siteOffApplies, replyDisables,
+  teardown, disable, siteOffApplies, replyDisables, mountOnly,
 } from '../../extension/overlay-state.js';
 
 const A = 'puh91fohvTA';
@@ -359,5 +359,29 @@ test('replyDisables: only disabled === true', () => {
   assert.equal(replyDisables({ ok: false, disabled: true, error: 'Netflix 尚未啟用' }), true);
   for (const r of [null, undefined, {}, { disabled: false }, { disabled: 'true' }, { error: 'x' }, { lesson: {} }, 'disabled']) {
     assert.equal(replyDisables(r), false, JSON.stringify(r));
+  }
+});
+
+test('mountOnly: off -> load exactly like toggle; already mounted or building -> no-op (never turns off); disabled / no lesson -> no-op', () => {
+  const off = navigate(initialState(), 'netflix.81234567', 0).state;
+  assert.deepEqual(mountOnly(off), toggle(off));
+  assert.equal(mountOnly(off).action, 'load');
+  const on = toggle(off).state;
+  const tok = tokenOf(on);
+  const building = markBuilding(on, tok);
+  const mounted = markMounted(on, tok);
+  for (const s of [building, mounted]) {
+    const r = mountOnly(s);
+    assert.equal(r.state, s);
+    assert.equal(r.action, 'none');
+    assert.equal(isStale(r.state, tok), false, 'the running build / mounted overlay stays current');
+  }
+  // turned off by the user (mounted -> toggle) -> mount turns it on again
+  const userOff = toggle(mounted).state;
+  assert.equal(mountOnly(userOff).action, 'load');
+  for (const s of [disable(mounted), initialState()]) {
+    const r = mountOnly(s);
+    assert.equal(r.state, s);
+    assert.equal(r.action, 'none');
   }
 });

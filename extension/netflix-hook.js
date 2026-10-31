@@ -143,22 +143,45 @@
         if (ep) {
           out.title = ep;
           if (show && show !== ep) out.show = show;
+        } else if (video.type !== 'movie') {
+          // A series whose seasons list lacks this episode (seasons load lazily): the DOM title first,
+          // the series name only as the last resort.
+          Object.assign(out, domTitle());
+          if (!out.title && show) out.title = show;
+          else if (out.title && show && !out.show && show !== out.title) out.show = show;
         } else if (show) {
           out.title = show;
         }
       }
     } catch (e) { /* not available */ }
-    if (!out.title) {
-      try {
-        const el = document.querySelector('[data-uia="video-title"]');
-        const t = clip(el && el.textContent);
-        if (t) out.title = t;
-        const h = el && el.querySelector('h4');
-        const show = clip(h && h.textContent);
-        if (show && !out.show && show !== t) out.show = show;
-      } catch (e) { /* no DOM title */ }
-    }
+    if (!out.title) Object.assign(out, domTitle());
     return out;
+  }
+
+  // Fallback only: [data-uia="video-title"] is absent while paused without mouse movement.
+  function domTitle() {
+    const out = {};
+    try {
+      const el = document.querySelector('[data-uia="video-title"]');
+      const h = el && el.querySelector('h4');
+      // <h4>show</h4><span>S3:E2</span><span>episode</span>: the title is everything but the h4, the parts
+      // joined by spaces (el.textContent would glue them: 'ShowS3:E2episode').
+      const t = clip(el && textWithout(el, h, 0));
+      if (t) out.title = t;
+      const show = clip(h && h.textContent);
+      if (show && show !== t) out.show = show;
+    } catch (e) { /* no DOM title */ }
+    return out;
+  }
+
+  // Text of `node` without the text of `skip`, child parts joined by spaces. Small, shallow DOM: depth capped.
+  function textWithout(node, skip, depth) {
+    if (!node || node === skip) return '';
+    const kids = node.childNodes;
+    if (!kids || !kids.length || depth > 8) return typeof node.textContent === 'string' ? node.textContent : '';
+    const parts = [];
+    for (let i = 0; i < kids.length; i++) parts.push(textWithout(kids[i], skip, depth + 1));
+    return parts.join(' ');
   }
 
   function currentMs(p) {
