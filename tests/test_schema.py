@@ -92,3 +92,57 @@ def test_lesson_rejects_non_increasing_cue_starts():
     les["words"][k]["t"] = les["words"][0]["t"]
     les["words"][k]["e"] = max(les["words"][k]["e"], les["words"][k]["t"])
     assert any("cue" in e and "later" in e for e in schema.validate_lesson(les))
+
+
+UDEMY_URL = "https://www.udemy.com/course/30-days-of-python/learn/lecture/5800738"
+UDEMY = {"videoId": "udemy.5800738", "source": "udemy", "sourceUrl": UDEMY_URL}
+
+
+def test_raw_accepts_udemy_id_with_and_without_source_fields():
+    assert schema.validate_raw(mod(**UDEMY)) == []
+    assert schema.validate_raw(mod(**dict(UDEMY, sourceUrl=UDEMY_URL + "/?start=0#overview"))) == []
+    assert schema.validate_raw(mod(videoId="udemy.5800738")) == []
+    assert schema.validate_raw(mod(source="youtube")) == []
+    assert schema.validate_raw(mod(videoId="udemy-12345")) == []  # 11 chars: a YouTube id
+
+
+def test_raw_rejects_bad_udemy_ids():
+    for bad in ("udemy.abc", "udemy.", "udemy.1234567890123", "Udemy.1", "udemy.1/../x"):
+        assert schema.validate_raw(mod(videoId=bad)), bad
+
+
+def test_source_must_match_id():
+    assert schema.validate_raw(mod(source="udemy"))  # YouTube id
+    assert schema.validate_raw(mod(videoId="udemy.5800738", source="youtube"))
+    for bad in ("", None, "coursera", "UDEMY"):
+        assert schema.validate_raw(mod(videoId="udemy.5800738", source=bad)), bad
+    assert schema.validate_raw(mod(videoId="udemy-12345", source="udemy"))
+
+
+def test_source_url_rejections():
+    for bad in (
+        "http://www.udemy.com/course/30-days-of-python/learn/lecture/5800738",
+        "https://mycompany.udemy.com/course/30-days-of-python/learn/lecture/5800738",
+        "https://www.udemy.com/course/30-days-of-python/learn/lecture/5800739",  # other lecture
+        "https://www.udemy.com/course/30-days-of-python/",
+        "javascript:alert(1)",
+        "https://evil.com/",
+        "", None, 42,
+    ):
+        assert schema.validate_raw(mod(**dict(UDEMY, sourceUrl=bad))), bad
+    # YouTube ids carry no sourceUrl at all (not even their own watch URL).
+    assert schema.validate_raw(mod(sourceUrl="https://www.youtube.com/watch?v=puh91fohvTA"))
+    assert schema.validate_raw(mod(sourceUrl=UDEMY_URL))
+
+
+def test_lesson_source_fields():
+    les = _lesson()
+    les.update(UDEMY)
+    assert schema.validate_lesson(les) == []
+    les2 = _lesson()
+    les2["videoId"] = "udemy.5800738"
+    assert schema.validate_lesson(les2) == []  # source fields optional
+    assert schema.validate_lesson(dict(les, source="youtube"))
+    assert schema.validate_lesson(dict(les, sourceUrl=UDEMY_URL.replace("5800738", "1")))
+    assert schema.validate_lesson(dict(_lesson(), sourceUrl=UDEMY_URL))
+    assert schema.validate_lesson(dict(les, videoId="udemy.x"))

@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import queue
-import re
 import shlex
 import signal
 import subprocess
@@ -13,47 +12,25 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 
 from pipeline import settings
+from pipeline.ids import parse_youtube_id, source_of
 from pipeline.schema import validate_lesson
 
-ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 STALE_CAPTURE_SECONDS = 60
 IN_PROGRESS = ("queued", "capturing", "captured", "building")
 
 
-def canonical_url(video_id: str) -> str:
+def canonical_url(video_id: str) -> str | None:
+    """YouTube watch URL for a YouTube id; None for other sources (e.g. udemy.<id>)."""
+    if source_of(video_id) != "youtube":
+        return None
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
-def _ok(s):
-    return s if s and ID_RE.fullmatch(s) else None
-
-
 def parse_video_id(s) -> str | None:
-    if not isinstance(s, str):
-        return None
-    s = s.strip()
-    if ID_RE.fullmatch(s):
-        return s
-    try:
-        u = urlsplit(s)
-        host = (u.hostname or "").lower()
-    except ValueError:
-        return None
-    if u.scheme not in ("http", "https"):
-        return None
-    parts = [p for p in u.path.split("/") if p]
-    if host in ("youtube.com", "www.youtube.com", "m.youtube.com"):
-        if u.path == "/watch":
-            v = parse_qs(u.query).get("v")
-            return _ok(v[0]) if v else None
-        if host != "m.youtube.com" and len(parts) == 2 and parts[0] in ("shorts", "embed"):
-            return _ok(parts[1])
-    elif host == "youtu.be" and len(parts) == 1:
-        return _ok(parts[0])
-    return None
+    """YouTube-only parser (contract: tests/fixtures/urls.json). Use pipeline.ids.parse_lesson_id for any source."""
+    return parse_youtube_id(s)
 
 
 class IllegalTransition(Exception):

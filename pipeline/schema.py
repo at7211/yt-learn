@@ -1,7 +1,7 @@
 """Validation for the raw caption capture format (data/raw/<videoId>.json)."""
-import re
+from .ids import LESSON_ID_RE, parse_udemy_url, source_of
 
-VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+VIDEO_ID_RE = LESSON_ID_RE  # old name
 REQUIRED_META = ("title", "channel", "duration", "lang", "kind")
 
 
@@ -13,14 +13,36 @@ def _is_num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _source_errors(obj, vid) -> list[str]:
+    """Optional `source` / `sourceUrl`. sourceUrl is an outbound link from imported JSON, so it is
+    only allowed for Udemy ids and must be that very lecture's URL; YouTube ids carry no sourceUrl."""
+    errs = []
+    src = source_of(vid)
+    if "source" in obj and obj["source"] != src:
+        errs.append(f"source must be {src!r} for videoId {vid!r}")
+    if "sourceUrl" in obj:
+        url = obj["sourceUrl"]
+        if src != "udemy":
+            errs.append("sourceUrl is only allowed for udemy.<lectureId> videoIds")
+        else:
+            parsed = parse_udemy_url(url)
+            if parsed is None:
+                errs.append("sourceUrl must be https://www.udemy.com/course/<slug>/learn/lecture/<id>")
+            elif f"udemy.{parsed[1]}" != vid:
+                errs.append("sourceUrl lecture id must match videoId")
+    return errs
+
+
 def validate_raw(obj) -> list[str]:
     """Return a list of error messages; empty means valid."""
     if not isinstance(obj, dict):
         return ["payload must be a JSON object"]
     errs = []
     vid = obj.get("videoId")
-    if not (isinstance(vid, str) and VIDEO_ID_RE.fullmatch(vid)):
-        errs.append("videoId must match ^[A-Za-z0-9_-]{11}$")
+    if not (isinstance(vid, str) and LESSON_ID_RE.fullmatch(vid)):
+        errs.append(f"videoId must match {LESSON_ID_RE.pattern}")
+    else:
+        errs += _source_errors(obj, vid)
     for k in REQUIRED_META:
         if obj.get(k) in (None, ""):
             errs.append(f"missing required field: {k}")
@@ -70,8 +92,10 @@ def validate_lesson(obj) -> list[str]:
         return ["lesson must be a JSON object"]
     errs = []
     vid = obj.get("videoId")
-    if not (isinstance(vid, str) and VIDEO_ID_RE.fullmatch(vid)):
-        errs.append("videoId must match ^[A-Za-z0-9_-]{11}$")
+    if not (isinstance(vid, str) and LESSON_ID_RE.fullmatch(vid)):
+        errs.append(f"videoId must match {LESSON_ID_RE.pattern}")
+    else:
+        errs += _source_errors(obj, vid)
     for k in ("title", "channel", "lang", "generatedAt", "model"):
         if not (isinstance(obj.get(k), str) and obj[k]):
             errs.append(f"{k} must be a non-empty string")

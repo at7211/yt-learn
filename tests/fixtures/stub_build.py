@@ -32,5 +32,9 @@ if mode == "ok_invalid":
 lesson = json.loads((Path(__file__).parent / "lesson_min.json").read_text("utf-8"))
 lesson["videoId"] = vid
 lesson["channel"] = str(cwd)
+raw = json.loads((cwd / "data" / "raw" / f"{vid}.json").read_text("utf-8"))
+for k in ("source", "sourceUrl"):  # mirrors pipeline/build.py
+    if k in raw:
+        lesson[k] = raw[k]
 assert validate_lesson(lesson) == []
 out.write_text(json.dumps(lesson, ensure_ascii=False), "utf-8")

@@ -26,6 +26,17 @@ def test_canonical_url():
     assert canonical_url(V) == f"https://www.youtube.com/watch?v={V}"
 
 
+def test_parse_video_id_stays_youtube_only():
+    for inp in ("udemy.5800738", "https://www.udemy.com/course/x/learn/lecture/5800738", "udemy.abc"):
+        assert parse_video_id(inp) is None, inp
+    assert parse_video_id("udemy-12345") == "udemy-12345"  # 11 chars: a YouTube id
+
+
+def test_canonical_url_none_for_udemy():
+    assert canonical_url("udemy.5800738") is None
+    assert canonical_url("udemy-12345") == "https://www.youtube.com/watch?v=udemy-12345"
+
+
 def at(state, attempt=1):
     """Store with job V driven into `state` via legal transitions."""
     s = JobStore()

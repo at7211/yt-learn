@@ -82,9 +82,58 @@ def start_capture(base, vid=V):
 def test_add_bad_url_400(env):
     base, _ = env
     code, j = req(f"{base}/add", {"url": "https://evil.com/x"})
-    assert code == 400 and j == {"ok": False, "errors": ["無法辨識的 YouTube 網址"]}
+    assert code == 400 and j == {"ok": False, "errors": ["無法辨識的 YouTube 或 Udemy 網址"]}
     assert req(f"{base}/add", {"nourl": 1})[0] == 400
     assert req(f"{base}/jobs/{V}")[0] == 404
+
+
+UDEMY_ID = "udemy.5800738"
+UDEMY_URL = "https://www.udemy.com/course/30-days-of-python/learn/lecture/5800738"
+
+
+def test_udemy_url_end_to_end(env):
+    base, root = env
+    code, j = req(f"{base}/add", {"url": UDEMY_URL + "?start=0#overview"})
+    assert code == 200 and j["job"]["state"] == "queued" and j["job"]["videoId"] == UDEMY_ID
+    code, c = req(f"{base}/jobs/{UDEMY_ID}/claim", b"")
+    assert code == 200
+    body = dict(GOOD, videoId=UDEMY_ID, source="udemy", sourceUrl=UDEMY_URL, kind="unknown",
+                events=[{"t": 0, "d": 2000, "segs": [[None, "Welcome to day one of the course."]]},
+                        {"t": 2000, "d": 1500, "segs": [[None, "Let's get started."]]}])
+    code, out = req(f"{base}/ingest?attempt={c['attempt']}", json.dumps(body).encode())
+    assert code == 200, out
+    job = wait_state(base, UDEMY_ID, {"done", "error"})
+    assert job["state"] == "done" and job["lessonUrl"] == f"index.html?v={UDEMY_ID}"
+    assert json.loads((root / "data" / "raw" / f"{UDEMY_ID}.json").read_text("utf-8"))["sourceUrl"] == UDEMY_URL
+    lesson = json.loads((root / "data" / "lessons" / f"{UDEMY_ID}.json").read_text("utf-8"))
+    assert lesson["videoId"] == UDEMY_ID and lesson["source"] == "udemy" and lesson["sourceUrl"] == UDEMY_URL
+    code, lessons = req(f"{base}/lessons")
+    assert code == 200
+    row = next(r for r in lessons if r["videoId"] == UDEMY_ID)
+    assert row["source"] == "udemy" and row["sourceUrl"] == UDEMY_URL
+    # A second /add of the same lecture (bare id) now sees the finished lesson.
+    assert req(f"{base}/add", {"url": UDEMY_ID})[1]["job"]["state"] == "done"
+
+
+def test_lessons_listing_source_absent_for_youtube(env):
+    base, root = env
+    full_lesson(root)
+    row = next(r for r in req(f"{base}/lessons")[1] if r["videoId"] == V)
+    assert "source" not in row and "sourceUrl" not in row
+
+
+def test_ingest_rejects_mismatched_udemy_source_url(env):
+    base, _ = env
+    body = dict(GOOD, videoId=UDEMY_ID, sourceUrl=UDEMY_URL.replace("5800738", "1"))
+    code, out = req(f"{base}/ingest", json.dumps(body).encode())
+    assert code == 400 and any("sourceUrl" in e for e in out["errors"])
+
+
+def test_add_rejects_non_lecture_udemy_urls(env):
+    base, _ = env
+    for bad in (UDEMY_URL.replace("https:", "http:"), UDEMY_URL.replace("www.", "biz."),
+                "https://www.udemy.com/course/30-days-of-python/"):
+        assert req(f"{base}/add", {"url": bad})[0] == 400, bad
 
 
 def test_add_existing_valid_full_lesson_is_done(env):

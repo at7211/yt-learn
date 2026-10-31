@@ -38,6 +38,17 @@ def test_build_with_fake_provider_matches_schema():
     assert lesson["model"] == "default" and lesson["promptVersion"] == 1
 
 
+def test_build_copies_source_fields_from_raw():
+    raw = dict(load("raw_small.json"), videoId="udemy.5800738", source="udemy",
+               sourceUrl="https://www.udemy.com/course/30-days-of-python/learn/lecture/5800738")
+    lesson, _ = build_lesson(raw, fake_provider())
+    assert validate_lesson(lesson) == []
+    assert lesson["videoId"] == "udemy.5800738" and lesson["source"] == "udemy"
+    assert lesson["sourceUrl"] == raw["sourceUrl"]
+    plain, _ = build_lesson(load("raw_small.json"), fake_provider())
+    assert "source" not in plain and "sourceUrl" not in plain
+
+
 def test_limit_seconds_sets_covered_seconds():
     raw = load("raw_small.json")
     words = normalize_words(raw["events"], 1378)

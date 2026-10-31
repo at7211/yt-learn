@@ -23,7 +23,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from pipeline import settings
-from pipeline.jobs import BuildQueue, IllegalTransition, JobStore, parse_video_id
+from pipeline.ids import parse_lesson_id
+from pipeline.jobs import BuildQueue, IllegalTransition, JobStore
 from pipeline.schema import validate_lesson, validate_raw
 
 ROOT = Path(__file__).resolve().parent
@@ -147,9 +148,11 @@ class Handler(SimpleHTTPRequestHandler):
         for f in sorted((self.root / "data" / "lessons").glob("*.json")):
             try:
                 j = json.loads(f.read_text("utf-8"))
-                out.append({"videoId": f.stem, "title": j.get("title"), "channel": j.get("channel"),
-                            "duration": j.get("duration"), "vocabCount": len(j.get("vocab", [])),
-                            "coveredSeconds": j.get("coveredSeconds")})
+                row = {"videoId": f.stem, "title": j.get("title"), "channel": j.get("channel"),
+                       "duration": j.get("duration"), "vocabCount": len(j.get("vocab", [])),
+                       "coveredSeconds": j.get("coveredSeconds")}
+                row.update({k: j[k] for k in ("source", "sourceUrl") if k in j})  # omitted when absent
+                out.append(row)
             except (OSError, ValueError, AttributeError, TypeError):
                 out.append({"videoId": f.stem})
         return out
@@ -216,9 +219,9 @@ class Handler(SimpleHTTPRequestHandler):
         obj, err = self._read_json()
         if err:
             return
-        vid = parse_video_id(obj.get("url") if isinstance(obj, dict) else None)
+        vid = parse_lesson_id(obj.get("url") if isinstance(obj, dict) else None)
         if vid is None:
-            return self._json({"ok": False, "errors": ["無法辨識的 YouTube 網址"]}, 400)
+            return self._json({"ok": False, "errors": ["無法辨識的 YouTube 或 Udemy 網址"]}, 400)
         job = self.jobs.add(vid, self._lesson_ok(vid))
         self._json({"job": JobStore.to_public(job)})
 

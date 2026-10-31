@@ -13,7 +13,8 @@ from pathlib import Path
 from pipeline.chunk import chunk_words
 from pipeline.intro import make_intro
 from pipeline.llm import CODEX_EFFORT, EFFORTS, ClaudeCliProvider, CodexCliProvider
-from pipeline.schema import VIDEO_ID_RE, validate_lesson, validate_raw
+from pipeline.ids import LESSON_ID_RE
+from pipeline.schema import validate_lesson, validate_raw
 from pipeline.segment import finalize_cues, make_cues
 from pipeline.vocab import pick_vocab
 from pipeline.words import normalize_words
@@ -92,6 +93,9 @@ def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
         "model": model_label, "effort": effort, "promptVersion": prompt_version, "coveredSeconds": covered,
         "words": words, "cues": cues, "vocab": vocab,
     }
+    for k in ("source", "sourceUrl"):  # optional; validated by validate_raw/validate_lesson
+        if k in raw:
+            lesson[k] = raw[k]
     if intro is not None:
         lesson["intro"] = intro
     return lesson, stats
@@ -158,7 +162,7 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
     model_label = args.model if args.provider == "claude" else f"codex:{args.model or 'default'}"
     data = Path(data_dir)
     vid = args.video_id
-    if not VIDEO_ID_RE.fullmatch(vid):
+    if not LESSON_ID_RE.fullmatch(vid):
         print(f"error: invalid video id {vid!r}", file=sys.stderr)
         return 1
     raw_path = data / "raw" / f"{vid}.json"
