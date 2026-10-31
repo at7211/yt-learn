@@ -1,7 +1,8 @@
 // yt-learn player. Sections: util, home, load, player, render subtitle,
 // render panel, review, lists, controls & keyboard, boot.
 import { cueIndexAt, flattenHits, activeHitAt, panelState, seenCount } from './timing.js';
-import { parseVideoId } from './ytid.js';
+import { parseLessonId, lessonSource } from './ytid.js';
+import { udemyLessonLink, listRowSourceLink, canBuildHere, UDEMY_BUILD_MSG, UDEMY_PLAY_HINT } from './lesson-source.js';
 import { waitForAck, shouldApplyLiveStatus } from './handshake.js';
 import { introRows } from './intro.js';
 import { dictWord, dictUrl, clickWord } from './dict.js';
@@ -47,8 +48,9 @@ function initHome(showList) {
   $('url-form').onsubmit = (e) => {
     e.preventDefault();
     const err = $('url-err');
-    const id = parseVideoId($('url-input').value);
+    const id = parseLessonId($('url-input').value);
     if (!id) { err.textContent = '無法辨識的 YouTube 網址'; err.hidden = false; return; }
+    if (!canBuildHere(id)) { err.textContent = UDEMY_BUILD_MSG; err.hidden = false; return; } // a pasted Udemy URL is never submitted
     err.hidden = true;
     startJob(id, $('card-home'));
   };
@@ -210,6 +212,12 @@ async function postAdd(id) {
 async function startJob(id, container, opts) {
   const card = mountCard(container, id, opts);
   card.live = null;
+  if (!canBuildHere(id)) { // Udemy lessons are built from the lecture page, never from here
+    card.job = { videoId: id, state: 'error', message: UDEMY_BUILD_MSG };
+    card.noRetry = true;
+    renderCard();
+    return;
+  }
   renderCard();
   let job;
   try {
@@ -362,7 +370,7 @@ function renderCard() {
     a.href = job.lessonUrl || 'index.html?v=' + encodeURIComponent(card.id);
     actions.append(a);
     box.append(actions);
-  } else if (isErr || (card.netText && !job)) {
+  } else if ((isErr || (card.netText && !job)) && !card.noRetry && canBuildHere(card.id)) {
     const b = el('button', '重試');
     b.type = 'button';
     b.onclick = retry;
@@ -421,7 +429,13 @@ async function loadLessonList() {
       const text = el('div', null, 'lrow-text');
       text.append(el('div', l.title || l.videoId, 'lrow-title'));
       const sub = [l.channel, l.duration ? fmtTime(l.duration) : null].filter(Boolean).join('・');
-      if (sub) text.append(el('div', sub, 'lrow-sub'));
+      const isUdemy = l.source === 'udemy';
+      if (sub || isUdemy) {
+        const subEl = el('div', null, 'lrow-sub');
+        if (isUdemy) subEl.append(el('span', 'Udemy', 'lrow-tag'));
+        if (sub) subEl.append(sub);
+        text.append(subEl);
+      }
       a.append(text);
       if (l.vocabCount != null) {
         const n = el('div', null, 'lrow-num num');
@@ -429,6 +443,14 @@ async function loadLessonList() {
         a.append(n);
       }
       li.append(a);
+      const src = listRowSourceLink(l);
+      if (src) {
+        const sa = el('a', '回到講座頁 ↗', 'lrow-src');
+        sa.href = src;
+        sa.target = '_blank';
+        sa.rel = 'noopener noreferrer';
+        li.append(sa);
+      }
       return li;
     }));
   } catch (e) {
@@ -520,7 +542,39 @@ function setupLesson(lesson, id) {
   buildTranscript();
   buildVocabTable();
   render(0);
+  if (lessonSource(id) === 'udemy') { setupUdemyLesson(lesson, id); return; }
   initPlayer(lesson.videoId || id);
+}
+
+// Udemy lessons have no player here: subtitles only exist as an overlay on the Udemy page.
+// Show the header (done by setupLesson), a notice and the vocab review grid.
+function setupUdemyLesson(lesson, id) {
+  S.noPlayer = true;
+  $('yt').hidden = true;
+  const note = $('udemy-note');
+  const text = el('span', '這堂課只能在 Udemy 頁面上疊字幕');
+  const nodes = [text];
+  const href = udemyLessonLink(lesson, id);
+  if (href) {
+    const a = el('a', '回到講座頁');
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    nodes.push('　', a);
+  }
+  nodes.push(el('span', UDEMY_PLAY_HINT, 'udemy-hint'));
+  note.replaceChildren(...nodes);
+  note.hidden = false;
+  enterReview();
+}
+
+let hintTimer = 0;
+function udemyPlayHint() {
+  const h = document.querySelector('#udemy-note .udemy-hint');
+  if (!h) return;
+  h.classList.add('show');
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => h.classList.remove('show'), 2500);
 }
 
 function showMissing(id) {
@@ -611,6 +665,7 @@ function refresh() {
 }
 
 function seek(t, play = true) {
+  if (S.noPlayer) { udemyPlayHint(); return; }
   if (!S.ready) return;
   if (S.review) leaveReview();
   t = Math.max(0, t);
