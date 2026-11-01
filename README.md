@@ -40,6 +40,8 @@
 
 **Netflix 預設關閉，要自己開。** Netflix 的字幕清單只存在播放頁解開的 manifest 裡，所以擴充需要一個在頁面載入最早期包住 `JSON.parse` 的唯讀 hook，以及 `https://www.netflix.com/*` 的網站權限。第一次在 `https://www.netflix.com/watch/<id>` 按圖示會開啟擴充自己的啟用頁：按「啟用並重新載入這個分頁」、在 Chrome 的授權框選「允許」，分頁會自動重新載入；也可以在圖示上按右鍵勾選「在 Netflix 啟用」。之後在播放頁按圖示：第一次會在播放器左下角出現「擷取字幕 → 產生課程 x% → 完成」的 pill，課程做好後疊層自動蓋上並隱藏 Netflix 自己的字幕；再按一次是開／關疊層。換集時，新一集已有課程就直接換上；沒有課程就收起來，要再按一次圖示才會擷取。hook 只讀 manifest 裡的字幕清單，不改任何請求、不記錄網址；只有你按圖示時才會抓那一集的英文字幕檔（有官方繁中軌時會一併抓來給翻譯當參考）。關閉：圖示右鍵取消勾選，擴充會收起疊層、註銷腳本並撤回網站權限；在 `chrome://extensions` 收回權限也等於關閉。右鍵選單的「診斷目前的 Netflix 分頁」會列出 hook 狀態、字幕軌與一次測試抓取的結果，出問題時先看這個。
 
+![Netflix 疊層：影片區遮黑，只看得到雙字幕與單字欄](docs/screenshots/netflix.jpg)
+
 ## 開始用
 
 ```bash
@@ -118,7 +120,7 @@ node --test tests/web/                           # 播放器與擴充功能的�
 
 ## 素材出處
 
-截圖裡的影片畫面來自 dotconferences 上傳的〈Agents for production engineering - Alex Palcuie - Anthropic〉（<https://www.youtube.com/watch?v=puh91fohvTA>），YouTube 標示為「創用 CC 姓名標示」授權（CC BY）。播放器本身只嵌入 YouTube 播放器，不複製任何影片內容。
+截圖裡的影片畫面來自 dotconferences 上傳的〈Agents for production engineering - Alex Palcuie - Anthropic〉（<https://www.youtube.com/watch?v=puh91fohvTA>），YouTube 標示為「創用 CC 姓名標示」授權（CC BY）。播放器本身只嵌入 YouTube 播放器，不複製任何影片內容。Netflix 的截圖只保留疊層介面：影片區遮黑，字幕與單字都是為截圖自己寫的示範課程，不是任何影集的內容。
 
 ## 開發紀錄
 
