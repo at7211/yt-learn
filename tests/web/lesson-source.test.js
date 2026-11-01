@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  udemyLessonLink, netflixLessonLink, listRowSourceLink, listRowSite, canBuildHere, externalSite,
-  UDEMY_BUILD_MSG, UDEMY_PLAY_HINT, NETFLIX_BUILD_MSG, NETFLIX_PLAY_HINT,
+  udemyLessonLink, netflixLessonLink, courseraLessonLink, listRowSourceLink, listRowSite, canBuildHere, externalSite,
+  UDEMY_BUILD_MSG, UDEMY_PLAY_HINT, NETFLIX_BUILD_MSG, NETFLIX_PLAY_HINT, COURSERA_BUILD_MSG, COURSERA_PLAY_HINT,
 } from '../../web/lesson-source.js';
 
 const URL5 = 'https://www.udemy.com/course/30-days-of-python/learn/lecture/5800738';
@@ -33,6 +33,33 @@ test('externalSite: null for YouTube and invalid ids; Udemy and Netflix carry th
     assert.ok(site.note && site.linkText, site.name);
     assert.ok(Object.isFrozen(site), site.name);
   }
+});
+
+test('Coursera lessons: built on their own page, with a validated link back to the lecture', () => {
+  const id = 'coursera.machine-learning.iYR2y';
+  const url = 'https://www.coursera.org/learn/machine-learning/lecture/iYR2y/supervised-learning';
+  assert.equal(canBuildHere(id), false);
+  const c = externalSite(id);
+  assert.equal(c.name, 'Coursera');
+  assert.equal(c.buildMsg, COURSERA_BUILD_MSG);
+  assert.equal(c.playHint, COURSERA_PLAY_HINT);
+  assert.ok(c.note && c.linkText && Object.isFrozen(c));
+  assert.equal(c.link({ videoId: id, sourceUrl: url }, id), url);
+  assert.equal(courseraLessonLink({ videoId: id, sourceUrl: url }), url);
+  assert.equal(courseraLessonLink({ videoId: id }), null, 'needs a matching sourceUrl');
+  assert.equal(courseraLessonLink({ sourceUrl: url }, 'coursera.machine-learning.other'), null);
+  assert.equal(courseraLessonLink({ sourceUrl: url }, 'coursera.other-course.iYR2y'), null);
+  assert.equal(courseraLessonLink({ sourceUrl: url }, 'puh91fohvTA'), null);
+  for (const bad of ['javascript:alert(1)', 'http://www.coursera.org/learn/machine-learning/lecture/iYR2y',
+    'https://evil.com/learn/machine-learning/lecture/iYR2y', 'https://www.coursera.org.evil.com/learn/machine-learning/lecture/iYR2y', '', null, 42]) {
+    assert.equal(courseraLessonLink({ sourceUrl: bad }, id), null, String(bad));
+  }
+  assert.equal(courseraLessonLink(null, id), null);
+  const row = { videoId: id, source: 'coursera', sourceUrl: url };
+  assert.equal(listRowSite(row).name, 'Coursera');
+  assert.equal(listRowSourceLink(row), url);
+  assert.equal(listRowSite({ videoId: id }), null);
+  assert.equal(listRowSourceLink({ ...row, sourceUrl: 'https://evil.com/x' }), null);
 });
 
 test('netflixLessonLink is derived from the id, never from sourceUrl', () => {
