@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseVideoId, canonicalUrl, parseLessonId, lessonSource, parseUdemyUrl, parseNetflixUrl, netflixWatchUrl } from '../../web/ytid.js';
+import { parseVideoId, canonicalUrl, parseLessonId, lessonSource, parseUdemyUrl, parseNetflixUrl, parseCourseraUrl, netflixWatchUrl } from '../../web/ytid.js';
 
 const table = JSON.parse(readFileSync(new URL('../fixtures/urls.json', import.meta.url), 'utf8'));
 const ids = JSON.parse(readFileSync(new URL('../fixtures/lesson_ids.json', import.meta.url), 'utf8'));
@@ -43,6 +43,14 @@ test('parseNetflixUrl agrees with lesson_ids.json; netflixWatchUrl is canonical'
   for (const bad of [null, undefined, 42]) assert.equal(parseNetflixUrl(bad), null);
   assert.equal(netflixWatchUrl('81234567'), 'https://www.netflix.com/watch/81234567');
   assert.equal(parseVideoId('netflix.81234567'), null);
+});
+test('parseCourseraUrl agrees with lesson_ids.json', () => {
+  assert.ok(ids.courseraUrl.length >= 8);
+  for (const [input, want] of ids.courseraUrl) {
+    assert.deepEqual(parseCourseraUrl(input), want ? { slug: want[0], itemId: want[1] } : null, JSON.stringify(input));
+  }
+  for (const bad of [null, undefined, 42]) assert.equal(parseCourseraUrl(bad), null);
+  assert.equal(parseVideoId('coursera.machine-learning.iYR2y'), null);
 });
 test('lessonSource agrees with lesson_ids.json', () => {
   for (const [input, want] of ids.source) assert.equal(lessonSource(input), want, JSON.stringify(input));

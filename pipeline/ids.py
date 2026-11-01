@@ -1,8 +1,9 @@
 """Lesson ids: the one place that knows which ids exist.
 
-YouTube ids are the 11-char `[A-Za-z0-9_-]` video id; Udemy lectures are `udemy.<lectureId>` and
-Netflix titles/episodes are `netflix.<movieId>` (the dot is outside the YouTube alphabet, so they can
-never collide; also filename-safe).
+YouTube ids are the 11-char `[A-Za-z0-9_-]` video id; Udemy lectures are `udemy.<lectureId>`, Netflix
+titles/episodes are `netflix.<movieId>` and Coursera lectures are `coursera.<courseSlug>.<itemId>` (an
+item id is only unique inside its course). The dot is outside the YouTube alphabet, so they can never
+collide; also filename-safe.
 JS mirrors: web/ytid.js (ESM) and extension/ytid.js (globals); all three are checked against
 tests/fixtures/lesson_ids.json.
 """
@@ -14,12 +15,19 @@ from urllib.parse import parse_qs, urlsplit
 YOUTUBE_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 UDEMY_ID_RE = re.compile(r"udemy\.([0-9]{1,12})")
 NETFLIX_ID_RE = re.compile(r"netflix\.([0-9]{1,12})")
-LESSON_ID_RE = re.compile(r"^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12}|netflix\.[0-9]{1,12})$")
+COURSERA_ID_RE = re.compile(r"coursera\.[A-Za-z0-9_-]{1,120}\.[A-Za-z0-9_-]{1,32}")
+LESSON_ID_RE = re.compile(
+    r"^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12}|netflix\.[0-9]{1,12}"
+    r"|coursera\.[A-Za-z0-9_-]{1,120}\.[A-Za-z0-9_-]{1,32})$")
 # https only, host exactly www.udemy.com, no port/userinfo; optional trailing slash, query, hash.
 UDEMY_URL_RE = re.compile(
     r"https://www\.udemy\.com/course/([A-Za-z0-9_-]+)/learn/lecture/([0-9]{1,12})/?(?:[?#]\S*)?")
 # Same shape for Netflix: https, host exactly www.netflix.com, /watch/<digits>, optional slash, query, hash.
 NETFLIX_URL_RE = re.compile(r"https://www\.netflix\.com/watch/([0-9]{1,12})/?(?:[?#]\S*)?")
+# https, host exactly www.coursera.org, /learn/<slug>/lecture/<itemId>, then at most the lecture title segment.
+COURSERA_URL_RE = re.compile(
+    r"https://www\.coursera\.org/learn/([A-Za-z0-9_-]{1,120})/lecture/([A-Za-z0-9_-]{1,32})"
+    r"(?:/[A-Za-z0-9_.~%-]*)?/?(?:[?#]\S*)?")
 
 
 def _yt_ok(s):
@@ -73,8 +81,16 @@ def netflix_watch_url(movie_id: str) -> str:
     return f"https://www.netflix.com/watch/{movie_id}"
 
 
+def parse_coursera_url(url) -> tuple[str, str] | None:
+    """`https://www.coursera.org/learn/<slug>/lecture/<itemId>[/<title>][/][?...][#...]` -> (slug, itemId)."""
+    if not isinstance(url, str):
+        return None
+    m = COURSERA_URL_RE.fullmatch(url)
+    return (m.group(1), m.group(2)) if m else None
+
+
 def parse_lesson_id(s) -> str | None:
-    """Bare lesson id, YouTube URL, Udemy lecture URL or Netflix watch URL -> lesson id; None if unrecognised."""
+    """Bare lesson id, YouTube URL, Udemy lecture URL, Netflix watch URL or Coursera lecture URL -> lesson id; None if unrecognised."""
     if not isinstance(s, str):
         return None
     s = s.strip()
@@ -86,15 +102,20 @@ def parse_lesson_id(s) -> str | None:
     n = parse_netflix_url(s)
     if n:
         return f"netflix.{n}"
+    c = parse_coursera_url(s)
+    if c:
+        return f"coursera.{c[0]}.{c[1]}"
     return parse_youtube_id(s)
 
 
 def source_of(lesson_id) -> str | None:
-    """'youtube' | 'udemy' | 'netflix' for a valid lesson id, else None."""
+    """'youtube' | 'udemy' | 'netflix' | 'coursera' for a valid lesson id, else None."""
     if not isinstance(lesson_id, str) or not LESSON_ID_RE.fullmatch(lesson_id):
         return None
     if UDEMY_ID_RE.fullmatch(lesson_id):
         return "udemy"
     if NETFLIX_ID_RE.fullmatch(lesson_id):
         return "netflix"
+    if COURSERA_ID_RE.fullmatch(lesson_id):
+        return "coursera"
     return "youtube"
