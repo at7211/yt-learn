@@ -14,6 +14,7 @@ import './settings.test.js';
 import './dict.test.js';
 import './vtt.test.js';
 import './udemy-capture.test.js';
+import './coursera-capture.test.js';
 import './lesson-source.test.js';
 import './site.test.js';
 import './netflix-manifest.test.js';
