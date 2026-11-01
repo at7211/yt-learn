@@ -1,7 +1,7 @@
 // extension/site.js: the per-site adapters the overlay engine uses. Pure over a fake document.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { siteFor, youtube, udemy, netflix, netflixSeeker, seekAckOk, NF_SEEK_ACK_MS } from '../../extension/site.js';
+import { siteFor, youtube, udemy, coursera, netflix, netflixSeeker, seekAckOk, NF_SEEK_ACK_MS } from '../../extension/site.js';
 
 const A = 'puh91fohvTA';
 const B = 'abcdefghijk';
@@ -19,15 +19,17 @@ function doc({ byId = {}, sel = {} } = {}) {
   return { getElementById: (id) => byId[id] || null, querySelector: (q) => sel[q] || null };
 }
 
-test('siteFor: www.youtube.com, www.udemy.com and www.netflix.com only', () => {
+test('siteFor: www.youtube.com, www.udemy.com, www.coursera.org and www.netflix.com only', () => {
   assert.equal(siteFor('www.youtube.com'), youtube);
   assert.equal(siteFor('www.udemy.com'), udemy);
+  assert.equal(siteFor('www.coursera.org'), coursera);
   assert.equal(siteFor('www.netflix.com'), netflix);
-  for (const h of ['youtube.com', 'm.youtube.com', 'udemy.com', 'mycompany.udemy.com', 'netflix.com', 'help.netflix.com', '127.0.0.1', '', undefined]) {
+  for (const h of ['youtube.com', 'm.youtube.com', 'udemy.com', 'mycompany.udemy.com', 'coursera.org', 'blog.coursera.org', 'netflix.com', 'help.netflix.com', '127.0.0.1', '', undefined]) {
     assert.equal(siteFor(h), null, String(h));
   }
   assert.equal(youtube.name, 'youtube');
   assert.equal(udemy.name, 'udemy');
+  assert.equal(coursera.name, 'coursera');
   assert.equal(netflix.name, 'netflix');
 });
 
@@ -97,6 +99,72 @@ test('udemy: never an ad, hides its own caption container, no navigation events 
 
 const NURL = 'https://www.netflix.com/watch/81234567?trackId=14277281';
 const NF_ROOT = '.watch-video--player-view';
+
+const CID = 'coursera.machine-learning.iYR2y';
+const CURL = 'https://www.coursera.org/learn/machine-learning/lecture/iYR2y/supervised-learning?t=3#notes';
+
+test('coursera.lessonId: lecture URLs -> coursera.<slug>.<itemId>, everything else null', () => {
+  assert.equal(coursera.lessonId(CURL), CID);
+  assert.equal(coursera.lessonId('https://www.coursera.org/learn/machine-learning/lecture/iYR2y'), CID);
+  for (const u of ['https://www.coursera.org/learn/machine-learning', 'https://www.coursera.org/learn/machine-learning/quiz/iYR2y/q',
+    'https://www.coursera.org/', LURL, 'https://www.youtube.com/watch?v=' + A]) assert.equal(coursera.lessonId(u), null, u);
+  assert.equal(youtube.lessonId(CURL, doc()), null, 'not a YouTube lesson');
+  assert.equal(udemy.lessonId(CURL), null);
+});
+
+// A box of the given size in a parent chain; closest('.video-js') answers from `vjs`.
+function chain(sizes, { vjs = null } = {}) {
+  const body = { rect: { width: 2000, height: 2000 } };
+  let parent = body;
+  const boxes = sizes.map(([width, height]) => {
+    const b = { parentElement: parent, getBoundingClientRect: () => ({ width, height }) };
+    parent = b;
+    return b;
+  });
+  body.getBoundingClientRect = () => body.rect;
+  const video = { parentElement: parent, getBoundingClientRect: () => ({ width: 800, height: 450 }), closest: (q) => (q === '.video-js' ? vjs : null) };
+  return { body, boxes, video };
+}
+
+test('coursera.findPlayer: the video.js root when there is one', () => {
+  const root = { id: 'vjs' };
+  const { video } = chain([[800, 450]], { vjs: root });
+  assert.deepEqual(coursera.findPlayer(doc({ sel: { video } })), { root, video });
+  const promo = chain([[300, 200]]).video;
+  assert.deepEqual(coursera.findPlayer(doc({ sel: { video: promo, '.video-js video': video } })), { root, video }, 'not an earlier <video> on the page');
+  assert.equal(coursera.findPlayer(doc()), null, 'no video');
+  assert.equal(coursera.findPlayer(null), null);
+});
+
+test('coursera.findPlayer: without video.js, the outermost ancestor of exactly the video size', () => {
+  const { body, boxes, video } = chain([[1400, 900], [800, 450], [801, 451], [800, 450]]);
+  const d = doc({ sel: { video } });
+  d.body = body;
+  assert.deepEqual(coursera.findPlayer(d), { root: boxes[1], video });
+  const direct = chain([[1400, 900]]); // nothing wraps it but the page: the parent is all there is
+  const d2 = doc({ sel: { video: direct.video } });
+  d2.body = direct.body;
+  assert.deepEqual(coursera.findPlayer(d2), { root: direct.boxes[0], video: direct.video });
+  // Fullscreen makes more ancestors match: the root must stay, or the engine would remount.
+  direct.boxes[0].getBoundingClientRect = () => ({ width: 800, height: 450 });
+  assert.deepEqual(coursera.findPlayer(d2), { root: direct.boxes[0], video: direct.video });
+  const hidden = chain([[1400, 900]]);
+  hidden.video.getBoundingClientRect = () => ({ width: 0, height: 0 }); // not laid out yet: not remembered
+  const d3 = doc({ sel: { video: hidden.video } });
+  d3.body = hidden.body;
+  assert.equal(coursera.findPlayer(d3).root, hidden.boxes[0]);
+});
+
+test('coursera: never an ad, hides video.js captions, keeps the controls clickable, no navigation events, ← → are sentences', () => {
+  assert.equal(coursera.isAd(elem({}, {}, ['ad-showing'])), false);
+  for (const part of ['.ytlearn-on .vjs-text-track-display{opacity:0 !important}', '.ytlearn-on video::cue{', '.ytlearn-on .vjs-control-bar{z-index:31}']) {
+    assert.ok(coursera.nativeCaptionCss.includes(part), part);
+  }
+  assert.deepEqual([...coursera.navEvents], []);
+  assert.equal(coursera.seek, undefined, 'the engine seeks with video.currentTime');
+  assert.equal(coursera.arrowsStepCues, true);
+  for (const s of [youtube, udemy, netflix]) assert.equal(s.arrowsStepCues, undefined, s.name + ' keeps its own arrow keys');
+});
 
 test('netflix.lessonId: watch pages -> netflix.<movieId>, everything else null', () => {
   assert.equal(netflix.lessonId(NURL, doc()), 'netflix.81234567');

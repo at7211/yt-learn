@@ -6,12 +6,14 @@ const ID_RE = /^[A-Za-z0-9_-]{11}$/;
 const UDEMY_URL_RE = /^https:\/\/www\.udemy\.com\/course\/([A-Za-z0-9_-]+)\/learn\/lecture\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
 // Same rule as extension/ytid.js ytLearnParseNetflixUrl and pipeline/ids.py parse_netflix_url.
 const NETFLIX_URL_RE = /^https:\/\/www\.netflix\.com\/watch\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
+// Same rule as extension/ytid.js ytLearnParseCourseraUrl and pipeline/ids.py parse_coursera_url.
+const COURSERA_URL_RE = /^https:\/\/www\.coursera\.org\/learn\/([A-Za-z0-9_-]{1,120})\/lecture\/([A-Za-z0-9_-]{1,32})(?:\/[A-Za-z0-9_.~%-]*)?\/?(?:[?#]\S*)?$/;
 
 /* ---------- route ---------- */
 
 // The lesson id of the page, or null: a www.youtube.com watch page -> its 11-char video id, a
 // www.udemy.com lecture page -> 'udemy.<lectureId>', a www.netflix.com/watch/<digits> page ->
-// 'netflix.<movieId>'. `flexyId` (YouTube only) is ytd-watch-flexy's
+// 'netflix.<movieId>', a www.coursera.org lecture page -> 'coursera.<slug>.<itemId>'. `flexyId` (YouTube only) is ytd-watch-flexy's
 // video-id attribute (null/'' when absent). During an SPA navigation the URL and the attribute can
 // briefly disagree; that is reported as null ("not settled"), and the 1 s route poll picks it up once they agree.
 export function lessonIdFromUrl(href, flexyId) {
@@ -20,6 +22,8 @@ export function lessonIdFromUrl(href, flexyId) {
   if (m) return 'udemy.' + m[2];
   const n = NETFLIX_URL_RE.exec(href);
   if (n) return 'netflix.' + n[1];
+  const c = COURSERA_URL_RE.exec(href);
+  if (c) return 'coursera.' + c[1] + '.' + c[2];
   let u;
   try { u = new URL(href); } catch (e) { return null; }
   if (u.protocol !== 'https:' || u.hostname !== 'www.youtube.com' || u.pathname !== '/watch') return null;
@@ -179,6 +183,21 @@ export const OWN_KEYS = {
   BracketRight: 'next',
 };
 
+// A site whose adapter sets arrowsStepCues also gets ← → for the sentence keys (as on the local player).
+export const ARROW_KEYS = {
+  ArrowLeft: 'prev',
+  ArrowRight: 'next',
+};
+const KEYS_WITH_ARROWS = { ...OWN_KEYS, ...ARROW_KEYS };
+
+// Focus inside one of these: ← → are its own (a seek or volume slider, a menu, a tab list).
+const ARROW_ROLES = new Set(['slider', 'spinbutton', 'menu', 'menubar', 'menuitem', 'menuitemradio', 'menuitemcheckbox',
+  'listbox', 'option', 'tab', 'tablist', 'radio', 'radiogroup', 'tree', 'treeitem', 'grid']);
+
+function ownsArrows(node) {
+  return !!node && typeof node.getAttribute === 'function' && ARROW_ROLES.has(node.getAttribute('role'));
+}
+
 // A node from event.composedPath() that accepts text input.
 export function isEditable(node) {
   if (!node || typeof node !== 'object') return false;
@@ -191,13 +210,15 @@ export function isEditable(node) {
 
 // -> action name from OWN_KEYS, or null when the event is not ours to take.
 // `ev` is a keydown event (or a plain object with the same fields); `path` is its composedPath().
-export function keyAction(ev, { active, path = [] } = {}) {
+export function keyAction(ev, { active, path = [], arrows = false } = {}) {
   if (!active || !ev) return null;
   if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey) return null;
   if (ev.isComposing || ev.repeat) return null;
-  const action = Object.prototype.hasOwnProperty.call(OWN_KEYS, ev.code) ? OWN_KEYS[ev.code] : null;
+  const keys = arrows ? KEYS_WITH_ARROWS : OWN_KEYS;
+  const action = Object.prototype.hasOwnProperty.call(keys, ev.code) ? keys[ev.code] : null;
   if (!action) return null;
   for (const n of path) if (isEditable(n)) return null;
+  if (Object.prototype.hasOwnProperty.call(ARROW_KEYS, ev.code) && path.some(ownsArrows)) return null;
   return action;
 }
 

@@ -190,12 +190,14 @@ const startup = cleanupOwnedTabs();
 
 /* ---------- 入口 ---------- */
 
-// 'youtube' for a www.youtube.com watch page, 'udemy' for a www.udemy.com lecture page, 'netflix' for a
-// www.netflix.com/watch/<digits> page, else null. Pages where the capture happens in place.
+// 'youtube' for a www.youtube.com watch page, 'udemy' for a www.udemy.com lecture page, 'coursera' for a
+// www.coursera.org lecture page, 'netflix' for a www.netflix.com/watch/<digits> page, else null.
+// Pages where the capture happens in place.
 function siteOfUrl(url) {
   if (typeof url !== 'string') return null;
   if (url.startsWith('https://www.youtube.com/watch')) return 'youtube';
   if (ytLearnParseUdemyUrl(url)) return 'udemy';
+  if (ytLearnParseCourseraUrl(url)) return 'coursera';
   if (netflixMovieIdOfUrl(url)) return 'netflix';
   return null;
 }
@@ -236,9 +238,10 @@ async function onIconClicked(tab) {
   // Frozen at click time: the job, the capture and the ingest must all be about this lesson.
   const videoId = ytLearnParseLessonId(url);
   log('icon', url, videoId, site);
-  // Udemy has no background mode: only a lecture page in a real tab can be captured.
-  const udemy = ytLearnLessonSource(videoId) === 'udemy';
-  if (!videoId || (udemy && (site !== 'udemy' || typeof tab.id !== 'number'))) {
+  // Udemy and Coursera have no background mode: only a lecture page in a real tab can be captured.
+  const source = ytLearnLessonSource(videoId);
+  const lectureOnly = source === 'udemy' || source === 'coursera';
+  if (!videoId || (lectureOnly && (site !== source || typeof tab.id !== 'number'))) {
     await chrome.tabs.create({ url: SERVER + '/index.html', active: true });
     return;
   }
@@ -380,6 +383,7 @@ async function runJobInner(requested, opts) {
   const mode = opts.mode === 'inplace' ? 'inplace' : 'background';
   const emit = (s) => { try { if (opts.onStatus) opts.onStatus(s); } catch (e) { log('ignored', errMsg(e)); } };
   if (requested.site === 'udemy' && mode !== 'inplace') return { ok: false, error: 'Udemy 講座只能在講座頁上擷取' };
+  if (requested.site === 'coursera' && mode !== 'inplace') return { ok: false, error: 'Coursera 影片只能在影片頁上擷取' };
   // Netflix: the generation it was on when the job started; checked again right before /ingest.
   let nfGen = null;
   if (requested.site === 'netflix' || isNetflixId(requested.id)) {
@@ -468,6 +472,10 @@ async function captureInPlace(tabId, requested) {
     // Isolated world for both phases: udemy-capture.js needs vtt.js's global in the same world.
     return injectCapture(tabId, { expectLessonId: requested.id, timeoutMs: CAPTURE_TIMEOUT_MS },
       { files: ['vtt.js', 'udemy-capture.js'], world: 'ISOLATED', fn: 'ytLearnUdemyCapture' });
+  }
+  if (requested.site === 'coursera') {
+    return injectCapture(tabId, { expectLessonId: requested.id, timeoutMs: CAPTURE_TIMEOUT_MS },
+      { files: ['vtt.js', 'coursera-capture.js'], world: 'ISOLATED', fn: 'ytLearnCourseraCapture' });
   }
   if (requested.site === 'netflix' || isNetflixId(requested.id)) {
     return injectCapture(tabId, { expectLessonId: requested.id, timeoutMs: CAPTURE_TIMEOUT_MS }, NF_CAPTURE);

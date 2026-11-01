@@ -101,7 +101,8 @@ async function boot(href, { replies = {}, hold = [], position = 'absolute', adap
   const video = fakeVideo();
   const root = fakeEl('div');
   root.querySelector = (q) => (q === 'video' || q === 'video.html5-main-video' ? video : null);
-  const sel = { '.watch-video--player-view': root, '[data-purpose="shaka-video-player"]': root };
+  video.closest = (q) => (q === '.video-js' ? root : null);
+  const sel = { '.watch-video--player-view': root, '[data-purpose="shaka-video-player"]': root, video };
   const win = {
     addEventListener: (name, f) => { (winListeners[name] = winListeners[name] || []).push(f); },
     removeEventListener: (name, f) => { winListeners[name] = (winListeners[name] || []).filter((x) => x !== f); },
@@ -210,6 +211,29 @@ test('engine on YouTube: R still writes video.currentTime and resumes a paused v
   assert.deepEqual(b.video.sets, [10]);
   assert.equal(b.video.plays, 1);
   assert.equal(b.posted.length, 0, 'no postMessage on YouTube');
+});
+
+test('engine on Coursera: mounts on the video.js root; ← → step by sentence like [ ]', async () => {
+  const id = 'coursera.machine-learning.iYR2y';
+  const b = await boot('https://www.coursera.org/learn/machine-learning/lecture/iYR2y/supervised-learning', { replies: { 'ytlearn:lesson': { lesson: LESSON(id) } } });
+  assert.deepEqual(await b.toggle(), { handled: true });
+  await flush();
+  assert.ok(overlayHost(b), 'mounted');
+  b.key('ArrowRight'); // from t=3: the cue at 10 s
+  assert.deepEqual(b.video.sets, [10]);
+  b.key('ArrowLeft'); // from t=10: the cue at 2 s
+  b.key('BracketRight');
+  assert.deepEqual(b.video.sets, [10, 2, 10]);
+});
+
+test('engine on YouTube: ← → stay YouTube\'s', async () => {
+  const b = await boot(YURL, { replies: { 'ytlearn:lesson': { lesson: LESSON('puh91fohvTA') } } });
+  assert.deepEqual(await b.toggle(), { handled: true });
+  await flush();
+  assert.ok(overlayHost(b), 'mounted');
+  b.key('ArrowRight');
+  b.key('ArrowLeft');
+  assert.deepEqual(b.video.sets, []);
 });
 
 test('engine on Netflix: ytlearn:site-off -> overlay gone, nf-off to the hook, pending seek dropped; toggle -> {handled:true}, nothing sent', async () => {
