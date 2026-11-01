@@ -82,7 +82,7 @@ def start_capture(base, vid=V):
 def test_add_bad_url_400(env):
     base, _ = env
     code, j = req(f"{base}/add", {"url": "https://evil.com/x"})
-    assert code == 400 and j == {"ok": False, "errors": ["無法辨識的 YouTube、Udemy、Netflix 或 HelloInterview 網址"]}
+    assert code == 400 and j == {"ok": False, "errors": ["無法辨識的 YouTube、Udemy、Netflix、HelloInterview 或 Coursera 網址"]}
     assert req(f"{base}/add", {"nourl": 1})[0] == 400
     assert req(f"{base}/jobs/{V}")[0] == 404
 
@@ -152,7 +152,7 @@ def test_hello_url_end_to_end(env):
 
 def test_add_rejects_non_learn_hello_urls(env):
     base, _ = env
-    err = {"ok": False, "errors": ["無法辨識的 YouTube、Udemy、Netflix 或 HelloInterview 網址"]}
+    err = {"ok": False, "errors": ["無法辨識的 YouTube、Udemy、Netflix、HelloInterview 或 Coursera 網址"]}
     for bad in ("https://www.hellointerview.com/practice/x", "https://www.hellointerview.com/learn/",
                 "https://www.hellointerview.com/learn/System-Design/x", "https://www.hellointerview.com:443/learn/x",
                 "http://www.hellointerview.com/learn/x", "https://hellointerview.com/learn/x",
@@ -216,6 +216,38 @@ def test_netflix_job_with_ref_builds_and_ingests(env):
     seg_user = prov.users[0]  # the one segmentation chunk saw both ref lines
     assert seg_user.startswith("索引範圍 0..9") and "@00:00.0" in seg_user and "@00:02.5" in seg_user
     assert seg_user.endswith("官方繁中字幕（參考）：\n00:00.1–00:01.9 今晚讓燈籠亮著。\n00:02.5–00:03.9 船會晚點回來。")
+
+
+COURSERA_ID = "coursera.machine-learning.iYR2y"
+COURSERA_URL = "https://www.coursera.org/learn/machine-learning/lecture/iYR2y/supervised-learning"
+
+
+def test_coursera_url_end_to_end(env):
+    base, root = env
+    code, j = req(f"{base}/add", {"url": COURSERA_URL + "?utm_source=x#notes"})
+    assert code == 200 and j["job"]["state"] == "queued" and j["job"]["videoId"] == COURSERA_ID
+    code, c = req(f"{base}/jobs/{COURSERA_ID}/claim", b"")
+    assert code == 200
+    body = dict(GOOD, videoId=COURSERA_ID, source="coursera", sourceUrl=COURSERA_URL, kind="unknown",
+                events=[{"t": 0, "d": 2000, "segs": [[None, "Welcome to the first week."]]},
+                        {"t": 2000, "d": 1500, "segs": [[None, "Let's get started."]]}])
+    code, out = req(f"{base}/ingest?attempt={c['attempt']}", json.dumps(body).encode())
+    assert code == 200, out
+    job = wait_state(base, COURSERA_ID, {"done", "error"})
+    assert job["state"] == "done" and job["lessonUrl"] == f"index.html?v={COURSERA_ID}"
+    lesson = json.loads((root / "data" / "lessons" / f"{COURSERA_ID}.json").read_text("utf-8"))
+    assert lesson["videoId"] == COURSERA_ID and lesson["source"] == "coursera" and lesson["sourceUrl"] == COURSERA_URL
+    row = next(r for r in req(f"{base}/lessons")[1] if r["videoId"] == COURSERA_ID)
+    assert row["source"] == "coursera" and row["sourceUrl"] == COURSERA_URL
+    assert req(f"{base}/add", {"url": COURSERA_ID})[1]["job"]["state"] == "done"
+
+
+def test_add_rejects_non_lecture_coursera_urls(env):
+    base, _ = env
+    for bad in (COURSERA_URL.replace("https:", "http:"), COURSERA_URL.replace("www.", ""),
+                "https://www.coursera.org/learn/machine-learning/home/week/1"):
+        assert req(f"{base}/add", {"url": bad})[0] == 400, bad
+
 
 def test_lessons_listing_source_absent_for_youtube(env):
     base, root = env

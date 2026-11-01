@@ -1,5 +1,6 @@
 """Validation for the raw caption capture format (data/raw/<videoId>.json)."""
-from .ids import LESSON_ID_RE, NETFLIX_ID_RE, hello_learn_url, netflix_watch_url, parse_udemy_url, source_of
+from .ids import (LESSON_ID_RE, NETFLIX_ID_RE, hello_learn_url, netflix_watch_url, parse_coursera_url,
+                  parse_udemy_url, source_of)
 
 VIDEO_ID_RE = LESSON_ID_RE  # old name
 REQUIRED_META = ("title", "channel", "duration", "lang", "kind")
@@ -21,8 +22,8 @@ def _is_num(v):
 
 def _source_errors(obj, vid) -> list[str]:
     """Optional `source` / `sourceUrl`. sourceUrl is an outbound link from imported JSON, so it is
-    only allowed for external-site ids and must point at that very lesson: a Udemy lecture URL, or
-    exactly the canonical Netflix watch URL / HelloInterview learn URL. YouTube ids carry no sourceUrl."""
+    only allowed for external-site ids and must point at that very lesson: a Udemy or Coursera lecture
+    URL, or exactly the canonical Netflix watch URL / HelloInterview learn URL. YouTube ids carry no sourceUrl."""
     errs = []
     src = source_of(vid)
     if "source" in obj and obj["source"] != src:
@@ -41,8 +42,15 @@ def _source_errors(obj, vid) -> list[str]:
         elif src == "hellointerview":
             if url != hello_learn_url(vid):
                 errs.append("sourceUrl must be https://www.hellointerview.com/learn/<path> of this videoId")
+        elif src == "coursera":
+            parsed = parse_coursera_url(url)
+            if parsed is None:
+                errs.append("sourceUrl must be https://www.coursera.org/learn/<slug>/lecture/<itemId>")
+            elif f"coursera.{parsed[0]}.{parsed[1]}" != vid:
+                errs.append("sourceUrl course and item id must match videoId")
         else:
-            errs.append("sourceUrl is only allowed for udemy.<lectureId> / netflix.<movieId> / hello.<path> videoIds")
+            errs.append("sourceUrl is only allowed for udemy.<lectureId> / netflix.<movieId> / hello.<path> / "
+                        "coursera.<slug>.<itemId> videoIds")
     return errs
 
 

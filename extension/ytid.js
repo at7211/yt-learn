@@ -21,14 +21,16 @@
   };
   g.ytLearnCanonicalUrl = (id) => 'https://www.youtube.com/watch?v=' + id;
 
-  /* Lesson ids（與 pipeline/ids.py 同一張表 tests/fixtures/lesson_ids.json）：YouTube 11 碼、udemy.<lectureId>、netflix.<movieId> 或 hello.<path>（HelloInterview learn 頁，/learn/ 之後的路徑、/ 換成 .，1–6 段、最多 120 字元；長度上限只寫在 LESSON_ID_RE／HELLO_ID_RE 的 lookahead）。 */
-  const LESSON_ID_RE = /^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12}|netflix\.[0-9]{1,12}|hello\.(?=[a-z0-9.-]{1,120}$)[a-z0-9-]+(?:\.[a-z0-9-]+){0,5})$/;
+  /* Lesson ids（與 pipeline/ids.py 同一張表 tests/fixtures/lesson_ids.json）：YouTube 11 碼、udemy.<lectureId>、netflix.<movieId>、hello.<path>（HelloInterview learn 頁，/learn/ 之後的路徑、/ 換成 .，1–6 段、最多 120 字元；長度上限只寫在 LESSON_ID_RE／HELLO_ID_RE 的 lookahead）或 coursera.<課程 slug>.<itemId>。 */
+  const LESSON_ID_RE = /^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12}|netflix\.[0-9]{1,12}|hello\.(?=[a-z0-9.-]{1,120}$)[a-z0-9-]+(?:\.[a-z0-9-]+){0,5}|coursera\.[A-Za-z0-9_-]{1,120}\.[A-Za-z0-9_-]{1,32})$/;
   const UDEMY_ID_RE = /^udemy\.[0-9]{1,12}$/;
   const NETFLIX_ID_RE = /^netflix\.[0-9]{1,12}$/;
   const HELLO_ID_RE = /^hello\.((?=[a-z0-9.-]{1,120}$)[a-z0-9-]+(?:\.[a-z0-9-]+){0,5})$/;
+  const COURSERA_ID_RE = /^coursera\.[A-Za-z0-9_-]{1,120}\.[A-Za-z0-9_-]{1,32}$/;
   const NETFLIX_URL_RE = /^https:\/\/www\.netflix\.com\/watch\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
   const HELLO_URL_RE = /^https:\/\/www\.hellointerview\.com\/learn\/((?:[a-z0-9-]+\/){0,5}[a-z0-9-]+)\/?(?:[?#]\S*)?$/;
   const UDEMY_URL_RE = /^https:\/\/www\.udemy\.com\/course\/([A-Za-z0-9_-]+)\/learn\/lecture\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
+  const COURSERA_URL_RE = /^https:\/\/www\.coursera\.org\/learn\/([A-Za-z0-9_-]{1,120})\/lecture\/([A-Za-z0-9_-]{1,32})(?:\/[A-Za-z0-9_.~%-]*)?\/?(?:[?#]\S*)?$/;
   g.ytLearnParseUdemyUrl = function (url) {
     if (typeof url !== 'string') return null;
     const m = UDEMY_URL_RE.exec(url);
@@ -50,6 +52,11 @@
     const m = typeof id === 'string' ? HELLO_ID_RE.exec(id) : null;
     return m ? 'https://www.hellointerview.com/learn/' + m[1].replace(/\./g, '/') : null;
   };
+  g.ytLearnParseCourseraUrl = function (url) {
+    if (typeof url !== 'string') return null;
+    const m = COURSERA_URL_RE.exec(url);
+    return m ? { slug: m[1], itemId: m[2] } : null;
+  };
   g.ytLearnParseLessonId = function (s) {
     if (typeof s !== 'string') return null;
     s = s.trim();
@@ -60,6 +67,8 @@
     if (n) return 'netflix.' + n;
     const h = g.ytLearnParseHelloUrl(s);
     if (h) return 'hello.' + h.replace(/\//g, '.');
+    const c = g.ytLearnParseCourseraUrl(s);
+    if (c) return 'coursera.' + c.slug + '.' + c.itemId;
     return g.ytLearnParseVideoId(s);
   };
   g.ytLearnLessonSource = function (id) {
@@ -67,6 +76,7 @@
     if (UDEMY_ID_RE.test(id)) return 'udemy';
     if (NETFLIX_ID_RE.test(id)) return 'netflix';
     if (HELLO_ID_RE.test(id)) return 'hellointerview';
+    if (COURSERA_ID_RE.test(id)) return 'coursera';
     return 'youtube';
   };
 })(globalThis);

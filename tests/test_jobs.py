@@ -37,6 +37,10 @@ def test_canonical_url_none_for_udemy():
     assert canonical_url("udemy-12345") == "https://www.youtube.com/watch?v=udemy-12345"
 
 
+def test_canonical_url_none_for_coursera():
+    assert canonical_url("coursera.machine-learning.iYR2y") is None
+
+
 def at(state, attempt=1):
     """Store with job V driven into `state` via legal transitions."""
     s = JobStore()
