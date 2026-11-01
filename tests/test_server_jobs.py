@@ -122,6 +122,50 @@ def test_udemy_url_end_to_end(env):
     assert req(f"{base}/add", {"url": UDEMY_ID})[1]["job"]["state"] == "done"
 
 
+NETFLIX_ID = "netflix.81234567"
+
+
+def test_netflix_job_with_ref_builds_and_ingests(env):
+    """A Netflix capture carrying the official zh-Hant ref track ingests, builds (stub) to done, keeps
+    ref in the stored raw only, and that stored raw builds with the real pipeline (rule fallback)."""
+    from pipeline.build import build_lesson
+    from pipeline.llm import ProviderError
+    from pipeline.schema import validate_lesson
+
+    class AlwaysFail:
+        def __init__(self):
+            self.users = []
+
+        def complete_json(self, system, user, schema=None):
+            self.users.append(user)
+            raise ProviderError("offline")
+
+    base, root = env
+    url = "https://www.netflix.com/watch/81234567"
+    assert req(f"{base}/add", {"url": url})[1]["job"]["videoId"] == NETFLIX_ID
+    code, c = req(f"{base}/jobs/{NETFLIX_ID}/claim", b"")
+    assert code == 200
+    body = dict(GOOD, videoId=NETFLIX_ID, source="netflix", sourceUrl=url, kind="unknown",
+                events=[{"t": 0, "d": 2000, "segs": [[None, "Keep the lantern lit tonight."]]},
+                        {"t": 2500, "d": 1500, "segs": [[None, "The boats come back late."]]}],
+                ref={"lang": "zh-Hant", "kind": "official",
+                     "events": [{"t": 100, "d": 1800, "text": "今晚讓燈籠亮著。"},
+                                {"t": 2500, "d": 1400, "text": "船會晚點回來。"}]})
+    code, out = req(f"{base}/ingest?attempt={c['attempt']}", json.dumps(body).encode())
+    assert code == 200, out
+    job = wait_state(base, NETFLIX_ID, {"done", "error"})
+    assert job["state"] == "done" and job["lessonUrl"] == f"index.html?v={NETFLIX_ID}"
+    stored = json.loads((root / "data" / "raw" / f"{NETFLIX_ID}.json").read_text("utf-8"))
+    assert stored["ref"] == body["ref"]
+    lesson = json.loads((root / "data" / "lessons" / f"{NETFLIX_ID}.json").read_text("utf-8"))
+    assert lesson["source"] == "netflix" and "ref" not in lesson and "refStatus" not in lesson
+    prov = AlwaysFail()
+    built, stats = build_lesson(stored, prov)
+    assert validate_lesson(built) == [] and "ref" not in built and stats["fallback_chunks"] == 1
+    seg_user = prov.users[0]  # the one segmentation chunk saw both ref lines
+    assert seg_user.startswith("索引範圍 0..9") and "@00:00.0" in seg_user and "@00:02.5" in seg_user
+    assert seg_user.endswith("官方繁中字幕（參考）：\n00:00.1–00:01.9 今晚讓燈籠亮著。\n00:02.5–00:03.9 船會晚點回來。")
+
 def test_lessons_listing_source_absent_for_youtube(env):
     base, root = env
     full_lesson(root)

@@ -35,9 +35,55 @@ SEGMENT_SCHEMA = {
 }
 
 
-def segment_user_prompt(words: list[dict], a: int, b: int) -> str:
+# Appended to SEGMENT_SYSTEM only when the capture carries an official zh-Hant track (raw["ref"]).
+SEGMENT_REF_ADDENDUM = """
+
+這段另外附有參考資料：
+6. 以「@」開頭的行（例如 @01:23.4，分:秒.十分之一秒）是時間標記，表示下面那幾個英文單字從這個時間開始；時間標記不是單字、沒有索引。
+7. 最後「官方繁中字幕（參考）：」區塊是這部影片的官方繁體中文字幕，每行格式為「開始時間–結束時間 字幕文字」，只供翻譯用詞參考。參考行不屬於索引範圍，不可以當成單字計算，也不可以出現在 tokens 裡。
+8. 英文語意優先：用時間標記找出時間重疊的參考句，語意相符就沿用它的用詞與譯名；不符（例如時間對不上、內容不同）就依英文自己翻。不得把英文沒說的內容寫進 zh。"""
+
+REF_HEADING = "官方繁中字幕（參考）："
+
+
+def _ms(seconds: float) -> int:
+    return round(seconds * 1000)
+
+
+def _clock(ms: int) -> str:
+    """``mm:ss.d`` from integer ms, tenths floored; minutes are not capped at 59."""
+    tenths = ms // 100
+    return f"{tenths // 600:02d}:{tenths // 10 % 60:02d}.{tenths % 10}"
+
+
+def segment_user_prompt(words: list[dict], a: int, b: int, *, ref: dict | None = None) -> str:
+    """User prompt for words a..b (global, inclusive).
+
+    ``ref`` is the raw capture's ``raw["ref"]`` dict ({"lang","kind","events":[{"t","d","text"}]},
+    ms). Without it the prompt is exactly the classic index list. With it, an ``@mm:ss.d`` time
+    marker precedes the first word and every word whose source event (``ev``; missing = same as the
+    previous word) changes, and the ref events overlapping the chunk's half-open time range
+    [words[a].t, words[b].e) are appended under REF_HEADING; with no overlap the block is omitted."""
     lines = [f"索引範圍 {a}..{b}，共 {b - a + 1} 個單字："]
-    lines += [f"{i}: {words[i]['w']}" for i in range(a, b + 1)]
+    if ref is None:
+        lines += [f"{i}: {words[i]['w']}" for i in range(a, b + 1)]
+        return "\n".join(lines)
+    prev_ev = None
+    for i in range(a, b + 1):
+        ev = words[i].get("ev")
+        ev = prev_ev if ev is None else ev  # missing/None = same event as the previous word
+        if i == a or ev != prev_ev:
+            lines.append(f"@{_clock(_ms(words[i]['t']))}")
+        prev_ev = ev
+        lines.append(f"{i}: {words[i]['w']}")
+    start, end = _ms(words[a]["t"]), _ms(words[b]["e"])
+    hits = sorted((e for e in ref["events"] if e["t"] < end and e["t"] + e["d"] > start),
+                  key=lambda e: e["t"])
+    if hits:
+        lines += ["", REF_HEADING]
+        # One line per reference event: whitespace (incl. newlines in hand-imported raws) collapsed so a
+        # reference line can never look like a word line or a time marker.
+        lines += [f"{_clock(e['t'])}\u2013{_clock(e['t'] + e['d'])} {' '.join(e['text'].split())}" for e in hits]
     return "\n".join(lines)
 
 
@@ -89,17 +135,21 @@ def _warn(a: int, b: int, why: str) -> None:
 
 
 def make_cues(words: list[dict], chunk: tuple[int, int], provider,
-              stats: dict | None = None) -> list[dict]:
-    """Segment one chunk; on whole-chunk fallback, increments ``stats["fallback_chunks"]``."""
+              stats: dict | None = None, *, ref: dict | None = None) -> list[dict]:
+    """Segment one chunk; on whole-chunk fallback, increments ``stats["fallback_chunks"]``.
+
+    ``ref`` (raw["ref"], optional) adds time markers + reference lines to the user prompt and
+    SEGMENT_REF_ADDENDUM to the system prompt; with ref=None the call is unchanged."""
     a, b = chunk
 
     def fell_back():
         if stats is not None:
             stats["fallback_chunks"] = stats.get("fallback_chunks", 0) + 1
 
-    user = segment_user_prompt(words, a, b)
+    user = segment_user_prompt(words, a, b, ref=ref)
+    system = SEGMENT_SYSTEM if ref is None else SEGMENT_SYSTEM + SEGMENT_REF_ADDENDUM
     try:
-        resp = provider.complete_json(SEGMENT_SYSTEM, user, SEGMENT_SCHEMA)
+        resp = provider.complete_json(system, user, SEGMENT_SCHEMA)
     except ProviderError as e:
         _warn(a, b, str(e))
         fell_back()

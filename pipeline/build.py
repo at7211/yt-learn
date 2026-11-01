@@ -56,10 +56,11 @@ def build_lesson(raw: dict, provider, limit_seconds: float | None = None,
     if workers is None:
         workers = _workers_from_env()
     done = 0
+    ref = raw.get("ref")  # optional official zh-Hant track: prompt reference only, never in the lesson
 
     def segment(chunk):
         st = {"fallback_chunks": 0}
-        return make_cues(words, chunk, provider, st), st["fallback_chunks"]
+        return make_cues(words, chunk, provider, st, ref=ref), st["fallback_chunks"]
 
     results = []
     if workers <= 1:
