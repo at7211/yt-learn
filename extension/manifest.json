@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "yt-learn 擷取",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "minimum_chrome_version": "120",
   "permissions": [
     "scripting",
@@ -13,6 +13,7 @@
     "https://www.youtube.com/*",
     "https://www.udemy.com/*",
     "https://www.hellointerview.com/*",
+    "https://www.coursera.org/*",
     "http://127.0.0.1:8765/*"
   ],
   "optional_host_permissions": [
@@ -35,7 +36,8 @@
       "matches": [
         "https://www.youtube.com/*",
         "https://www.udemy.com/*",
-        "https://www.hellointerview.com/*"
+        "https://www.hellointerview.com/*",
+        "https://www.coursera.org/*"
       ],
       "js": [
         "overlay.js"
@@ -58,7 +60,8 @@
         "https://www.youtube.com/*",
         "https://www.udemy.com/*",
         "https://www.netflix.com/*",
-        "https://www.hellointerview.com/*"
+        "https://www.hellointerview.com/*",
+        "https://www.coursera.org/*"
       ]
     }
   ],
