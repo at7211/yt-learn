@@ -1,4 +1,4 @@
-yt-learn 擷取擴充功能（v1.6.0，未封裝）。
+yt-learn 擷取擴充功能（v1.7.0，未封裝）。
 支援站點：YouTube 影片頁（https://www.youtube.com/watch?v=<id>）、Udemy 講座頁（https://www.udemy.com/course/<slug>/learn/lecture/<id>，課程 id 為 udemy.<lectureId>）、Netflix 播放頁（選擇性開啟，見下）與 HelloInterview 課程頁（https://www.hellointerview.com/learn/…）。四站共用同一個疊層引擎（overlay.js），站點差異都在 site.js 的轉接層（課程 id、播放器 {root, video}、廣告、隱藏原生字幕、換頁事件）。
 載入：chrome://extensions → 開啟開發人員模式 → 載入未封裝項目 → 選此 extension/ 資料夾。改過檔案後按該擴充功能的「重新載入」，並重新整理 http://127.0.0.1:8765 的分頁。
 入口一（圖示，疊層模式）：在 https://www.youtube.com/watch?v=<id> 分頁按工具列圖示 → 課程直接疊在 YouTube 播放器上（英文字幕＋當前單字橘色、繁中字幕、右側單字面板、開場 10 秒前情提要卡），再按一次關掉。這支還沒有課程時，播放器左下角出現小 pill「yt-learn：擷取字幕… → 產生課程 x% → 完成」，在目前分頁擷取字幕、等產課完成後自動疊上，不開新分頁。手動關掉後換片不會自動打開；開著時換到有課程的影片會自動疊上。
