@@ -1,5 +1,5 @@
-/* yt-learn overlay engine: content script on https://www.youtube.com/* and https://www.udemy.com/*
-   (manifest), and on https://www.netflix.com/* while Netflix is switched on (background.js registers it)
+/* yt-learn overlay engine: content script on https://www.youtube.com/*, https://www.udemy.com/* and
+   https://www.hellointerview.com/* (manifest), and on https://www.netflix.com/* while Netflix is switched on (background.js registers it)
    (isolated world, document_idle). Everything site-specific (lesson id from the route, the player
    {root, video}, ads, the native-caption rule, SPA navigation events, seeking) comes from a site adapter
    (site.js siteFor(location.hostname)). A site can be switched off for good on this page (Netflix:
@@ -89,7 +89,7 @@
       const id = currentVideoId();
       // A mount for another lesson (the tab moved on to another episode while the worker captured): leave it.
       if (mountOnly && id !== msg.videoId) { sendResponse({ handled: true }); return; }
-      // No player on the page (an article-type Udemy lecture, YouTube mid-navigation): let the worker's
+      // No player on the page (an article-type Udemy lecture or HelloInterview page, YouTube mid-navigation): let the worker's
       // fallback flow run instead of silently building with nowhere to show the pill. Toggling an
       // overlay that is already up or building still works even if the player vanished.
       const handled = !!id && (S.mounted || S.building || !!findPlayer());
@@ -271,7 +271,8 @@
   }
 
   // Our layers are position:absolute; inset:0 inside the root. A static root gets position:relative
-  // while we are on it (both sites' roots are already positioned today).
+  // while we are on it (the sites' chosen roots are positioned today; the HelloInterview parentElement
+  // fallback may not be).
   function holdPosition(root) {
     if (posFix && posFix.root === root) return;
     releasePosition();
@@ -674,8 +675,9 @@
   window.addEventListener('keydown', onKey, true);
   setInterval(() => {
     // Fallback when the site's navigation event is missed or renamed (Udemy has none: this poll is its
-    // router); also catches ytd-watch-flexy catching up with the URL, and a player whose {root, video}
-    // was replaced under the same lesson id (Udemy swaps <video>): either change → navigate → remount.
+    // router; Netflix and HelloInterview pushState changes fire nothing either); also catches ytd-watch-flexy
+    // catching up with the URL, and a player whose {root, video} was replaced under the same lesson id (Udemy
+    // swaps <video>, HelloInterview rebuilds the whole player): either change → navigate → remount.
     if (!S || S.disabled) return;
     if (location.href !== lastHref || currentVideoId() !== S.videoId || (S.videoId !== null && playerToken() !== S.token)) { lastHref = location.href; syncRoute(); }
   }, ROUTE_POLL_MS);

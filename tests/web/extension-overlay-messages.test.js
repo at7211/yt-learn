@@ -319,10 +319,10 @@ test('menu clicks open the home page and the settings section', async () => {
   ]);
 });
 
-test('manifest asks for contextMenus and is version 1.6.0', () => {
+test('manifest asks for contextMenus and is version 1.7.0', () => {
   const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
   assert.ok(m.permissions.includes('contextMenus'));
-  assert.equal(m.version, '1.6.0');
+  assert.equal(m.version, '1.7.0');
   // tab.url comes from host permissions (youtube.com, udemy.com, the local server) and activeTab on icon click
   assert.ok(!m.permissions.includes('tabs') && m.permissions.includes('activeTab'));
 });
@@ -332,12 +332,30 @@ test('manifest: udemy.com gets the host permission, the overlay content script a
   const U = 'https://www.udemy.com/*';
   assert.ok(m.host_permissions.includes(U));
   const overlay = m.content_scripts.find((c) => c.js.includes('overlay.js'));
-  assert.deepEqual(overlay.matches, ['https://www.youtube.com/*', U]);
+  assert.deepEqual(overlay.matches, ['https://www.youtube.com/*', U, 'https://www.hellointerview.com/*']);
   const war = m.web_accessible_resources[0];
   assert.ok(war.matches.includes(U));
   assert.ok(war.resources.includes('site.js'));
   const src = readFileSync(new URL('../../extension/overlay.js', import.meta.url), 'utf8');
   assert.ok(src.includes("import(url('site.js'))"));
+});
+
+test('manifest: hellointerview.com gets the host permission, the overlay content script and the overlay resources', () => {
+  const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
+  const H = 'https://www.hellointerview.com/*';
+  assert.ok(m.host_permissions.includes(H), 'static host permission (not optional, unlike Netflix)');
+  assert.ok(!(m.optional_host_permissions || []).includes(H));
+  const overlay = m.content_scripts.find((c) => c.js.includes('overlay.js'));
+  assert.ok(overlay.matches.includes(H));
+  assert.equal(m.web_accessible_resources.length, 1);
+  const war = m.web_accessible_resources[0];
+  assert.ok(war.matches.includes(H));
+  assert.ok(war.resources.includes('site.js'));
+  // the capture scripts are injected by scripting.executeScript, never web-accessible
+  for (const f of ['vtt.js', 'hellointerview-capture.js']) assert.ok(!war.resources.includes(f), f);
+  // only the exact host: no wildcard subdomains
+  const all = JSON.stringify(m);
+  assert.ok(!all.includes('*.hellointerview.com'));
 });
 
 test('overlay and pill shadow roots are closed', () => {
@@ -562,6 +580,138 @@ test('siteOfUrl', () => {
   assert.equal(w.ctx.siteOfUrl(LURL), 'udemy');
   for (const u of ['https://www.youtube.com/shorts/' + VID, 'https://www.udemy.com/course/x/', 'http://www.udemy.com/course/x/learn/lecture/1',
     'https://mycompany.udemy.com/course/x/learn/lecture/1', '', undefined]) assert.equal(w.ctx.siteOfUrl(u), null, String(u));
+});
+
+/* ---------- HelloInterview learn pages (in place only) ---------- */
+
+const HID = 'hello.system-design.patterns.dealing-with-contention';
+const HURL = 'https://www.hellointerview.com/learn/system-design/patterns/dealing-with-contention?x=1#y';
+const HELLO_ONLY_PAGE = 'HelloInterview 課程只能在課程頁上擷取';
+const helloRoutes = (extra = {}) => ({
+  'POST /add': { status: 200, json: { job: { videoId: HID, state: 'queued', attempt: 1, message: '' } } },
+  ['POST /jobs/' + HID + '/claim']: { status: 200, json: { attempt: 1 } },
+  'POST /ingest?attempt=1': { status: 200, json: { ok: true, job: { videoId: HID, state: 'captured', attempt: 1, message: '' } } },
+  ['POST /jobs/' + HID + '/fail']: { status: 200, json: { ok: true } },
+  ...extra,
+});
+const helloRaw = { videoId: HID, source: 'hellointerview', sourceUrl: 'https://www.hellointerview.com/learn/system-design/patterns/dealing-with-contention',
+  events: [{ t: 0, d: 1000, segs: [[null, 'hi']] }] };
+
+test('icon on a HelloInterview learn page: overlay not handled -> /add with the tab url -> claim -> hello capture (ISOLATED, vtt.js + hellointerview-capture.js) -> /ingest', async () => {
+  const injected = [];
+  const w = load(helloRoutes(), { toggleReply: { handled: false }, executeScript: captureScript(helloRaw, injected) });
+  await w.ctx.onIconClicked({ id: 7, url: HURL });
+  assert.deepEqual(plain(w.calls.sent), [{ tabId: 7, msg: { type: 'ytlearn:toggle' } }]);
+  assert.deepEqual(w.calls.fetched, ['POST /add', 'POST /jobs/' + HID + '/claim', 'POST /ingest?attempt=1']);
+  assert.deepEqual(plain(w.calls.bodies['POST /add']), { url: HURL });
+  assert.equal(injected.length, 2);
+  assert.deepEqual(plain(injected[0]), { target: { tabId: 7 }, files: ['vtt.js', 'hellointerview-capture.js'], world: 'ISOLATED' });
+  assert.equal(injected[1].world, 'ISOLATED', 'both phases in the same world');
+  assert.deepEqual(plain(injected[1].args), ['ytLearnHelloCapture', { expectLessonId: HID, timeoutMs: 25000 }]);
+  const seen = [];
+  const fake = { ytLearnHelloCapture: async (o) => { seen.push(o); return helloRaw; } };
+  const r = await vm.runInNewContext('(' + injected[1].func.toString() + ')', { globalThis: fake })(...injected[1].args);
+  assert.deepEqual(plain(r), { ok: true, raw: helloRaw });
+  assert.deepEqual(plain(seen), [{ expectLessonId: HID, timeoutMs: 25000 }]);
+  assert.deepEqual(plain(w.calls.bodies['POST /ingest?attempt=1']), helloRaw);
+  assert.deepEqual(w.calls.removed, [], 'no tab of our own');
+  assert.deepEqual(plain(w.calls.created), [{ url: 'http://127.0.0.1:8765/index.html?v=' + HID, active: true }]);
+});
+
+test('icon on a HelloInterview learn page: overlay handled -> nothing else', async () => {
+  const w = load({}, { toggleReply: { handled: true } });
+  await w.ctx.onIconClicked({ id: 7, url: HURL });
+  assert.deepEqual(plain(w.calls.sent), [{ tabId: 7, msg: { type: 'ytlearn:toggle' } }]);
+  assert.deepEqual(w.calls.fetched, []);
+  assert.deepEqual(w.calls.created, []);
+});
+
+test('icon on a non-learn HelloInterview page opens the home page', async () => {
+  for (const url of ['https://www.hellointerview.com/', 'https://www.hellointerview.com/learn', 'https://www.hellointerview.com/learn/',
+    'https://www.hellointerview.com/practice/x', 'https://hellointerview.com/learn/system-design', 'http://www.hellointerview.com/learn/system-design']) {
+    const w = load({}, { toggleReply: { handled: true } });
+    await w.ctx.onIconClicked({ id: 7, url });
+    assert.deepEqual(w.calls.sent, [], url);
+    assert.deepEqual(w.calls.fetched, [], url);
+    assert.deepEqual(plain(w.calls.created), [{ url: 'http://127.0.0.1:8765/index.html', active: true }], url);
+  }
+  // a learn page but no tab id: still no background mode
+  const w = load({}, { toggleReply: { handled: true } });
+  await w.ctx.onIconClicked({ url: HURL });
+  assert.deepEqual(w.calls.fetched, []);
+  assert.deepEqual(plain(w.calls.created), [{ url: 'http://127.0.0.1:8765/index.html', active: true }]);
+});
+
+test('HelloInterview never runs in background mode', async () => {
+  for (const requested of [{ id: HID, url: HURL, site: 'hellointerview' }, { id: HID, url: 'x', site: 'youtube' }]) {
+    const injected = [];
+    const w = load(helloRoutes(), { executeScript: captureScript(helloRaw, injected) });
+    const r = await w.ctx.runJob(requested, { mode: 'background' });
+    assert.deepEqual(plain(r), { ok: false, error: HELLO_ONLY_PAGE }, requested.site);
+    assert.deepEqual(w.calls.fetched, []);
+    assert.deepEqual(w.calls.created, []);
+    assert.deepEqual(injected, []);
+  }
+  // the bridge (local page) asks for a background capture: refused, never reaches /add
+  const w = load(helloRoutes());
+  const reply = await new Promise((resolve) => {
+    w.listeners.external({ type: 'ytlearn:capture', videoId: HID }, { origin: 'http://127.0.0.1:8765', tab: { id: 3 } }, resolve);
+  });
+  assert.equal(reply.ok, false);
+  assert.equal(reply.error, '無法辨識的影片 id', 'stopped by the ytLearnParseVideoId guard');
+  assert.deepEqual(w.calls.fetched, []);
+  assert.deepEqual(w.calls.created, []);
+});
+
+test('ytlearn:build from a HelloInterview overlay carries the page url; a url naming another page is refused', async () => {
+  const injected = [];
+  const w = load(helloRoutes(), { executeScript: captureScript(helloRaw, injected) });
+  const { r, ret } = await ask(w, { type: 'ytlearn:build', videoId: HID, url: HURL }, { id: EXT, tab: { id: 42 } });
+  assert.equal(ret, true);
+  assert.equal(r.ok, true);
+  assert.deepEqual(plain(w.calls.bodies['POST /add']), { url: HURL });
+  assert.deepEqual(plain(injected[0]), { target: { tabId: 42 }, files: ['vtt.js', 'hellointerview-capture.js'], world: 'ISOLATED' });
+  assert.deepEqual(w.calls.created, []);
+  const other = load(helloRoutes());
+  for (const url of ['https://www.hellointerview.com/learn/system-design/patterns/other', 'https://www.hellointerview.com/practice/x', LURL]) {
+    const bad = await ask(other, { type: 'ytlearn:build', videoId: HID, url });
+    assert.equal(bad.ret, false, url);
+    assert.equal(bad.r.ok, false, url);
+  }
+  const noUrl = await ask(other, { type: 'ytlearn:build', videoId: HID });
+  assert.equal(noUrl.r.ok, false);
+  assert.deepEqual(other.calls.fetched, []);
+});
+
+test('ytlearn:lesson / ytlearn:job accept hello ids', async () => {
+  const w = load({ ['GET /data/lessons/' + HID + '.json']: { status: 200, json: { videoId: HID } }, ['GET /jobs/' + HID]: { status: 404 } });
+  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:lesson', videoId: HID })).r), { lesson: { videoId: HID } });
+  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:job', videoId: HID })).r), { missing: true });
+  assert.deepEqual(w.calls.fetched, ['GET /data/lessons/' + HID + '.json', 'GET /jobs/' + HID]);
+});
+
+test('captureInPlace never falls back to capture.js for a hello id', async () => {
+  // even when the request is mislabelled with another site, the id decides
+  for (const site of ['hellointerview', 'youtube', undefined]) {
+    const injected = [];
+    const w = load({}, { executeScript: captureScript(helloRaw, injected) });
+    await w.ctx.captureInPlace(7, { id: HID, url: HURL, site });
+    assert.deepEqual(plain(injected[0].files), ['vtt.js', 'hellointerview-capture.js'], String(site));
+    assert.ok(!injected[0].files.includes('capture.js'));
+    assert.ok(injected.every((x) => x.world === 'ISOLATED'));
+    assert.equal(injected[1].args[0], 'ytLearnHelloCapture');
+  }
+  const src = SRC.slice(SRC.indexOf('async function captureInPlace'), SRC.indexOf('async function captureInBackground'));
+  assert.ok(src.indexOf("'hellointerview-capture.js'") < src.lastIndexOf('expectVideoId'), 'hello branch comes before the YouTube default');
+});
+
+test('siteOfUrl: HelloInterview learn pages only', () => {
+  const w = load();
+  for (const u of [HURL, 'https://www.hellointerview.com/learn/system-design', 'https://www.hellointerview.com/learn/system-design/']) {
+    assert.equal(w.ctx.siteOfUrl(u), 'hellointerview', u);
+  }
+  for (const u of ['https://www.hellointerview.com/', 'https://www.hellointerview.com/learn/', 'https://www.hellointerview.com/practice/x',
+    'https://app.hellointerview.com/learn/x', 'https://www.hellointerview.com:444/learn/x', HID]) assert.equal(w.ctx.siteOfUrl(u), null, u);
 });
 
 /* ---------- Netflix: opt-in state machine, entry points, probe ---------- */

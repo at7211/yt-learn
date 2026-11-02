@@ -2,7 +2,7 @@
 // siteFor(hostname) -> { name, lessonId(url, doc), findPlayer(doc) -> {root, video}|null, isAd(root),
 //                        nativeCaptionCss, navEvents: [{target:'document'|'window', name}],
 //                        seek?(video, t, {play, lessonId, gen}) -> boolean, cancelSeek?() } | null
-// seek is optional: missing or false -> the engine sets video.currentTime itself (YouTube, Udemy);
+// seek is optional: missing or false -> the engine sets video.currentTime itself (YouTube, Udemy, HelloInterview);
 // true -> the adapter did the seek (Netflix: through the MAIN-world hook, never video.currentTime).
 // Everything here only reads the document / window it is handed, so it runs under node --test with fakes
 // (tests/web/site.test.js).
@@ -18,7 +18,7 @@ export function youtubeLessonId(url, doc) {
   const flexy = doc && doc.querySelector('ytd-watch-flexy');
   const attr = flexy ? flexy.getAttribute('video-id') : null;
   const id = lessonIdFromUrl(url, attr);
-  return id && YT_ID_RE.test(id) ? id : null; // YouTube ids only (udemy.<id> / netflix.<id> are other sites)
+  return id && YT_ID_RE.test(id) ? id : null; // YouTube ids only (udemy. / netflix. / hello. ids are other sites)
 }
 
 export function youtubeFindPlayer(doc) {
@@ -146,9 +146,41 @@ export const netflix = Object.freeze({
   cancelSeek: () => { if (nfSeeker) nfSeeker.cancel(); },
 });
 
+/* ---------- HelloInterview (learn pages, Vidstack player) ---------- */
+
+const HELLO_PLAYER = '[data-media-player]'; // Vidstack's player element: also the fullscreen host
+
+export function helloLessonId(url) {
+  const id = lessonIdFromUrl(url);
+  return id && id.startsWith('hello.') ? id : null;
+}
+
+// The first <video> with a captions track (the capture uses the same rule). The root is the Vidstack player
+// element, so the ytlearn-on rule reaches .vds-captions (a sibling of the video's provider div); without it,
+// the video's parent. The site rebuilds the player on every navigation: the engine compares {root, video}.
+export function helloFindPlayer(doc) {
+  if (!doc) return null;
+  const video = [...doc.querySelectorAll('video')].find((v) => !!v.querySelector('track[kind="captions"]'));
+  if (!video) return null;
+  return { root: video.closest(HELLO_PLAYER) || video.parentElement, video };
+}
+
+export const hellointerview = Object.freeze({
+  name: 'hellointerview',
+  lessonId: (url) => helloLessonId(url),
+  findPlayer: helloFindPlayer,
+  isAd: () => false,
+  // The site draws cues in .vds-captions; the native track stays disabled, ::cue covers it if it ever shows.
+  nativeCaptionCss: '.' + ON_CLASS + ' .vds-captions{visibility:hidden !important}'
+    + '.' + ON_CLASS + ' video::cue{color:transparent !important;background:transparent !important;text-shadow:none !important}',
+  // pushState lesson changes fire nothing; the engine's 1 s route poll catches them. Back/forward: popstate.
+  navEvents: Object.freeze([Object.freeze({ target: 'window', name: 'popstate' })]),
+});
+
 export function siteFor(hostname) {
   if (hostname === 'www.youtube.com') return youtube;
   if (hostname === 'www.udemy.com') return udemy;
   if (hostname === 'www.netflix.com') return netflix;
+  if (hostname === 'www.hellointerview.com') return hellointerview;
   return null;
 }

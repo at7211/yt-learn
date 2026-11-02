@@ -13,6 +13,9 @@ const ENGINE = SRC.replace(/import\(url\('([a-z-]+\.js)'\)\)/g, "__imp('$1')");
 const NF = 'https://www.netflix.com';
 const NURL = NF + '/watch/81234567?trackId=1';
 const YURL = 'https://www.youtube.com/watch?v=puh91fohvTA';
+const HI = 'https://www.hellointerview.com/learn/';
+const HURL = HI + 'system-design/patterns/dealing-with-contention';
+const HID = 'hello.system-design.patterns.dealing-with-contention';
 const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 const plain = (x) => JSON.parse(JSON.stringify(x));
 let modSeq = 0;
@@ -102,6 +105,15 @@ async function boot(href, { replies = {}, hold = [], position = 'absolute', adap
   const root = fakeEl('div');
   root.querySelector = (q) => (q === 'video' || q === 'video.html5-main-video' ? video : null);
   const sel = { '.watch-video--player-view': root, '[data-purpose="shaka-video-player"]': root };
+  // HelloInterview: the video carries a captions track and sits inside a [data-media-player] root.
+  // swapPlayer() replaces both (the site rebuilds the player on every navigation); null removes it.
+  const hello = (r, v) => {
+    v.querySelector = (q) => (q === 'track[kind="captions"]' ? { kind: 'captions' } : null);
+    v.closest = (q) => (q === '[data-media-player]' ? r : null);
+    v.parentElement = r;
+    return { root: r, video: v };
+  };
+  let player = hello(root, video);
   const win = {
     addEventListener: (name, f) => { (winListeners[name] = winListeners[name] || []).push(f); },
     removeEventListener: (name, f) => { winListeners[name] = (winListeners[name] || []).filter((x) => x !== f); },
@@ -112,6 +124,7 @@ async function boot(href, { replies = {}, hold = [], position = 'absolute', adap
   const document = {
     head: fakeEl('head'), documentElement: fakeEl('html'),
     querySelector: (q) => sel[q] || null,
+    querySelectorAll: (q) => (q === 'video' && player ? [player.video] : []),
     getElementById: (id) => (id === 'movie_player' ? root : null),
     createElement: (t) => fakeEl(t),
     createTextNode: (t) => ({ nodeType: 3, textContent: t }),
@@ -169,12 +182,20 @@ async function boot(href, { replies = {}, hold = [], position = 'absolute', adap
   booted.push({ cleanup });
   const tick = async (ms) => { clock.tick(ms); await flush(); };
   const setReply = (type, r) => { replies[type] = r; };
-  return { setReply, clock, tick, location, cleanup, video, root, posted, sentMsgs, held, logs, toggle, message, key, winListeners, docListeners, win };
+  const swapPlayer = (gone = false) => {
+    if (gone) { player = null; return null; }
+    const r = fakeEl('div');
+    const v = fakeVideo();
+    r.querySelector = (q) => (q === 'video' ? v : null);
+    player = hello(r, v);
+    return player;
+  };
+  return { setReply, clock, tick, location, cleanup, video, root, swapPlayer, posted, sentMsgs, held, logs, toggle, message, key, winListeners, docListeners, win };
 }
 
 const lessonOf = (href) => { const m = /\/watch\/([0-9]+)/.exec(href); return m ? 'netflix.' + m[1] : new URL(href).searchParams.get('v'); };
 const nfOff = (b) => b.posted.filter((p) => p.data.type === 'ytlearn:nf-off');
-const overlayHost = (b) => b.root.children.find((c) => c.id === 'ytlearn-overlay');
+const overlayHost = (b, root = b.root) => root.children.find((c) => c.id === 'ytlearn-overlay');
 
 test('engine on Netflix: toggle mounts the lesson; R seeks through the hook (nf-seek), never video.currentTime', async () => {
   const b = await boot(NURL, { replies: { 'ytlearn:lesson': { lesson: LESSON('netflix.81234567') } } });
@@ -240,9 +261,9 @@ test('engine on Netflix: ytlearn:site-off -> overlay gone, nf-off to the hook, p
   assert.equal(nfOff(b).length, 1, 'disable is idempotent');
 });
 
-test('engine on YouTube / Udemy: a Netflix site-off is ignored', async () => {
-  for (const href of [YURL, 'https://www.udemy.com/course/x/learn/lecture/5800738']) {
-    const id = href === YURL ? 'puh91fohvTA' : 'udemy.5800738';
+test('engine on YouTube / Udemy / HelloInterview: a Netflix site-off is ignored', async () => {
+  for (const href of [YURL, 'https://www.udemy.com/course/x/learn/lecture/5800738', HURL]) {
+    const id = href === YURL ? 'puh91fohvTA' : href === HURL ? HID : 'udemy.5800738';
     const b = await boot(href, { replies: { 'ytlearn:lesson': { lesson: LESSON(id) } } });
     await b.toggle();
     await flush();
@@ -344,6 +365,68 @@ test('engine on Netflix: pushState episode change (href changes, no event) -> wi
   assert.deepEqual(b.sentMsgs.at(-1), { type: 'ytlearn:lesson', videoId: 'netflix.81234568' }, 'the new episode is routed (autoload, no capture)');
   assert.ok(!b.sentMsgs.some((m) => m.type === 'ytlearn:build'), 'a missing lesson does not start a capture on its own');
   assert.equal(b.root.children.length, 0, 'no pill for a silent autoload miss');
+});
+
+test('engine on HelloInterview: pushState lesson change with a new {root, video} -> old overlay torn down, new id routed and remounted when a lesson exists', async () => {
+  const NID = 'hello.system-design.patterns.other-pattern';
+  const b = await boot(HURL, { replies: { 'ytlearn:lesson': (msg) => ({ lesson: LESSON(msg.videoId) }) } });
+  assert.equal((b.winListeners.popstate || []).length, 1, 'popstate bound on window');
+  assert.deepEqual(Object.keys(b.docListeners), []);
+  assert.deepEqual(await b.toggle(), { handled: true });
+  await flush();
+  assert.deepEqual(b.sentMsgs, [{ type: 'ytlearn:lesson', videoId: HID }]);
+  assert.ok(overlayHost(b), 'mounted inside the [data-media-player] root');
+  assert.ok(b.root.classList.contains('ytlearn-on'));
+  // the site pushes a new URL and rebuilds the player: no event fires, the 1 s poll catches it
+  b.location.href = HI + 'system-design/patterns/other-pattern';
+  const next = b.swapPlayer();
+  await b.tick(999);
+  assert.ok(overlayHost(b), 'not yet: the route poll runs every 1000 ms');
+  await b.tick(1);
+  assert.equal(overlayHost(b), undefined, 'old overlay torn down');
+  assert.equal(b.root.classList.contains('ytlearn-on'), false, 'old root released');
+  assert.deepEqual(b.sentMsgs.at(-1), { type: 'ytlearn:lesson', videoId: NID }, 'the new lesson is routed (autoload)');
+  assert.ok(overlayHost(b, next.root), 'remounted on the new player root');
+  assert.ok(next.root.classList.contains('ytlearn-on'));
+  assert.ok(!b.sentMsgs.some((m) => m.type === 'ytlearn:build'), 'autoload never starts a capture');
+  // back: popstate routes at once (no wait for the poll), onto yet another rebuilt player
+  b.location.href = HURL;
+  const back = b.swapPlayer();
+  for (const f of b.winListeners.popstate) f({});
+  await flush();
+  assert.equal(overlayHost(b, next.root), undefined);
+  assert.deepEqual(b.sentMsgs.at(-1), { type: 'ytlearn:lesson', videoId: HID });
+  assert.ok(overlayHost(b, back.root), 'remounted after popstate');
+  // seeking: the engine writes video.currentTime itself on HelloInterview (no adapter seek)
+  back.video.currentTime = 11;
+  back.video.sets.length = 0;
+  b.key('KeyR');
+  assert.deepEqual(back.video.sets, [10]);
+  assert.deepEqual(b.posted, [], 'nothing posted to the page');
+});
+
+test('engine on HelloInterview: pushState lesson change with a new {root, video} -> collapses when the new lesson has none', async () => {
+  const b = await boot(HURL, { replies: { 'ytlearn:lesson': (msg) => (msg.videoId === HID ? { lesson: LESSON(HID) } : { missing: true }) } });
+  await b.toggle();
+  await flush();
+  assert.ok(overlayHost(b));
+  b.location.href = HI + 'system-design/patterns/other-pattern';
+  const next = b.swapPlayer();
+  await b.tick(1000);
+  assert.equal(overlayHost(b), undefined, 'old overlay torn down');
+  assert.deepEqual(b.sentMsgs.at(-1), { type: 'ytlearn:lesson', videoId: 'hello.system-design.patterns.other-pattern' });
+  assert.equal(overlayHost(b, next.root), undefined, 'nothing mounted on the new player');
+  assert.equal(next.root.children.length, 0, 'no pill for a silent autoload miss');
+  assert.ok(!b.sentMsgs.some((m) => m.type === 'ytlearn:build'));
+  // an article page (a learn URL, but the player is gone): still collapsed, never a capture
+  const sent = b.sentMsgs.length;
+  b.location.href = HI + 'courses/system-design';
+  b.swapPlayer(true);
+  await b.tick(1000);
+  assert.ok(!b.sentMsgs.slice(sent).some((m) => m.type === 'ytlearn:build'));
+  assert.deepEqual(b.sentMsgs.at(-1), { type: 'ytlearn:lesson', videoId: 'hello.courses.system-design' });
+  assert.equal(next.root.children.length, 0);
+  assert.equal(overlayHost(b), undefined);
 });
 
 test('engine on YouTube: a static player root gets position:relative while mounted and its old value back on teardown', async () => {

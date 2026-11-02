@@ -1,7 +1,7 @@
 // extension/site.js: the per-site adapters the overlay engine uses. Pure over a fake document.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { siteFor, youtube, udemy, netflix, netflixSeeker, seekAckOk, NF_SEEK_ACK_MS } from '../../extension/site.js';
+import { siteFor, youtube, udemy, netflix, hellointerview, netflixSeeker, seekAckOk, NF_SEEK_ACK_MS } from '../../extension/site.js';
 
 const A = 'puh91fohvTA';
 const B = 'abcdefghijk';
@@ -19,16 +19,19 @@ function doc({ byId = {}, sel = {} } = {}) {
   return { getElementById: (id) => byId[id] || null, querySelector: (q) => sel[q] || null };
 }
 
-test('siteFor: www.youtube.com, www.udemy.com and www.netflix.com only', () => {
+test('siteFor: www.youtube.com, www.udemy.com, www.netflix.com and www.hellointerview.com only', () => {
   assert.equal(siteFor('www.youtube.com'), youtube);
   assert.equal(siteFor('www.udemy.com'), udemy);
   assert.equal(siteFor('www.netflix.com'), netflix);
-  for (const h of ['youtube.com', 'm.youtube.com', 'udemy.com', 'mycompany.udemy.com', 'netflix.com', 'help.netflix.com', '127.0.0.1', '', undefined]) {
+  assert.equal(siteFor('www.hellointerview.com'), hellointerview);
+  for (const h of ['youtube.com', 'm.youtube.com', 'udemy.com', 'mycompany.udemy.com', 'netflix.com', 'help.netflix.com',
+    'hellointerview.com', 'app.hellointerview.com', 'www.hellointerview.com.evil.com', '127.0.0.1', '', undefined]) {
     assert.equal(siteFor(h), null, String(h));
   }
   assert.equal(youtube.name, 'youtube');
   assert.equal(udemy.name, 'udemy');
   assert.equal(netflix.name, 'netflix');
+  assert.equal(hellointerview.name, 'hellointerview');
 });
 
 test('youtube.lessonId: URL id, null when ytd-watch-flexy[video-id] disagrees, null for Udemy URLs', () => {
@@ -123,9 +126,68 @@ test('netflix: never an ad, hides .player-timedtext while on, popstate on window
   assert.deepEqual(netflix.navEvents.map((e) => ({ ...e })), [{ target: 'window', name: 'popstate' }]);
   assert.equal(typeof netflix.seek, 'function');
   assert.equal(typeof netflix.cancelSeek, 'function');
-  for (const s of [youtube, udemy, netflix]) {
+  for (const s of [youtube, udemy, netflix, hellointerview]) {
     for (const e of s.navEvents) assert.ok((e.target === 'document' || e.target === 'window') && typeof e.name === 'string', s.name);
   }
+});
+
+/* ---------- HelloInterview ---------- */
+
+const HURL = 'https://www.hellointerview.com/learn/system-design/patterns/dealing-with-contention';
+const HID = 'hello.system-design.patterns.dealing-with-contention';
+
+test('hellointerview.lessonId: learn URLs -> hello.<path>, everything else null', () => {
+  assert.equal(hellointerview.lessonId(HURL, doc()), HID);
+  for (const v of ['/', '?x=1', '#y', '/?a=b#c']) assert.equal(hellointerview.lessonId(HURL + v), HID, v);
+  assert.equal(hellointerview.lessonId('https://www.hellointerview.com/learn/system-design'), 'hello.system-design');
+  for (const u of ['https://www.hellointerview.com/', 'https://www.hellointerview.com/learn/', 'https://www.hellointerview.com/learn',
+    'https://www.hellointerview.com/practice/x', 'http://www.hellointerview.com/learn/x', 'https://hellointerview.com/learn/x',
+    'https://app.hellointerview.com/learn/x', 'https://www.hellointerview.com:444/learn/x', 'https://www.hellointerview.com/learn/System-Design/x',
+    'https://www.hellointerview.com/learn/' + 'a'.repeat(121), HID,
+    'https://www.youtube.com/watch?v=' + A, LURL, NURL, '', undefined]) {
+    assert.equal(hellointerview.lessonId(u, doc()), null, String(u));
+  }
+  // and the other adapters never claim a hello URL
+  assert.equal(youtube.lessonId(HURL, doc()), null);
+  assert.equal(udemy.lessonId(HURL), null);
+  assert.equal(netflix.lessonId(HURL), null);
+});
+
+// Fake HelloInterview DOM: videos with or without a captions track; closest() answers by selector.
+function hvideo({ track = true, player = null, parent = null } = {}) {
+  return {
+    querySelector: (q) => (q === 'track[kind="captions"]' && track ? { kind: 'captions' } : null),
+    closest: (q) => (q === '[data-media-player]' ? player : null),
+    parentElement: parent,
+  };
+}
+const hdoc = (videos) => ({ querySelectorAll: (q) => (q === 'video' ? videos : []), querySelector: () => null });
+
+test('hellointerview.findPlayer: first video with a captions track, root is closest [data-media-player], else its parent; null without one', () => {
+  const player = { tag: 'player' };
+  const parent = { tag: 'provider' };
+  const bare = hvideo({ track: false, player: { tag: 'other' }, parent: { tag: 'p0' } });
+  const v1 = hvideo({ player, parent });
+  const v2 = hvideo({ player: { tag: 'p2' }, parent: { tag: 'pp2' } });
+  assert.deepEqual(hellointerview.findPlayer(hdoc([bare, v1, v2])), { root: player, video: v1 }, 'skips the video without a track');
+  const v3 = hvideo({ player: null, parent });
+  const r = hellointerview.findPlayer(hdoc([v3]));
+  assert.equal(r.root, parent, 'no [data-media-player]: the video parent');
+  assert.equal(r.video, v3);
+  assert.equal(hellointerview.findPlayer(hdoc([bare])), null, 'no captions track');
+  assert.equal(hellointerview.findPlayer(hdoc([])), null, 'no video (an article page)');
+  assert.equal(hellointerview.findPlayer(null), null);
+});
+
+test('hellointerview: never an ad, hides .vds-captions and native ::cue under ytlearn-on, popstate plus the poll, engine seeks', () => {
+  assert.equal(hellointerview.isAd(elem({}, {}, ['ad-showing'])), false);
+  assert.equal(hellointerview.nativeCaptionCss,
+    '.ytlearn-on .vds-captions{visibility:hidden !important}'
+    + '.ytlearn-on video::cue{color:transparent !important;background:transparent !important;text-shadow:none !important}');
+  assert.deepEqual(hellointerview.navEvents.map((e) => ({ ...e })), [{ target: 'window', name: 'popstate' }]);
+  assert.equal(hellointerview.seek, undefined, 'the engine seeks HelloInterview itself (video.currentTime)');
+  assert.equal(hellointerview.cancelSeek, undefined);
+  assert.ok(Object.isFrozen(hellointerview) && Object.isFrozen(hellointerview.navEvents));
 });
 
 // A fake window: records postMessage, lets the test deliver message events, and a manual clock.

@@ -191,12 +191,14 @@ const startup = cleanupOwnedTabs();
 /* ---------- 入口 ---------- */
 
 // 'youtube' for a www.youtube.com watch page, 'udemy' for a www.udemy.com lecture page, 'netflix' for a
-// www.netflix.com/watch/<digits> page, else null. Pages where the capture happens in place.
+// www.netflix.com/watch/<digits> page, 'hellointerview' for a www.hellointerview.com/learn/<path> page, else
+// null. Pages where the capture happens in place.
 function siteOfUrl(url) {
   if (typeof url !== 'string') return null;
   if (url.startsWith('https://www.youtube.com/watch')) return 'youtube';
   if (ytLearnParseUdemyUrl(url)) return 'udemy';
   if (netflixMovieIdOfUrl(url)) return 'netflix';
+  if (ytLearnParseHelloUrl(url)) return 'hellointerview';
   return null;
 }
 
@@ -236,9 +238,10 @@ async function onIconClicked(tab) {
   // Frozen at click time: the job, the capture and the ingest must all be about this lesson.
   const videoId = ytLearnParseLessonId(url);
   log('icon', url, videoId, site);
-  // Udemy has no background mode: only a lecture page in a real tab can be captured.
-  const udemy = ytLearnLessonSource(videoId) === 'udemy';
-  if (!videoId || (udemy && (site !== 'udemy' || typeof tab.id !== 'number'))) {
+  // Udemy and HelloInterview have no background mode: only their own lesson page in a real tab can be captured.
+  const pageOnly = ['udemy', 'hellointerview'];
+  const source = ytLearnLessonSource(videoId);
+  if (!videoId || (pageOnly.includes(source) && (site !== source || typeof tab.id !== 'number'))) {
     await chrome.tabs.create({ url: SERVER + '/index.html', active: true });
     return;
   }
@@ -380,6 +383,9 @@ async function runJobInner(requested, opts) {
   const mode = opts.mode === 'inplace' ? 'inplace' : 'background';
   const emit = (s) => { try { if (opts.onStatus) opts.onStatus(s); } catch (e) { log('ignored', errMsg(e)); } };
   if (requested.site === 'udemy' && mode !== 'inplace') return { ok: false, error: 'Udemy 講座只能在講座頁上擷取' };
+  if (isHello(requested) && mode !== 'inplace') {
+    return { ok: false, error: 'HelloInterview 課程只能在課程頁上擷取' };
+  }
   // Netflix: the generation it was on when the job started; checked again right before /ingest.
   let nfGen = null;
   if (requested.site === 'netflix' || isNetflixId(requested.id)) {
@@ -471,6 +477,12 @@ async function captureInPlace(tabId, requested) {
   }
   if (requested.site === 'netflix' || isNetflixId(requested.id)) {
     return injectCapture(tabId, { expectLessonId: requested.id, timeoutMs: CAPTURE_TIMEOUT_MS }, NF_CAPTURE);
+  }
+  if (isHello(requested)) {
+    // Isolated world, like Udemy: hellointerview-capture.js reads the <track> and needs vtt.js's global.
+    // Never YouTube's capture.js for a hello id.
+    return injectCapture(tabId, { expectLessonId: requested.id, timeoutMs: CAPTURE_TIMEOUT_MS },
+      { files: ['vtt.js', 'hellointerview-capture.js'], world: 'ISOLATED', fn: 'ytLearnHelloCapture' });
   }
   return injectCapture(tabId, { expectVideoId: requested.id, timeoutMs: CAPTURE_TIMEOUT_MS, inPlace: true });
 }
@@ -576,6 +588,11 @@ function nfEnqueue(fn) {
 
 function isNetflixId(id) {
   return typeof id === 'string' && ytLearnLessonSource(id.trim()) === 'netflix';
+}
+
+// A HelloInterview request: labelled so, or its id is a hello.<path> id whatever the label says.
+function isHello(requested) {
+  return requested.site === 'hellointerview' || (typeof requested.id === 'string' && ytLearnLessonSource(requested.id.trim()) === 'hellointerview');
 }
 
 function netflixMovieIdOfUrl(url) {
