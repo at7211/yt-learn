@@ -39,6 +39,15 @@ test('hh:mm:ss.mmm with hours', () => {
   assert.deepEqual(r.events[0], { t: 3723004, d: 996, segs: [[null, 'x']] });
 });
 
+test('mixed mm:ss.mmm and hh:mm:ss.mmm on one timing line', () => {
+  const r = parse('WEBVTT\n\n00:00:01.500 --> 00:02.000\na\n\n00:03.000 --> 01:00:02.000\nb\n');
+  assert.deepEqual(r.events, [
+    { t: 1500, d: 500, segs: [[null, 'a']] },
+    { t: 3000, d: 3599000, segs: [[null, 'b']] },
+  ]);
+  assert.equal(r.dropped, 0);
+});
+
 test('header block, STYLE and REGION blocks skipped', () => {
   const r = parse('WEBVTT - title\nKind: captions\n\nSTYLE\n::cue { color: red }\n\nREGION\nid:a\n\n00:00.000 --> 00:01.000\nok\n');
   assert.equal(r.events.length, 1);

@@ -1157,7 +1157,8 @@ test('manifest: Netflix is optional (optional_host_permissions), never static; n
 });
 
 test('extension code never uses innerHTML (netflix files included)', () => {
-  for (const f of ['netflix-manifest.js', 'netflix-hook.js', 'netflix-capture.js', 'netflix-enable.js', 'background.js', 'ttml.js']) {
+  for (const f of ['netflix-manifest.js', 'netflix-hook.js', 'netflix-capture.js', 'netflix-enable.js', 'background.js', 'ttml.js',
+    'hellointerview-capture.js', 'udemy-capture.js', 'vtt.js', 'site.js']) {
     const src = readFileSync(new URL('../../extension/' + f, import.meta.url), 'utf8');
     assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|DOMParser/.test(src), f);
   }

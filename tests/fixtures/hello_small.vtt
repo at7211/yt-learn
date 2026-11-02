@@ -1,0 +1,35 @@
+﻿WEBVTT
+
+NOTE
+Hand-written test fixture for yt-learn; not taken from any site.
+
+1
+00:00.500 --> 00:00:02.000
+Let us sketch a tiny queue service.
+
+2
+00:02.000 --> 00:04.000
+Writers push jobs; readers pull them.
+
+3
+00:00:04.000 --> 00:00:06.500
+Each job carries a short <i>retry</i> counter.
+
+4
+00:06.500 --> 00:08.000
+
+5
+00:03.000 --> 00:05.000
+This cue starts too early and is dropped.
+
+6
+00:08.000 --> 00:10.000
+A worker that crashes simply lets the lease expire.
+
+7
+00:10.000 --> 00:00:12.250
+Then another worker picks the job up again.
+
+8
+00:12.500 --> 00:14.000
+That is the whole idea.
