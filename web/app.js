@@ -49,9 +49,9 @@ function initHome(showList) {
     e.preventDefault();
     const err = $('url-err');
     const id = parseLessonId($('url-input').value);
-    if (!id) { err.textContent = '無法辨識的 YouTube、Udemy 或 Netflix 網址'; err.hidden = false; return; }
+    if (!id) { err.textContent = '無法辨識的 YouTube、Udemy、Netflix 或 HelloInterview 網址'; err.hidden = false; return; }
     const site = externalSite(id);
-    if (site) { err.textContent = site.buildMsg; err.hidden = false; return; } // a pasted Udemy/Netflix URL is never submitted
+    if (site) { err.textContent = site.buildMsg; err.hidden = false; return; } // a pasted Udemy/Netflix/HelloInterview URL is never submitted
     err.hidden = true;
     startJob(id, $('card-home'));
   };
@@ -549,7 +549,7 @@ function setupLesson(lesson, id) {
   initPlayer(lesson.videoId || id);
 }
 
-// External-site lessons (Udemy, Netflix) have no player here: subtitles only exist as an overlay on
+// External-site lessons (Udemy, Netflix, HelloInterview) have no player here: subtitles only exist as an overlay on
 // that site's page. Show the header (done by setupLesson), a notice and the vocab review grid.
 function setupExternalLesson(lesson, id, site) {
   S.noPlayer = true;
