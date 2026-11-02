@@ -1,7 +1,7 @@
 # yt-learn：HelloInterview 課程頁的雙語字幕疊層（第四個站點轉接層）
 
 第 1 版（2026-11-02）：依操作者裁定起草，照 Udemy 轉接層（`2026-10-31-udemy.md`）的路子走。
-第 2 版（2026-11-02）：併入 Spike 結果（全螢幕一項待使用者按）與 Codex gpt-6-astra 第一輪 7 條（0 blocker、6 should-fix、1 nit，「修改後核准」）。
+第 2 版（2026-11-02）：併入 Spike 結果（全螢幕於 2026-11-02 由使用者親按驗證）與 Codex gpt-6-astra 第一輪 7 條（0 blocker、6 should-fix、1 nit，「修改後核准」）。
 
 ## 背景與已驗證事實（2026-11-02，在使用者登入的 Chrome 上實測）
 
@@ -18,7 +18,7 @@
 - `document.title` 格式：`Dealing with Contention Pattern for System Design Interviews | Hello Interview System Design in a Hurry`、`System Design Course | Hello Interview` → 後綴 regex `/\s*\|\s*Hello\s*Interview.*$/i` 足夠，定案。
 - 文章／索引頁 `/learn/courses/system-design`：0 個 `<video>`、0 個 `[data-media-player]`。該頁全部 76 個 learn 連結與課程頁上所有 learn 連結都符合 `^/learn/(?:[a-z0-9-]+/){0,5}[a-z0-9-]+/?$`；觀察到最多 4 段。
 - **程式碼核對（不需 Spike）**：`extension/vtt.js:5` 的 `TS = /^(?:(\d+):)?(\d{1,2}):(\d{2})\.(\d{3})$/` 對 cue 的起訖**各自**解析，`mm:ss.mmm`、`hh:mm:ss.mmm` 與同一行混用都吃（`tests/web/vtt.test.js:31`、`:37` 已分別測兩種）。**vtt.js 不用改**，只補一條「同一行混用」的測試。
-- **未驗證（唯一剩下的 Spike 項，第 1 步 b）**：全螢幕時 `document.fullscreenElement` 是哪一層。需要使用者親手按網站的全螢幕鈕；預期 Vidstack 對 `[data-media-player]` 呼叫 `requestFullscreen`。
+- **全螢幕（已驗證，使用者親按網站全螢幕鈕）**：`document.fullscreenElement` 是 `[data-media-player]`（不是 `<video>`），它 `contains(video.parentElement)`，掛在它底下的測試 div 在全螢幕中仍可見；退出後再進一次結果相同。root 定案為 `[data-media-player]`。
 
 ## 耦合地圖（file:line，以 HEAD d7bf6a1 為準）
 
@@ -102,7 +102,7 @@
 0. **Codex 審本計畫**（gpt-6-astra）：**已完成**，7 條裁決見文末「Codex 審查裁決」，已併入本版。
 1. **Spike**（Claude-in-Chrome，使用者已登入的分頁；只讀與暫時性 DOM 操作，不存任何字幕內容）：
    a. **已驗證**：測試 div（`createElement`／`textContent`，`position:absolute;bottom:12%;z-index:30;pointer-events:none`）掛在 `video.parentElement` 或 `[data-media-player]` 都可見，位於網站控制列（z-index 10）與網站字幕框之上。
-   b. **待使用者（唯一未完成項）**：全螢幕。自動化點擊多半不算使用者手勢（Udemy 前例），請**使用者**按網站的全螢幕鈕，之後讀 `document.fullscreenElement` 的 tag／屬性（預期 `[data-media-player]`）、它是否 `contains(video)`，以及掛在 `[data-media-player]` 的測試 div 是否還看得到。若結果不是 `[data-media-player]` 或其祖先，回頭改設計決定 4 的 root。
+   b. **已驗證**：使用者按網站全螢幕鈕後，`document.fullscreenElement` = `[data-media-player]`，含 video 與疊層 root，測試 div 仍可見（進出兩次皆同）。
    c. **已驗證**：SPA 換頁後舊 video 與父層被移除、新 video 帶 track；`history.back()` 觸發一次 `popstate`，video 又是新元素。
    d. **已驗證**：網站在 DOM 畫字幕（`.vds-captions`），原生軌維持 `disabled`；設 `showing` 不多 DOM 節點。
    e. **已驗證**：`video.currentTime = 60` 讀回 60、維持暫停、無錯誤（網站控制列是否同步留給第 6 步目視）。
@@ -137,7 +137,6 @@
 
 ## 風險
 
-- 全螢幕宿主未驗（第 1 步 b）：預期 Vidstack 對 `[data-media-player]` 全螢幕，root 就是它；若實測是更外層，疊層仍在其內（root 在全螢幕元素之內即可）；若是 `<video>` 本身，疊層會看不到，需另議。
 - Vidstack 改版：root 依賴 `data-media-player` 屬性、隱藏依賴 `.vds-captions` class；屬性消失時退回 `video.parentElement`（疊層仍可見，但網站字幕可能不會被隱藏，兩層字幕重疊）。
 - 簽名網址過期：若使用者停在頁面很久，`track.src` 可能已過期；錯誤訊息引導重新整理。我們不保存它，所以不影響已建好的課程。
 - 規則有五份複本（Python、兩份 ytid.js、overlay-state.js、擷取腳本）；靠共用 fixture（`helloUrl` 給四份解析器、`helloUrlLength` 五份都跑）與擷取自己的 href 表防漂移。替代方案是讓擷取也注入 `ytid.js` 共用全域（少一份複本，但偏離 Udemy 的注入方式），v1 不採。
