@@ -26,11 +26,15 @@ export function canonicalUrl(id) {
 }
 
 // Lesson ids (mirror pipeline/ids.py; shared table tests/fixtures/lesson_ids.json):
-// YouTube 11-char id, `udemy.<lectureId>` for a Udemy lecture, or `netflix.<movieId>` for a Netflix title.
-const LESSON_ID_RE = /^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12}|netflix\.[0-9]{1,12})$/;
+// YouTube 11-char id, `udemy.<lectureId>` for a Udemy lecture, `netflix.<movieId>` for a Netflix title, or
+// `hello.<path>` for a HelloInterview learn page (path after /learn/, `/` -> `.`, 1-6 segments, <= 120 chars;
+// the length cap lives only in the LESSON_ID_RE / HELLO_ID_RE lookahead).
+const LESSON_ID_RE = /^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12}|netflix\.[0-9]{1,12}|hello\.(?=[a-z0-9.-]{1,120}$)[a-z0-9-]+(?:\.[a-z0-9-]+){0,5})$/;
 const UDEMY_ID_RE = /^udemy\.[0-9]{1,12}$/;
 const NETFLIX_ID_RE = /^netflix\.[0-9]{1,12}$/;
+const HELLO_ID_RE = /^hello\.((?=[a-z0-9.-]{1,120}$)[a-z0-9-]+(?:\.[a-z0-9-]+){0,5})$/;
 const NETFLIX_URL_RE = /^https:\/\/www\.netflix\.com\/watch\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
+const HELLO_URL_RE = /^https:\/\/www\.hellointerview\.com\/learn\/((?:[a-z0-9-]+\/){0,5}[a-z0-9-]+)\/?(?:[?#]\S*)?$/;
 const UDEMY_URL_RE = /^https:\/\/www\.udemy\.com\/course\/([A-Za-z0-9_-]+)\/learn\/lecture\/([0-9]{1,12})\/?(?:[?#]\S*)?$/;
 
 // https://www.udemy.com/course/<slug>/learn/lecture/<digits>[/][?...][#...] -> {slug, lectureId} | null
@@ -52,7 +56,21 @@ export function netflixWatchUrl(movieId) {
   return 'https://www.netflix.com/watch/' + movieId;
 }
 
-// Bare lesson id, YouTube URL, Udemy lecture URL or Netflix watch URL -> lesson id | null
+// https://www.hellointerview.com/learn/<path>[/][?...][#...] -> path ('a/b/c', <= 120 chars) | null.
+// An explicit :443, userinfo, other hosts/ports, uppercase and %-escapes are all rejected.
+export function parseHelloUrl(url) {
+  if (typeof url !== 'string') return null;
+  const m = HELLO_URL_RE.exec(url);
+  return m && LESSON_ID_RE.test('hello.' + m[1].replace(/\//g, '.')) ? m[1] : null;
+}
+
+// Canonical sourceUrl of a HelloInterview lesson (no query, hash or trailing slash); null if not a hello id.
+export function helloLearnUrl(id) {
+  const m = typeof id === 'string' ? HELLO_ID_RE.exec(id) : null;
+  return m ? 'https://www.hellointerview.com/learn/' + m[1].replace(/\./g, '/') : null;
+}
+
+// Bare lesson id, YouTube URL, Udemy lecture URL, Netflix watch URL or HelloInterview learn URL -> lesson id | null
 export function parseLessonId(s) {
   if (typeof s !== 'string') return null;
   s = s.trim();
@@ -61,13 +79,16 @@ export function parseLessonId(s) {
   if (u) return 'udemy.' + u.lectureId;
   const n = parseNetflixUrl(s);
   if (n) return 'netflix.' + n;
+  const h = parseHelloUrl(s);
+  if (h) return 'hello.' + h.replace(/\//g, '.');
   return parseVideoId(s);
 }
 
-// 'youtube' | 'udemy' | 'netflix' for a valid lesson id, else null
+// 'youtube' | 'udemy' | 'netflix' | 'hellointerview' for a valid lesson id, else null
 export function lessonSource(id) {
   if (typeof id !== 'string' || !LESSON_ID_RE.test(id)) return null;
   if (UDEMY_ID_RE.test(id)) return 'udemy';
   if (NETFLIX_ID_RE.test(id)) return 'netflix';
+  if (HELLO_ID_RE.test(id)) return 'hellointerview';
   return 'youtube';
 }

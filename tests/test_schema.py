@@ -117,6 +117,11 @@ def test_source_must_match_id():
     for bad in ("", None, "coursera", "UDEMY"):
         assert schema.validate_raw(mod(videoId="udemy.5800738", source=bad)), bad
     assert schema.validate_raw(mod(videoId="udemy-12345", source="udemy"))
+    assert schema.validate_raw(mod(source="hellointerview"))  # YouTube id
+    assert schema.validate_raw(mod(videoId="hello.a.b", source="udemy"))
+    assert schema.validate_raw(mod(videoId="udemy.5800738", source="hellointerview"))
+    for bad in ("", None, "hello", "HelloInterview", "youtube"):
+        assert schema.validate_raw(mod(videoId="hello.a.b", source=bad)), bad
 
 
 def test_source_url_rejections():
@@ -187,6 +192,45 @@ def test_lesson_netflix_source_fields():
     assert schema.validate_lesson(les) == []
     assert schema.validate_lesson(dict(les, source="udemy"))
     assert schema.validate_lesson(dict(les, sourceUrl=NETFLIX_URL + "?x=1"))
+
+
+HELLO_URL = "https://www.hellointerview.com/learn/system-design/patterns/dealing-with-contention"
+HELLO = {"videoId": "hello.system-design.patterns.dealing-with-contention", "source": "hellointerview",
+         "sourceUrl": HELLO_URL}
+
+
+def test_raw_accepts_hello_id_with_and_without_source_fields():
+    assert schema.validate_raw(mod(**HELLO)) == []
+    assert schema.validate_raw(mod(videoId=HELLO["videoId"])) == []
+    assert schema.validate_raw(mod(videoId=HELLO["videoId"], source="hellointerview")) == []
+    assert schema.validate_raw(mod(videoId="hello.a.b.c.d.e.f")) == []
+    assert schema.validate_raw(mod(videoId="hello." + "a" * 120)) == []
+    assert schema.validate_lesson(dict(_lesson(), **HELLO)) == []
+
+
+def test_raw_rejects_bad_hello_ids():
+    for bad in ("hello.", "Hello.x", "hello.A", "hello.a..b", "hello.a_b", "hello.a.b.c.d.e.f.g",
+                "hello." + "a" * 121, "hello.a/../b", "hello.a/b", "hello..a", "hello.a."):
+        assert schema.validate_raw(mod(videoId=bad)), bad
+
+
+def test_hello_source_url_must_be_canonical():
+    for bad in (
+        HELLO_URL + "?x=1",
+        HELLO_URL + "#y",
+        HELLO_URL + "/",
+        HELLO_URL.replace("contention", "contention-2"),  # other path
+        "https://www.hellointerview.com/learn/system-design",
+        HELLO_URL.replace("https://", "http://"),
+        HELLO_URL.replace("www.", ""),
+        HELLO_URL.replace(".com/", ".com:443/"),
+        UDEMY_URL, NETFLIX_URL, "javascript:alert(1)", "", None, 42,
+    ):
+        assert schema.validate_raw(mod(**dict(HELLO, sourceUrl=bad))), bad
+        assert schema.validate_lesson(dict(_lesson(), **dict(HELLO, sourceUrl=bad))), bad
+    assert schema.validate_raw(mod(sourceUrl=HELLO_URL))  # YouTube id
+    assert schema.validate_raw(mod(**dict(NETFLIX, sourceUrl=HELLO_URL)))
+    assert schema.validate_raw(mod(**dict(UDEMY, sourceUrl=HELLO_URL)))
 
 
 REF = {"lang": "zh-Hant", "kind": "official",

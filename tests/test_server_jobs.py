@@ -82,7 +82,7 @@ def start_capture(base, vid=V):
 def test_add_bad_url_400(env):
     base, _ = env
     code, j = req(f"{base}/add", {"url": "https://evil.com/x"})
-    assert code == 400 and j == {"ok": False, "errors": ["無法辨識的 YouTube、Udemy 或 Netflix 網址"]}
+    assert code == 400 and j == {"ok": False, "errors": ["無法辨識的 YouTube、Udemy、Netflix 或 HelloInterview 網址"]}
     assert req(f"{base}/add", {"nourl": 1})[0] == 400
     assert req(f"{base}/jobs/{V}")[0] == 404
 
@@ -120,6 +120,57 @@ def test_udemy_url_end_to_end(env):
     assert row["source"] == "udemy" and row["sourceUrl"] == UDEMY_URL
     # A second /add of the same lecture (bare id) now sees the finished lesson.
     assert req(f"{base}/add", {"url": UDEMY_ID})[1]["job"]["state"] == "done"
+
+
+HELLO_ID = "hello.system-design.patterns.dealing-with-contention"
+HELLO_URL = "https://www.hellointerview.com/learn/system-design/patterns/dealing-with-contention"
+
+
+def test_hello_url_end_to_end(env):
+    base, root = env
+    code, j = req(f"{base}/add", {"url": HELLO_URL + "?x=1#y"})
+    assert code == 200 and j["job"]["state"] == "queued" and j["job"]["videoId"] == HELLO_ID
+    code, c = req(f"{base}/jobs/{HELLO_ID}/claim", b"")
+    assert code == 200
+    body = dict(GOOD, videoId=HELLO_ID, source="hellointerview", sourceUrl=HELLO_URL, kind="unknown",
+                events=[{"t": 0, "d": 2000, "segs": [[None, "Today we look at a small example."]]},
+                        {"t": 2000, "d": 1500, "segs": [[None, "Let's draw the first box."]]}])
+    code, out = req(f"{base}/ingest?attempt={c['attempt']}", json.dumps(body).encode())
+    assert code == 200, out
+    job = wait_state(base, HELLO_ID, {"done", "error"})
+    assert job["state"] == "done" and job["lessonUrl"] == f"index.html?v={HELLO_ID}"
+    assert json.loads((root / "data" / "raw" / f"{HELLO_ID}.json").read_text("utf-8"))["sourceUrl"] == HELLO_URL
+    lesson = json.loads((root / "data" / "lessons" / f"{HELLO_ID}.json").read_text("utf-8"))
+    assert lesson["videoId"] == HELLO_ID and lesson["source"] == "hellointerview" and lesson["sourceUrl"] == HELLO_URL
+    code, lessons = req(f"{base}/lessons")
+    assert code == 200
+    row = next(r for r in lessons if r["videoId"] == HELLO_ID)
+    assert row["source"] == "hellointerview" and row["sourceUrl"] == HELLO_URL
+    # A second /add of the same page (bare id) now sees the finished lesson.
+    assert req(f"{base}/add", {"url": HELLO_ID})[1]["job"]["state"] == "done"
+
+
+def test_add_rejects_non_learn_hello_urls(env):
+    base, _ = env
+    err = {"ok": False, "errors": ["無法辨識的 YouTube、Udemy、Netflix 或 HelloInterview 網址"]}
+    for bad in ("https://www.hellointerview.com/practice/x", "https://www.hellointerview.com/learn/",
+                "https://www.hellointerview.com/learn/System-Design/x", "https://www.hellointerview.com:443/learn/x",
+                "http://www.hellointerview.com/learn/x", "https://hellointerview.com/learn/x",
+                "https://www.hellointerview.com/learn/a/b/c/d/e/f/g", "hello.A", "hello.a..b"):
+        code, j = req(f"{base}/add", {"url": bad})
+        assert code == 400 and j == err, bad
+
+
+def test_ingest_rejects_non_canonical_hello_source_url(env):
+    base, root = env
+    assert req(f"{base}/add", {"url": HELLO_URL})[0] == 200
+    code, c = req(f"{base}/jobs/{HELLO_ID}/claim", b"")
+    assert code == 200
+    for bad in (HELLO_URL + "?x=1", HELLO_URL + "/", "https://www.hellointerview.com/learn/system-design"):
+        body = dict(GOOD, videoId=HELLO_ID, source="hellointerview", sourceUrl=bad)
+        code, out = req(f"{base}/ingest?attempt={c['attempt']}", json.dumps(body).encode())
+        assert code == 400 and "hellointerview.com/learn/<path>" in out["errors"][0], (bad, out)
+    assert not (root / "data" / "raw" / f"{HELLO_ID}.json").exists()
 
 
 NETFLIX_ID = "netflix.81234567"

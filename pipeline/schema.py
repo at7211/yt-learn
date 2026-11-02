@@ -1,5 +1,5 @@
 """Validation for the raw caption capture format (data/raw/<videoId>.json)."""
-from .ids import LESSON_ID_RE, NETFLIX_ID_RE, netflix_watch_url, parse_udemy_url, source_of
+from .ids import LESSON_ID_RE, NETFLIX_ID_RE, hello_learn_url, netflix_watch_url, parse_udemy_url, source_of
 
 VIDEO_ID_RE = LESSON_ID_RE  # old name
 REQUIRED_META = ("title", "channel", "duration", "lang", "kind")
@@ -22,7 +22,7 @@ def _is_num(v):
 def _source_errors(obj, vid) -> list[str]:
     """Optional `source` / `sourceUrl`. sourceUrl is an outbound link from imported JSON, so it is
     only allowed for external-site ids and must point at that very lesson: a Udemy lecture URL, or
-    exactly the canonical Netflix watch URL. YouTube ids carry no sourceUrl."""
+    exactly the canonical Netflix watch URL / HelloInterview learn URL. YouTube ids carry no sourceUrl."""
     errs = []
     src = source_of(vid)
     if "source" in obj and obj["source"] != src:
@@ -38,8 +38,11 @@ def _source_errors(obj, vid) -> list[str]:
         elif src == "netflix":
             if url != netflix_watch_url(NETFLIX_ID_RE.fullmatch(vid).group(1)):
                 errs.append("sourceUrl must be https://www.netflix.com/watch/<movieId> of this videoId")
+        elif src == "hellointerview":
+            if url != hello_learn_url(vid):
+                errs.append("sourceUrl must be https://www.hellointerview.com/learn/<path> of this videoId")
         else:
-            errs.append("sourceUrl is only allowed for udemy.<lectureId> / netflix.<movieId> videoIds")
+            errs.append("sourceUrl is only allowed for udemy.<lectureId> / netflix.<movieId> / hello.<path> videoIds")
     return errs
 
 

@@ -250,6 +250,24 @@ test('lessonIdFromUrl agrees with the shared fixture for Netflix watch URLs', ()
   assert.equal(lessonIdFromUrl('https://www.netflix.com/watch/81234567', 'ignored-for-netflix'), 'netflix.81234567');
 });
 
+test('lessonIdFromUrl agrees with the shared fixture for HelloInterview learn URLs', () => {
+  const fx = JSON.parse(readFileSync(new URL('../fixtures/lesson_ids.json', import.meta.url), 'utf8'));
+  const hid = (path) => (path ? 'hello.' + path.replace(/\//g, '.') : null);
+  for (const [input, want] of fx.helloUrl) {
+    if (input.startsWith('https://www.udemy.com/')) continue; // a Udemy id, not a HelloInterview one
+    assert.equal(lessonIdFromUrl(input), hid(want), input);
+  }
+  // The 120/121-char path boundary: this copy has no LESSON_ID_RE, so it checks the length itself.
+  assert.equal(fx.helloUrlLength.length, 8);
+  for (const [input, want] of fx.helloUrlLength) assert.equal(lessonIdFromUrl(input), hid(want), input);
+  // Every URL row of the parse table: lessonIdFromUrl must agree for HelloInterview ones (bare ids are not URLs).
+  for (const [input, want] of fx.parse) {
+    if (!input.includes('hellointerview.com')) continue;
+    assert.equal(lessonIdFromUrl(input), input === input.trim() ? want : null, input);
+  }
+  assert.equal(lessonIdFromUrl('https://www.hellointerview.com/learn/system-design', 'ignored'), 'hello.system-design');
+});
+
 test('navigate: same id with a different player token resets gen, tears down, and autoloads when on', () => {
   let s = navigate(initialState(), 'udemy.1', 0).state;
   assert.equal(s.token, 0);

@@ -57,3 +57,22 @@ test('ytLearnParseNetflixUrl agrees with lesson_ids.json; netflix watch URLs par
   assert.equal(ctx.ytLearnNetflixWatchUrl('81234567'), 'https://www.netflix.com/watch/81234567');
   assert.equal(ctx.ytLearnParseVideoId('https://www.netflix.com/watch/81234567'), null);
 });
+
+test('ytLearnParseHelloUrl and ytLearnLessonSource agree with lesson_ids.json (helloUrl and helloUrlLength)', () => {
+  assert.ok(IDS.helloUrl.length >= 25);
+  assert.equal(IDS.helloUrlLength.length, 8);
+  for (const [input, want] of IDS.helloUrl) assert.equal(ctx.ytLearnParseHelloUrl(input), want, JSON.stringify(input));
+  for (const [input, want] of IDS.helloUrlLength) {
+    assert.equal(ctx.ytLearnParseHelloUrl(input), want, input);
+    assert.equal(ctx.ytLearnParseLessonId(input), want && 'hello.' + want.replace(/\//g, '.'), input);
+  }
+  for (const [input, want] of IDS.source) assert.equal(ctx.ytLearnLessonSource(input), want, JSON.stringify(input));
+  assert.equal(ctx.ytLearnLessonSource('hello.system-design.patterns.dealing-with-contention'), 'hellointerview');
+  assert.equal(ctx.ytLearnParseHelloUrl(undefined), null);
+  assert.equal(ctx.ytLearnHelloLearnUrl(undefined), null);
+  assert.equal(ctx.ytLearnHelloLearnUrl('hello.a..b'), null);
+  assert.equal(ctx.ytLearnHelloLearnUrl('hello.system-design.patterns.dealing-with-contention'),
+    'https://www.hellointerview.com/learn/system-design/patterns/dealing-with-contention');
+  assert.equal(ctx.ytLearnParseLessonId(ctx.ytLearnHelloLearnUrl('hello.a.b.c.d.e.f')), 'hello.a.b.c.d.e.f');
+  assert.equal(ctx.ytLearnParseVideoId('https://www.hellointerview.com/learn/a'), null);
+});

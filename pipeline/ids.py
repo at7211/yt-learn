@@ -1,8 +1,10 @@
 """Lesson ids: the one place that knows which ids exist.
 
 YouTube ids are the 11-char `[A-Za-z0-9_-]` video id; Udemy lectures are `udemy.<lectureId>` and
-Netflix titles/episodes are `netflix.<movieId>` (the dot is outside the YouTube alphabet, so they can
-never collide; also filename-safe).
+Netflix titles/episodes are `netflix.<movieId>`; HelloInterview learn pages are `hello.<path>` (the
+part of the URL path after /learn/, `/` -> `.`; segments `[a-z0-9-]`, 1-6 segments, path at most 120
+chars). The dot is outside the YouTube alphabet, so they can never collide; empty segments are
+impossible, so no `..` or `/`: also filename-safe.
 JS mirrors: web/ytid.js (ESM) and extension/ytid.js (globals); all three are checked against
 tests/fixtures/lesson_ids.json.
 """
@@ -14,12 +16,19 @@ from urllib.parse import parse_qs, urlsplit
 YOUTUBE_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 UDEMY_ID_RE = re.compile(r"udemy\.([0-9]{1,12})")
 NETFLIX_ID_RE = re.compile(r"netflix\.([0-9]{1,12})")
-LESSON_ID_RE = re.compile(r"^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12}|netflix\.[0-9]{1,12})$")
+# The HelloInterview path length cap (120, dots included) lives only in this lookahead (and HELLO_ID_RE).
+HELLO_ID_RE = re.compile(r"hello\.((?=[a-z0-9.-]{1,120}$)[a-z0-9-]+(?:\.[a-z0-9-]+){0,5})")
+LESSON_ID_RE = re.compile(
+    r"^(?:[A-Za-z0-9_-]{11}|udemy\.[0-9]{1,12}|netflix\.[0-9]{1,12}"
+    r"|hello\.(?=[a-z0-9.-]{1,120}$)[a-z0-9-]+(?:\.[a-z0-9-]+){0,5})$")
 # https only, host exactly www.udemy.com, no port/userinfo; optional trailing slash, query, hash.
 UDEMY_URL_RE = re.compile(
     r"https://www\.udemy\.com/course/([A-Za-z0-9_-]+)/learn/lecture/([0-9]{1,12})/?(?:[?#]\S*)?")
 # Same shape for Netflix: https, host exactly www.netflix.com, /watch/<digits>, optional slash, query, hash.
 NETFLIX_URL_RE = re.compile(r"https://www\.netflix\.com/watch/([0-9]{1,12})/?(?:[?#]\S*)?")
+# HelloInterview: https, host exactly www.hellointerview.com (an explicit :443 is rejected too), /learn/
+# then 1-6 `[a-z0-9-]` segments, optional slash, query, hash. The 120-char cap is checked via LESSON_ID_RE.
+HELLO_URL_RE = re.compile(r"https://www\.hellointerview\.com/learn/((?:[a-z0-9-]+/){0,5}[a-z0-9-]+)/?(?:[?#]\S*)?")
 
 
 def _yt_ok(s):
@@ -73,8 +82,25 @@ def netflix_watch_url(movie_id: str) -> str:
     return f"https://www.netflix.com/watch/{movie_id}"
 
 
+def parse_hello_url(url) -> str | None:
+    """`https://www.hellointerview.com/learn/<path>[/][?...][#...]` -> path (`a/b/c`, at most 120 chars)."""
+    if not isinstance(url, str):
+        return None
+    m = HELLO_URL_RE.fullmatch(url)
+    if not m or not LESSON_ID_RE.fullmatch("hello." + m.group(1).replace("/", ".")):
+        return None
+    return m.group(1)
+
+
+def hello_learn_url(lesson_id) -> str | None:
+    """Canonical sourceUrl of a HelloInterview lesson (no query, hash or trailing slash); None if not a hello id."""
+    m = HELLO_ID_RE.fullmatch(lesson_id) if isinstance(lesson_id, str) else None
+    return "https://www.hellointerview.com/learn/" + m.group(1).replace(".", "/") if m else None
+
+
 def parse_lesson_id(s) -> str | None:
-    """Bare lesson id, YouTube URL, Udemy lecture URL or Netflix watch URL -> lesson id; None if unrecognised."""
+    """Bare lesson id, YouTube URL, Udemy lecture URL, Netflix watch URL or HelloInterview learn URL -> lesson
+    id; None if unrecognised."""
     if not isinstance(s, str):
         return None
     s = s.strip()
@@ -86,15 +112,20 @@ def parse_lesson_id(s) -> str | None:
     n = parse_netflix_url(s)
     if n:
         return f"netflix.{n}"
+    h = parse_hello_url(s)
+    if h:
+        return "hello." + h.replace("/", ".")
     return parse_youtube_id(s)
 
 
 def source_of(lesson_id) -> str | None:
-    """'youtube' | 'udemy' | 'netflix' for a valid lesson id, else None."""
+    """'youtube' | 'udemy' | 'netflix' | 'hellointerview' for a valid lesson id, else None."""
     if not isinstance(lesson_id, str) or not LESSON_ID_RE.fullmatch(lesson_id):
         return None
     if UDEMY_ID_RE.fullmatch(lesson_id):
         return "udemy"
     if NETFLIX_ID_RE.fullmatch(lesson_id):
         return "netflix"
+    if HELLO_ID_RE.fullmatch(lesson_id):
+        return "hellointerview"
     return "youtube"
