@@ -1,3 +1,13 @@
+![tests](https://github.com/at7211/yt-learn/actions/workflows/test.yml/badge.svg)
+
+**yt-learn** turns a YouTube video into an English lesson: bilingual EN/繁中 subtitles, a key-vocabulary panel and a recap card, overlaid on the YouTube player by a Chrome extension (the same overlay also works on Udemy, Netflix and HelloInterview). Translation and vocabulary picking go through your already logged-in `claude` or `codex` CLI, so no API key is needed. Everything runs locally on 127.0.0.1:8765.
+
+Requirements: Python >= 3.11, Node 22, Chrome, and a logged-in `claude` or `codex` CLI.
+
+Personal, local-only tool; see [Terms-of-service & scope](#terms-of-service--scope) below.
+
+---
+
 # yt-learn
 
 把一支 YouTube 影片變成一堂英文課：中英雙字幕、右側「本集精選單字」面板、開場「前情提要」卡、片尾總複習格。全部在本機跑，給自己學英文用。同一套疊層也能蓋在 Udemy 講座、Netflix 影集與 HelloInterview 課程上（見「支援站點」）。
@@ -93,10 +103,10 @@ python3 -m pipeline.build <videoId> --model claude-opus-5-5 --effort high   # �
 ## 專案結構
 
 ```
-extension/   Chrome MV3 擴充：在 YouTube 分頁擷取 json3 字幕送到本機 server，並把課程疊在播放器上
+extension/   Chrome MV3 擴充：在 YouTube、Udemy、Netflix（選擇性開啟）與 HelloInterview 分頁擷取字幕送到本機 server，並把課程疊在播放器上
 server.py    標準庫 HTTP server：靜態網頁、/ingest、/add、/jobs、/settings、產課佇列
 pipeline/    words（字詞正規化）→ chunk → segment（切句翻譯）→ vocab（挑字）→ intro（前情提要）→ build
-web/         播放器：index.html、app.js、style.css、timing.js（純函式）
+web/         播放器：index.html、app.js、style.css、timing.js（純函式）、dict.js（查字典）、intro.js（前情提要）、settings.js（設定）、progress.js（進度）、handshake.js（與擴充功能握手）、lesson-source.js（課程來源）、ytid.js（網址解析）
 data/        raw/（字幕）、lessons/（課程 JSON）、cache/（LLM 回覆）、jobs/（build log）
 tests/       pytest（pipeline、server）與 node --test（web 純函式、擴充功能的純函式與 worker 訊息）
 docs/        設計與計畫（superpowers/plans）、參考版面觀察、截圖
@@ -119,6 +129,15 @@ node --test tests/web/                           # 播放器與擴充功能的�
 - Netflix：沒有英文字幕的片做不了；有廣告的方案尚未支援；Netflix 改版（播放頁、manifest 格式、播放器 API）可能讓 hook 或疊層失效，屆時用右鍵的「診斷」看是哪一段壞了。跳句一律透過播放器自己的 API，不直接改影片時間（那會觸發 Netflix 的 M7375 錯誤）。已經產好的課程不會自動改用之後才抓到的官方繁中字幕，要套用就刪掉 `data/lessons/netflix.<id>.json`（`<id>` 是網址裡的數字，例如 `netflix.81234567.json`），關掉疊層後再按一次圖示重跑。關閉過程若被中斷，網站權限可能留著——無害（關閉狀態下擴充一律不碰 Netflix），再關一次即可。
 - HelloInterview：只支援 www.hellointerview.com/learn/ 底下有影片的課程頁；付費內容只在你自己登入的瀏覽器、本機使用；影片與字幕是會過期的簽名網址，擷取失敗時先重新整理頁面，課程裡不保存這些網址。
 - 條款：Udemy、Netflix 與 HelloInterview 的字幕都是重現頁面自己會發出的請求取得的，疊層也直接畫在它們的播放器上，這些都可能不符合各站的使用條款。請只在自己的電腦上、用自己的帳號、為自己學習使用，不要散布字幕或課程內容；本專案的測試與截圖不含任何這些站的字幕內容。
+
+## Terms-of-service & scope
+
+- Personal use only. This is a personal, local-only tool: run it on your own computer, with your own accounts, for your own learning. Do not deploy it publicly.
+- Subtitles are obtained by reproducing requests the page itself already makes (for YouTube, the player's own timedtext request), and the overlay is drawn directly on top of each site's player. Both may not comply with the terms of service of YouTube, Udemy, Netflix or HelloInterview, or with YouTube's embedding rules.
+- Do not redistribute subtitles or lesson content from these sites. The project's tests and screenshots contain no subtitle content from Udemy, Netflix or HelloInterview.
+- Netflix support is opt-in and off by default; you enable it explicitly and grant the site permission yourself.
+- Udemy: purchased courses only. HelloInterview: paid content is used only in your own logged-in browser, locally. Videos and captions there use expiring signed URLs, and lessons do not store those URLs.
+- Other limits: subtitle quality determines segmentation and vocabulary quality, and videos without a subtitle track cannot be processed. The YouTube overlay can collide with other subtitle-drawing extensions such as Immersive Translate, so turn those off on YouTube.
 
 ## 素材出處
 
