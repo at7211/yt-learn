@@ -161,6 +161,29 @@ test('keyAction: only our keys, only while active', () => {
   assert.equal(keyAction(null, on), null);
 });
 
+test('keyAction: ← → step by sentence only when the site asks for it', () => {
+  const on = { active: true, arrows: true };
+  assert.equal(keyAction(key('ArrowLeft'), on), 'prev');
+  assert.equal(keyAction(key('ArrowRight'), on), 'next');
+  assert.equal(keyAction(key('BracketLeft'), on), 'prev', '[ ] keep working');
+  assert.equal(keyAction(key('KeyZ'), on), 'zh');
+  for (const other of ['ArrowUp', 'ArrowDown', 'Space']) assert.equal(keyAction(key(other), on), null, other);
+  assert.equal(keyAction(key('ArrowLeft'), { active: true }), null, 'off by default: the site keeps its own');
+  assert.equal(keyAction(key('ArrowLeft'), { active: false, arrows: true }), null);
+  assert.equal(keyAction(key('ArrowLeft', { shiftKey: true }), on), null);
+  assert.equal(keyAction(key('ArrowLeft', { repeat: true }), on), null);
+  assert.equal(keyAction(key('ArrowLeft'), { ...on, path: [{ tagName: 'INPUT' }] }), null, 'caret keys inside a text field');
+  for (const role of ['slider', 'menu', 'menuitem', 'listbox', 'tab', 'radiogroup']) {
+    const widget = { getAttribute: (k) => (k === 'role' ? role : null) };
+    assert.equal(keyAction(key('ArrowLeft'), { ...on, path: [widget, {}] }), null, 'focus in a ' + role + ': its own arrows');
+    assert.equal(keyAction(key('KeyZ'), { ...on, path: [widget, {}] }), 'zh', 'our letter keys still work there');
+    assert.equal(keyAction(key('BracketLeft'), { ...on, path: [widget, {}] }), 'prev');
+  }
+  const region = { getAttribute: (k) => (k === 'role' ? 'region' : null) };
+  assert.equal(keyAction(key('ArrowLeft'), { ...on, path: [region, null, 'x'] }), 'prev', 'the player root itself does not own them');
+  assert.ok(!('ArrowLeft' in OWN_KEYS) && !('ArrowRight' in OWN_KEYS));
+});
+
 test('keyAction: modifiers, composition, repeat and editable targets are ignored', () => {
   const on = { active: true };
   for (const m of ['metaKey', 'ctrlKey', 'altKey', 'shiftKey', 'isComposing', 'repeat']) {
@@ -234,6 +257,20 @@ test('lessonIdFromUrl agrees with the shared fixture for Udemy lecture URLs', ()
     if (input.startsWith('https://www.youtube.com/')) continue; // a YouTube id, not a Udemy one
     assert.equal(lessonIdFromUrl(input), want ? 'udemy.' + want[1] : null, input);
   }
+});
+
+test('lessonIdFromUrl agrees with the shared fixture for Coursera lecture URLs', () => {
+  const fx = JSON.parse(readFileSync(new URL('../fixtures/lesson_ids.json', import.meta.url), 'utf8'));
+  assert.ok(fx.courseraUrl.length >= 8);
+  for (const [input, want] of fx.courseraUrl) {
+    if (input.includes('udemy.com')) continue; // a Udemy lecture is a lesson too, just not a Coursera one
+    assert.equal(lessonIdFromUrl(input), want ? 'coursera.' + want[0] + '.' + want[1] : null, input);
+  }
+  for (const [input, want] of fx.parse) {
+    if (!input.includes('coursera.org')) continue;
+    assert.equal(lessonIdFromUrl(input), input === input.trim() ? want : null, input);
+  }
+  assert.equal(lessonIdFromUrl('https://www.coursera.org/learn/machine-learning/lecture/iYR2y', 'ignored-for-coursera'), 'coursera.machine-learning.iYR2y');
 });
 
 test('lessonIdFromUrl agrees with the shared fixture for Netflix watch URLs', () => {

@@ -319,11 +319,11 @@ test('menu clicks open the home page and the settings section', async () => {
   ]);
 });
 
-test('manifest asks for contextMenus and is version 1.7.0', () => {
+test('manifest asks for contextMenus and is version 1.8.0', () => {
   const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
   assert.ok(m.permissions.includes('contextMenus'));
-  assert.equal(m.version, '1.7.0');
-  // tab.url comes from host permissions (youtube.com, udemy.com, the local server) and activeTab on icon click
+  assert.equal(m.version, '1.8.0');
+  // tab.url comes from host permissions (youtube.com, udemy.com, hellointerview.com, coursera.org, the local server) and activeTab on icon click
   assert.ok(!m.permissions.includes('tabs') && m.permissions.includes('activeTab'));
 });
 
@@ -332,7 +332,7 @@ test('manifest: udemy.com gets the host permission, the overlay content script a
   const U = 'https://www.udemy.com/*';
   assert.ok(m.host_permissions.includes(U));
   const overlay = m.content_scripts.find((c) => c.js.includes('overlay.js'));
-  assert.deepEqual(overlay.matches, ['https://www.youtube.com/*', U, 'https://www.hellointerview.com/*']);
+  assert.deepEqual(overlay.matches, ['https://www.youtube.com/*', U, 'https://www.hellointerview.com/*', 'https://www.coursera.org/*']);
   const war = m.web_accessible_resources[0];
   assert.ok(war.matches.includes(U));
   assert.ok(war.resources.includes('site.js'));
@@ -356,6 +356,20 @@ test('manifest: hellointerview.com gets the host permission, the overlay content
   // only the exact host: no wildcard subdomains
   const all = JSON.stringify(m);
   assert.ok(!all.includes('*.hellointerview.com'));
+});
+
+test('manifest: coursera.org gets the host permission, the overlay content script and the overlay resources', () => {
+  const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
+  const C = 'https://www.coursera.org/*';
+  assert.ok(m.host_permissions.includes(C), 'static host permission (not optional, unlike Netflix)');
+  assert.ok(!(m.optional_host_permissions || []).includes(C));
+  assert.ok(m.content_scripts.find((c) => c.js.includes('overlay.js')).matches.includes(C));
+  const war = m.web_accessible_resources[0];
+  assert.ok(war.matches.includes(C));
+  // the capture scripts are injected by scripting.executeScript, never web-accessible
+  for (const f of ['vtt.js', 'coursera-capture.js']) assert.ok(!war.resources.includes(f), f);
+  // only the exact host: no wildcard subdomains
+  assert.ok(!JSON.stringify(m).includes('*.coursera.org'));
 });
 
 test('overlay and pill shadow roots are closed', () => {
@@ -578,8 +592,109 @@ test('siteOfUrl', () => {
   const w = load();
   assert.equal(w.ctx.siteOfUrl('https://www.youtube.com/watch?v=' + VID), 'youtube');
   assert.equal(w.ctx.siteOfUrl(LURL), 'udemy');
+  assert.equal(w.ctx.siteOfUrl(CRURL), 'coursera');
   for (const u of ['https://www.youtube.com/shorts/' + VID, 'https://www.udemy.com/course/x/', 'http://www.udemy.com/course/x/learn/lecture/1',
-    'https://mycompany.udemy.com/course/x/learn/lecture/1', '', undefined]) assert.equal(w.ctx.siteOfUrl(u), null, String(u));
+    'https://mycompany.udemy.com/course/x/learn/lecture/1', 'https://www.coursera.org/learn/x', 'http://www.coursera.org/learn/x/lecture/y',
+    'https://coursera.org/learn/x/lecture/y', '', undefined]) assert.equal(w.ctx.siteOfUrl(u), null, String(u));
+});
+
+/* ---------- Coursera lecture pages ---------- */
+
+const CRID = 'coursera.machine-learning.iYR2y';
+const CRURL = 'https://www.coursera.org/learn/machine-learning/lecture/iYR2y/supervised-learning?t=3';
+const courseraRoutes = () => ({
+  'POST /add': { status: 200, json: { job: { videoId: CRID, state: 'queued', attempt: 1, message: '' } } },
+  ['POST /jobs/' + CRID + '/claim']: { status: 200, json: { attempt: 1 } },
+  'POST /ingest?attempt=1': { status: 200, json: { ok: true, job: { videoId: CRID, state: 'captured', attempt: 1, message: '' } } },
+  ['POST /jobs/' + CRID + '/fail']: { status: 200, json: { ok: true } },
+});
+
+test('icon on a Coursera lecture: overlay not handled -> /add with the tab url -> claim -> coursera capture (ISOLATED, vtt.js + coursera-capture.js) -> /ingest', async () => {
+  const raw = { videoId: CRID, source: 'coursera', events: [{ t: 0, d: 1000, segs: [[null, 'hi']] }] };
+  const injected = [];
+  const w = load(courseraRoutes(), { toggleReply: { handled: false }, executeScript: captureScript(raw, injected) });
+  await w.ctx.onIconClicked({ id: 7, url: CRURL });
+  assert.deepEqual(plain(w.calls.sent), [{ tabId: 7, msg: { type: 'ytlearn:toggle' } }]);
+  assert.deepEqual(w.calls.fetched, ['POST /add', 'POST /jobs/' + CRID + '/claim', 'POST /ingest?attempt=1']);
+  assert.deepEqual(plain(w.calls.bodies['POST /add']), { url: CRURL });
+  assert.deepEqual(plain(injected[0]), { target: { tabId: 7 }, files: ['vtt.js', 'coursera-capture.js'], world: 'ISOLATED' });
+  assert.equal(injected[1].world, 'ISOLATED', 'both phases in the same world');
+  assert.deepEqual(plain(injected[1].args), ['ytLearnCourseraCapture', { expectLessonId: CRID, timeoutMs: 25000 }]);
+  assert.deepEqual(plain(w.calls.bodies['POST /ingest?attempt=1']), raw);
+});
+
+test('icon on a Coursera lecture: overlay handled -> nothing else', async () => {
+  const w = load({}, { toggleReply: { handled: true } });
+  await w.ctx.onIconClicked({ id: 7, url: CRURL });
+  assert.equal(w.calls.sent.length, 1);
+  assert.deepEqual(w.calls.fetched, []);
+  assert.deepEqual(w.calls.created, []);
+});
+
+test('icon on a non-lecture Coursera page opens the home page (no background mode for Coursera)', async () => {
+  for (const url of ['https://www.coursera.org/', 'https://www.coursera.org/learn/machine-learning', 'https://www.coursera.org/learn/machine-learning/quiz/iYR2y/q']) {
+    const w = load({}, { toggleReply: { handled: true } });
+    await w.ctx.onIconClicked({ id: 7, url });
+    assert.deepEqual(w.calls.sent, [], url);
+    assert.deepEqual(w.calls.fetched, [], url);
+    assert.deepEqual(plain(w.calls.created), [{ url: 'http://127.0.0.1:8765/index.html', active: true }], url);
+  }
+});
+
+test('Coursera never runs in background mode', async () => {
+  // a mislabelled request is refused too: the id decides
+  for (const requested of [{ id: CRID, url: CRURL, site: 'coursera' }, { id: CRID, url: 'x', site: 'youtube' }]) {
+    const injected = [];
+    const w = load(courseraRoutes(), { executeScript: captureScript({ videoId: CRID, events: [] }, injected) });
+    const r = await w.ctx.runJob(requested, { mode: 'background' });
+    assert.deepEqual(plain(r), { ok: false, error: 'Coursera 影片只能在影片頁上擷取' }, requested.site);
+    assert.deepEqual(w.calls.fetched, []);
+    assert.deepEqual(w.calls.created, []);
+    assert.deepEqual(injected, []);
+  }
+});
+
+test('captureInPlace never falls back to capture.js for a coursera id', async () => {
+  // even when the request is mislabelled with another site, the id decides
+  for (const site of ['coursera', 'youtube', undefined]) {
+    const injected = [];
+    const w = load({}, { executeScript: captureScript({ videoId: CRID, events: [] }, injected) });
+    await w.ctx.captureInPlace(7, { id: CRID, url: CRURL, site });
+    assert.deepEqual(plain(injected[0].files), ['vtt.js', 'coursera-capture.js'], String(site));
+    assert.ok(injected.every((x) => x.world === 'ISOLATED'));
+    assert.equal(injected[1].args[0], 'ytLearnCourseraCapture');
+  }
+});
+
+test('capture of another Coursera lecture (raw.videoId mismatch) -> /fail with 換課了, no /ingest', async () => {
+  const w = load(courseraRoutes(), { executeScript: captureScript({ videoId: 'coursera.machine-learning.other', events: [] }, []) });
+  const r = await w.ctx.runJob({ id: CRID, url: CRURL, site: 'coursera' }, { mode: 'inplace', tabId: 7 });
+  assert.equal(r.error, '換課了，請回到原講座再試');
+  assert.deepEqual(w.calls.fetched, ['POST /add', 'POST /jobs/' + CRID + '/claim', 'POST /jobs/' + CRID + '/fail']);
+});
+
+test('ytlearn:build from a Coursera overlay carries the page url; a url naming another lecture is refused', async () => {
+  const raw = { videoId: CRID, events: [{ t: 0, d: 1000, segs: [[null, 'hi']] }] };
+  const injected = [];
+  const w = load(courseraRoutes(), { executeScript: captureScript(raw, injected) });
+  const { r, ret } = await ask(w, { type: 'ytlearn:build', videoId: CRID, url: CRURL }, { id: EXT, tab: { id: 42 } });
+  assert.equal(ret, true);
+  assert.equal(r.ok, true);
+  assert.deepEqual(plain(w.calls.bodies['POST /add']), { url: CRURL });
+  assert.equal(injected[0].world, 'ISOLATED');
+  const other = load(courseraRoutes());
+  const bad = await ask(other, { type: 'ytlearn:build', videoId: CRID, url: 'https://www.coursera.org/learn/machine-learning/lecture/other' });
+  assert.equal(bad.ret, false);
+  assert.deepEqual({ ...bad.r }, { ok: false, error: '換課了，請回到原講座再試' });
+  const noUrl = await ask(other, { type: 'ytlearn:build', videoId: CRID });
+  assert.equal(noUrl.r.ok, false);
+  assert.deepEqual(other.calls.fetched, []);
+});
+
+test('ytlearn:lesson / ytlearn:job accept coursera ids', async () => {
+  const w = load({ ['GET /data/lessons/' + CRID + '.json']: { status: 200, json: { videoId: CRID } }, ['GET /jobs/' + CRID]: { status: 404 } });
+  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:lesson', videoId: CRID })).r), { lesson: { videoId: CRID } });
+  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:job', videoId: CRID })).r), { missing: true });
 });
 
 /* ---------- HelloInterview learn pages (in place only) ---------- */

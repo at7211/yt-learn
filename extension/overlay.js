@@ -1,5 +1,5 @@
-/* yt-learn overlay engine: content script on https://www.youtube.com/*, https://www.udemy.com/* and
-   https://www.hellointerview.com/* (manifest), and on https://www.netflix.com/* while Netflix is switched on (background.js registers it)
+/* yt-learn overlay engine: content script on https://www.youtube.com/*, https://www.udemy.com/*,
+   https://www.hellointerview.com/*, https://www.coursera.org/* (manifest), and on https://www.netflix.com/* while Netflix is switched on (background.js registers it)
    (isolated world, document_idle). Everything site-specific (lesson id from the route, the player
    {root, video}, ads, the native-caption rule, SPA navigation events, seeking) comes from a site adapter
    (site.js siteFor(location.hostname)). A site can be switched off for good on this page (Netflix:
@@ -653,7 +653,7 @@
   function onKey(e) {
     const m = M;
     if (!m || !O) return;
-    const action = O.keyAction(e, { active: !m.ad, path: typeof e.composedPath === 'function' ? e.composedPath() : [] });
+    const action = O.keyAction(e, { active: !m.ad, arrows: site.arrowsStepCues === true, path: typeof e.composedPath === 'function' ? e.composedPath() : [] });
     if (!action) return;
     e.preventDefault();
     e.stopImmediatePropagation();
