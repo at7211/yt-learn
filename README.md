@@ -96,8 +96,8 @@ python3 -m pipeline.build <videoId> --model claude-opus-5-5 --effort high   # �
 
 ## 快捷鍵
 
-- 疊層（YouTube、Udemy、Netflix、HelloInterview 相同）：Z 中文・E 英文・V 單字面板・R 重播本句・[ ] 上一句／下一句。網站自己的快捷鍵不受影響（YouTube 的 Space、← →、F、C、K、J、L、M；Netflix 的 Space、← →、F、M、S、數字鍵）。
-- 本機播放器：Space 播放／暫停・← → 上一句／下一句・R 重播本句・Z 中文・E 英文・V 單字面板・F 全螢幕。中文輸入法開著也能用。
+- 疊層（YouTube、Udemy、Netflix、HelloInterview 相同）：Z 中文・E 英文・V 單字面板・B 黑底（字幕與單字欄後面的暗色漸層）・R 重播本句・[ ] 上一句／下一句。網站自己的快捷鍵不受影響（YouTube 的 Space、← →、F、C、K、J、L、M；Netflix 的 Space、← →、F、M、S、數字鍵）。
+- 本機播放器：Space 播放／暫停・← → 上一句／下一句・R 重播本句・Z 中文・E 英文・V 單字面板・B 黑底・F 全螢幕。中文輸入法開著也能用。
 - 滑鼠（兩種播放器都一樣）：點字幕裡的任何一個字，影片暫停並在旁邊的小視窗開劍橋英漢字典；當前單字（橘色）會查整個詞。右側單字面板照舊是點一下跳到那一句。
 
 ## 專案結構

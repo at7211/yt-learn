@@ -374,7 +374,7 @@
       vocabById: new Map(lesson.vocab.map((v) => [v.id, v])),
       keys: { sub: null, panel: null, count: null },
       rowH: 0, t: 0, raf: 0, started: false, introShown: false, introTimer: null,
-      showZh: true, showEn: true, showVocab: true, ad: false,
+      showZh: true, showEn: true, showVocab: true, showShade: true, ad: false,
       abort: new AbortController(), ro: null, mo: null,
     };
     M = m;
@@ -660,6 +660,7 @@
     const f = m.ui.frame;
     if (action === 'zh') { m.showZh = !m.showZh; f.classList.toggle('no-zh', !m.showZh); if (m.showZh) fitSubtitle(m); }
     else if (action === 'en') { m.showEn = !m.showEn; f.classList.toggle('no-en', !m.showEn); if (m.showEn) fitSubtitle(m); }
+    else if (action === 'shade') { m.showShade = !m.showShade; f.classList.toggle('no-shade', !m.showShade); }
     else if (action === 'vocab') {
       m.showVocab = !m.showVocab;
       f.classList.toggle('no-vocab', !m.showVocab);

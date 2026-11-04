@@ -175,11 +175,12 @@ export function jobPhase(job) {
 /* ---------- keyboard ---------- */
 
 // Physical keys (e.code) we own while the overlay is on. Everything else stays YouTube's
-// (Space, ← →, F, C, K, J, L, M, T, …). e.code, not e.key: with a Chinese IME, e.key is 'Process'.
+// (Space, ← →, F, C, K, J, L, M, T, …). B toggles the dark shade behind the subtitles and panel. e.code, not e.key: with a Chinese IME, e.key is 'Process'.
 export const OWN_KEYS = {
   KeyZ: 'zh',
   KeyE: 'en',
   KeyV: 'vocab',
+  KeyB: 'shade',
   KeyR: 'replay',
   BracketLeft: 'prev',
   BracketRight: 'next',
