@@ -6,8 +6,8 @@ import { externalSite, listRowSite, listRowSourceLink, canBuildHere } from './le
 import { waitForAck, shouldApplyLiveStatus } from './handshake.js';
 import { introRows } from './intro.js';
 import { dictWord, dictUrl, clickWord } from './dict.js';
-import { barState } from './progress.js';
-import { DEFAULTS, MODELS, EFFORTS, PRESETS, normalize, presetOf, summary, shortModel } from './settings.js';
+import { barState, costText } from './progress.js';
+import { DEFAULTS, EFFORTS, PRESETS, PROVIDERS, normalize, presetOf, summary, shortModel, modelsFor, fmtUsd, budgetText } from './settings.js';
 
 // ---------------------------------------------------------------- util
 const $ = (id) => document.getElementById(id);
@@ -84,58 +84,263 @@ function initHome(showList) {
 
 // ---------------------------------------------------------------- settings (home only)
 const EFFORT_TEXT = { default: '預設（不指定）' };
+const KEY_ENV = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' };
+const VENDOR_NAME = { anthropic: 'Anthropic', openai: 'OpenAI' };
+const PRESET_PROVIDERS = ['claude-cli', 'anthropic-api']; // the presets name Claude models
+const SOURCE_NOTE = {
+  'claude-cli': '用本機已登入的 claude 指令產課，走訂閱額度。',
+  'codex-cli': '用本機已登入的 codex 指令產課，走訂閱額度：模型照 Codex 自己的設定，effort 最高到 high。',
+  'anthropic-api': '直接呼叫 Anthropic API，依 token 計費。測試連線後模型清單會多出帳號可用的其他 Claude 模型。',
+  'openai-api': '直接呼叫 OpenAI API，依 token 計費。要先測試連線取得模型清單，才能選模型。',
+};
+// What the page knows besides the form: masked keys and cached model lists from GET /settings, and
+// the last settings the server accepted (null until it answers).
+const SET = { keys: {}, models: {}, saved: null, changingKey: false };
+
+// A 「無法儲存：…」 from an earlier save no longer applies once the source or the key changed;
+// a settings-file warning from GET /settings stays.
+function clearSaveError() {
+  const w = $('set-warning');
+  if (w.textContent.startsWith('無法儲存')) { w.textContent = ''; w.hidden = true; }
+}
+
+function currentProvider() {
+  const r = document.querySelector('#set-providers input[name="provider"]:checked');
+  return r ? r.value : DEFAULTS.provider;
+}
 
 function readSettingsForm() {
-  return { model: $('set-model').value, effort: $('set-effort').value, workers: Number($('set-workers').value) };
+  const budget = $('set-budget').value.trim();
+  return { provider: currentProvider(), model: $('set-model').value, effort: $('set-effort').value,
+           workers: Number($('set-workers').value), budgetUsd: budget === '' ? null : Number(budget) };
+}
+
+// The model <select> for `provider`, selecting `model`. codex-cli keeps the stored model as the one
+// (disabled) option so it round-trips unchanged; an API source with no list says to test first.
+function fillModelOptions(provider, model) {
+  const sel = $('set-model');
+  const opt = (value, text) => { const o = el('option', text); o.value = value; return o; };
+  const list = modelsFor(provider, SET.models);
+  if (provider === 'codex-cli') {
+    sel.replaceChildren(opt(model || DEFAULTS.model, '照 Codex 自己的設定'));
+  } else if (!list.length) {
+    sel.replaceChildren(opt('', '請先測試連線取得模型清單'));
+  } else {
+    sel.replaceChildren(...list.map((m) => opt(m, shortModel(m))));
+  }
+  sel.value = sel.options[0].value;
+  if ([...sel.options].some((o) => o.value === model)) sel.value = model;
+  sel.disabled = provider === 'codex-cli' || !list.length;
 }
 
 function fillSettingsForm(s) {
-  $('set-model').value = s.model;
+  for (const r of document.querySelectorAll('#set-providers input[name="provider"]')) r.checked = r.value === s.provider;
+  fillModelOptions(s.provider, s.model);
   $('set-effort').value = s.effort;
   $('set-workers').value = String(s.workers);
-  markPreset();
+  $('set-budget').value = s.budgetUsd == null ? '' : String(s.budgetUsd);
+  renderSource();
+}
+
+// Switching source: Claude sources keep a model they accept (else the default), OpenAI takes the
+// first listed model, Codex leaves it alone.
+function switchProvider(next) {
+  const prev = $('set-model').value || DEFAULTS.model;
+  let model = prev;
+  if (next === 'openai-api') model = modelsFor(next, SET.models)[0] || '';
+  else if (next !== 'codex-cli' && !modelsFor(next, SET.models).includes(prev)) model = DEFAULTS.model;
+  SET.changingKey = false;
+  $('key-input').value = '';
+  $('key-result').textContent = '';
+  clearSaveError();
+  fillModelOptions(next, model);
+  renderSource();
 }
 
 function markPreset() {
-  const p = presetOf(readSettingsForm());
+  const usable = PRESET_PROVIDERS.includes(currentProvider());
+  const p = usable ? presetOf(readSettingsForm()) : null;
   for (const b of document.querySelectorAll('#settings [data-preset]')) {
+    b.disabled = !usable;
     b.setAttribute('aria-pressed', String(b.dataset.preset === p));
   }
-  $('preset-note').textContent = p ? PRESETS[p].note : '自訂組合';
+  $('preset-note').textContent = !usable ? '預設組合指定 Claude 模型，只在 Claude CLI／Anthropic API 下可用'
+    : p ? PRESETS[p].note : '自訂組合';
+}
+
+function renderSource() {
+  const provider = currentProvider();
+  $('source-note').textContent = SOURCE_NOTE[provider] + ' 併行數越大切句越快，同時送出的請求也越多。';
+  const vendor = PROVIDERS[provider].key;
+  $('keybox').hidden = !vendor;
+  if (vendor) renderKeybox(vendor);
+  markPreset();
+}
+
+// The key box only ever sees { set, tail, source }: the full key never comes back from the server.
+function renderKeybox(vendor) {
+  const k = SET.keys[vendor] || { set: false, tail: null, source: null };
+  const env = KEY_ENV[vendor];
+  const status = $('key-status');
+  if (k.set) {
+    status.textContent = '已設定 ••••' + k.tail + '（' + (k.source === 'env' ? '環境變數 ' + env : '檔案') + '）';
+    status.className = 'key-status';
+  } else {
+    status.textContent = '尚未設定 ' + VENDOR_NAME[vendor] + ' API key';
+    status.className = 'key-status unset';
+  }
+  const editing = !k.set || SET.changingKey;
+  $('key-row').hidden = !editing;
+  $('key-input').placeholder = k.set ? '貼上新的 ' + VENDOR_NAME[vendor] + ' API key' : '貼上 ' + VENDOR_NAME[vendor] + ' API key';
+  $('key-change').hidden = !k.set || SET.changingKey;
+  $('key-remove').hidden = !(k.set && k.source === 'file');
+  let hint;
+  if (!k.set) hint = '貼上 key 後按「測試連線」：成功會立刻存到本機 data/keys.json，不用另外按儲存。也可以改用環境變數 ' + env + '。';
+  else if (k.source === 'env') hint = '這把 key 來自環境變數 ' + env + '，要移除請改環境變數。按「更換」貼上新的 key 測試成功後，會存進 data/keys.json 並優先使用。';
+  else hint = 'key 只存在本機 data/keys.json，頁面只拿得到最後四碼。';
+  $('key-hint').textContent = hint;
+}
+
+function keyResult(text, kind) {
+  const r = $('key-result');
+  r.textContent = text;
+  r.className = 'meta' + (kind ? ' ' + kind : '');
+}
+
+async function postJson(url, body) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let out;
+  try { out = await res.json(); } catch (e) { throw new BadResponse(); }
+  return { res, out };
+}
+
+function keyButtons(disabled) {
+  for (const id of ['key-test', 'key-change', 'key-remove']) $(id).disabled = disabled;
+}
+
+async function testKey() {
+  const vendor = PROVIDERS[currentProvider()].key;
+  if (!vendor) return;
+  const pasted = $('key-input').value.trim();
+  keyResult('測試中…');
+  keyButtons(true);
+  try {
+    const { res, out } = await postJson('/keys/test', pasted ? { provider: vendor, key: pasted } : { provider: vendor });
+    if (!res.ok || !out.ok) { keyResult(out.error || '測試失敗', 'bad'); return; }
+    $('key-input').value = '';
+    SET.changingKey = false;
+    if (out.keys) SET.keys = out.keys;
+    SET.models = { ...SET.models, [vendor]: out.models || [] };
+    const model = $('set-model').value;
+    const list = modelsFor(currentProvider(), SET.models);
+    fillModelOptions(currentProvider(), list.includes(model) ? model : (currentProvider() === 'openai-api' ? list[0] : DEFAULTS.model));
+    renderSource();
+    clearSaveError();
+    keyResult('連線成功' + (pasted ? '，key 已存到本機' : '') + '；取得 ' + (out.models || []).length + ' 個模型。', 'ok');
+  } catch (e) {
+    keyResult(e instanceof BadResponse ? BAD_RESPONSE : UNREACHABLE, 'bad');
+  } finally {
+    keyButtons(false);
+  }
+}
+
+async function removeKey() {
+  const vendor = PROVIDERS[currentProvider()].key;
+  if (!vendor || !window.confirm('移除本機儲存的 ' + VENDOR_NAME[vendor] + ' API key？')) return;
+  keyButtons(true);
+  try {
+    const { res, out } = await postJson('/keys', { [vendor]: '' });
+    if (!res.ok || !out.ok) { keyResult((out.errors && out.errors.join('；')) || '無法移除', 'bad'); return; }
+    SET.keys = out.keys || SET.keys;
+    SET.changingKey = false;
+    renderSource();
+    const still = SET.keys[vendor] && SET.keys[vendor].set;
+    const inUse = SET.saved && PROVIDERS[SET.saved.provider] && PROVIDERS[SET.saved.provider].key === vendor;
+    keyResult('已移除' + (still ? '，現在改用環境變數 ' + KEY_ENV[vendor] + ' 的 key。'
+      : inUse ? '。目前儲存的來源仍是 ' + PROVIDERS[SET.saved.provider].short + '，產課前請貼上新的 key 或換來源。' : '。'), still || !inUse ? 'ok' : 'bad');
+  } catch (e) {
+    keyResult(e instanceof BadResponse ? BAD_RESPONSE : UNREACHABLE, 'bad');
+  } finally {
+    keyButtons(false);
+  }
+}
+
+// #usage-line: this month's API spend against the budget (GET /usage). Shown on the real home page only.
+async function loadUsage() {
+  const box = $('usage');
+  if ($('settings').hidden) { box.hidden = true; return; }
+  try {
+    const u = await (await fetch('/usage')).json();
+    if (typeof u.apiUsd !== 'number') throw new BadResponse();
+    const line = $('usage-line');
+    line.textContent = budgetText(u);
+    if (u.budgetState === 'warn' || u.budgetState === 'over') {
+      line.append(el('span', '・已用 ' + u.pct + '%' + (u.budgetState === 'over' ? '，新的產課要按「這次仍要跑」' : ''), 'usage-pct'));
+    }
+    line.className = 'usage-line' + (u.budgetState === 'warn' || u.budgetState === 'over' ? ' ' + u.budgetState : '');
+    let cli = $('usage-cli');
+    if (typeof u.cliUsd === 'number' && u.cliUsd > 0) {
+      if (!cli) { cli = el('p', null, 'meta usage-cli'); cli.id = 'usage-cli'; line.after(cli); }
+      cli.textContent = 'CLI 等值' + fmtUsd(u.cliUsd) + '（訂閱額度，不計入上限）';
+    } else if (cli) cli.remove();
+    box.hidden = false;
+  } catch (e) {
+    box.hidden = true; // the usage line is informative; the settings form reports connection problems
+  }
 }
 
 function initSettings(listed) {
   const box = $('settings');
   const result = $('set-result');
   const warn = (text) => { $('set-warning').textContent = text || ''; $('set-warning').hidden = !text; };
-  if (!$('set-model').options.length) {
-    $('set-model').append(...MODELS.map((m) => { const o = el('option', shortModel(m)); o.value = m; return o; }));
+  const dirty = () => { result.textContent = '尚未儲存'; };
+  if (!$('set-effort').options.length) {
     $('set-effort').append(...EFFORTS.map((x) => { const o = el('option', EFFORT_TEXT[x] || x); o.value = x; return o; }));
+    $('set-providers').append(...Object.entries(PROVIDERS).map(([value, p]) => {
+      const label = el('label');
+      const r = el('input');
+      r.type = 'radio';
+      r.name = 'provider';
+      r.value = value;
+      r.onchange = () => { switchProvider(value); dirty(); };
+      label.append(r, el('span', p.label));
+      return label;
+    }));
   }
   for (const b of box.querySelectorAll('[data-preset]')) {
-    b.onclick = () => { fillSettingsForm(PRESETS[b.dataset.preset].settings); result.textContent = '尚未儲存'; };
+    b.onclick = () => {
+      const p = PRESETS[b.dataset.preset].settings;
+      fillModelOptions(currentProvider(), p.model);
+      $('set-effort').value = p.effort;
+      $('set-workers').value = String(p.workers);
+      markPreset();
+      dirty();
+    };
   }
-  for (const id of ['set-model', 'set-effort', 'set-workers']) {
-    $(id).oninput = () => { markPreset(); result.textContent = '尚未儲存'; };
+  for (const id of ['set-model', 'set-effort', 'set-workers', 'set-budget']) {
+    $(id).oninput = () => { markPreset(); dirty(); };
   }
+  $('key-test').onclick = testKey;
+  $('key-remove').onclick = removeKey;
+  $('key-change').onclick = () => { SET.changingKey = true; renderSource(); $('key-input').focus(); };
+  $('key-input').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); testKey(); } };
   $('set-save').onclick = async () => {
-    const { settings, errors } = normalize(readSettingsForm());
+    const { settings, errors } = normalize(readSettingsForm(), SET.models);
     if (errors.length) { result.textContent = ''; warn('無法儲存：' + errors.join('；')); return; }
     result.textContent = '儲存中…';
     try {
-      const res = await fetch('/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings) });
-      let out;
-      try { out = await res.json(); } catch (e) { throw new BadResponse(); }
+      const { res, out } = await postJson('/settings', settings);
       if (!res.ok || !out.ok) {
         result.textContent = '';
         warn('無法儲存：' + ((out.errors && out.errors.join('；')) || '未知錯誤'));
         return;
       }
       warn('');
+      SET.saved = out.settings;
       fillSettingsForm(out.settings);
       $('settings-summary').textContent = summary(out.settings);
       result.textContent = '已儲存，之後開始的產課會用這組設定。';
+      loadUsage();
     } catch (e) {
       result.textContent = '';
       warn(e instanceof BadResponse ? BAD_RESPONSE : UNREACHABLE);
@@ -145,10 +350,14 @@ function initSettings(listed) {
   fetch('/settings').then(async (res) => {
     const out = await res.json();
     if (!out.settings) throw new BadResponse();
+    SET.keys = out.keys || {};
+    SET.models = out.models || {};
+    SET.saved = out.settings;
     fillSettingsForm(out.settings);
     $('settings-summary').textContent = summary(out.settings);
     warn(out.warning ? '設定檔有問題，暫用預設值：' + out.warning : '');
   }).catch(() => warn('讀不到目前的設定（' + UNREACHABLE + '）'));
+  loadUsage();
   openSettingsFromHash(listed);
   window.addEventListener('hashchange', () => openSettingsFromHash());
 }
@@ -194,19 +403,22 @@ function mountCard(container, id, opts = {}) {
   if (CARD && CARD.container !== container) CARD.container.replaceChildren();
   CARD = { gen: ++genCounter, container, id, job: null, live: null, title: null, ext: 'unknown',
            netText: null, lastStep: 0, lastPct: 0, startedAt: Date.now(), timer: null, polling: false,
-           onDone: opts.onDone || null, doneFired: false };
+           onDone: opts.onDone || null, doneFired: false, endFired: false, budget: null };
   return CARD;
 }
 
 class BadResponse extends Error {}
+class BudgetBlocked extends Error {} // POST /add said 402 code "budget": the monthly API cap is reached
 
-async function postAdd(id) {
+// `extra` is { override: true } after 「這次仍要跑」 (skips the budget check for this one attempt).
+async function postAdd(id, extra = {}) {
   const res = await fetch('/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: 'https://www.youtube.com/watch?v=' + id }) });
+    body: JSON.stringify({ url: 'https://www.youtube.com/watch?v=' + id, ...extra }) });
   let out;
   try { out = await res.json(); } catch (e) { throw new BadResponse(); }
+  if (res.status === 402 && out.code === 'budget') throw new BudgetBlocked(out.error || '本月 API 費用已達上限（本機估算）');
   if (!res.ok || !out.job) throw new Error((out.errors && out.errors.join('；')) || '無法建立工作');
-  return out.job;
+  return out.warning && !out.job.warning ? { ...out.job, warning: out.warning } : out.job;
 }
 
 // Create (or re-attach to) the job for `id`, show its card, poll, and ask the extension if queued.
@@ -223,11 +435,12 @@ async function startJob(id, container, opts) {
   renderCard();
   let job;
   try {
-    job = await postAdd(id);
+    job = await postAdd(id, opts && opts.override ? { override: true } : {});
   } catch (e) {
     if (card !== CARD) return;
     if (e instanceof TypeError) card.netText = UNREACHABLE;
     else if (e instanceof BadResponse) card.netText = BAD_RESPONSE;
+    else if (e instanceof BudgetBlocked) card.budget = e.message;
     else card.job = { videoId: id, state: 'error', message: e.message };
     renderCard();
     return;
@@ -254,6 +467,10 @@ function applyJob(card, job) {
   const st = stepOf(job.state);
   if (st != null) card.lastStep = st;
   if (job.progress) card.lastPct = barState(job, 0).pct; // kept so an error bar freezes where the build stopped
+  if ((job.state === 'done' || job.state === 'error') && !card.endFired) {
+    card.endFired = true;
+    loadUsage(); // the ledger has this build's line now
+  }
   if (job.state === 'done') {
     if (card.title == null) fetchTitle(card);
     if (card.doneFired === false) {
@@ -318,10 +535,23 @@ async function requestCapture(card) {
   renderCard();
 }
 
-function retry() {
+function retry(override = false) {
   if (!CARD) return;
   const { id, container, onDone } = CARD;
-  startJob(id, container, { onDone });
+  startJob(id, container, override ? { onDone, override: true } : { onDone });
+}
+
+// The card in place of a job POST /add refused over the monthly budget: no job exists yet.
+function budgetCard(card, box) {
+  box.append(el('p', card.budget, 'cstate bad'));
+  box.append(el('p', '「這次仍要跑」只跳過這一次，不會改上限；要調整上限請到下方設定。', 'meta'));
+  const b = el('button', '這次仍要跑', 'primary');
+  b.type = 'button';
+  b.onclick = () => retry(true);
+  const actions = el('p', null, 'actions');
+  actions.append(b);
+  box.append(actions);
+  card.container.replaceChildren(box);
 }
 
 function renderCard() {
@@ -333,6 +563,7 @@ function renderCard() {
   if (card.title) head.append(el('span', card.title, 'ctitle'));
   head.append(el('code', card.id));
   box.append(head);
+  if (card.budget) { budgetCard(card, box); return; }
 
   const isErr = job && job.state === 'error';
   const cur = job && !isErr ? stepOf(job.state) : (isErr && stepOf(job.failedIn) != null ? stepOf(job.failedIn) : card.lastStep);
@@ -365,6 +596,11 @@ function renderCard() {
   else if (card.live && card.live.message) text = card.live.message;
   else text = STATE_TEXT[job.state] || job.state;
   box.append(el('p', text, 'cstate' + (bad ? ' bad' : '')));
+  if (job && !card.netText) {
+    const cost = job.state === 'building' ? costText(job.progress) : (job.state === 'done' || isErr) ? costText(job) : '';
+    if (cost) box.append(el('p', cost, 'ccost'));
+    if (job.warning && job.state !== 'done') box.append(el('p', job.warning, 'cwarn'));
+  }
 
   if (job && job.state === 'done') {
     const actions = el('p', null, 'actions');
@@ -375,7 +611,7 @@ function renderCard() {
   } else if ((isErr || (card.netText && !job)) && !card.noRetry && canBuildHere(card.id)) {
     const b = el('button', '重試');
     b.type = 'button';
-    b.onclick = retry;
+    b.onclick = () => retry();
     const actions = el('p', null, 'actions');
     actions.append(b);
     box.append(actions);
@@ -439,9 +675,15 @@ async function loadLessonList() {
         text.append(subEl);
       }
       a.append(text);
-      if (l.vocabCount != null) {
+      const hasCost = Object.hasOwn(l, 'costUsd');
+      if (l.vocabCount != null || hasCost) {
         const n = el('div', null, 'lrow-num num');
-        n.append(el('b', String(l.vocabCount)), el('span', ' 個單字'));
+        if (l.vocabCount != null) n.append(el('b', String(l.vocabCount)), el('span', ' 個單字'));
+        if (hasCost) {
+          const c = el('span', fmtUsd(l.costUsd), 'lrow-cost');
+          if (PROVIDERS[l.provider]) c.title = PROVIDERS[l.provider].short;
+          n.append(c);
+        }
         a.append(n);
       }
       li.append(a);

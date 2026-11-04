@@ -170,7 +170,7 @@ class Handler(SimpleHTTPRequestHandler):
                 row = {"videoId": f.stem, "title": j.get("title"), "channel": j.get("channel"),
                        "duration": j.get("duration"), "vocabCount": len(j.get("vocab", [])),
                        "coveredSeconds": j.get("coveredSeconds")}
-                row.update({k: j[k] for k in ("source", "sourceUrl") if k in j})  # omitted when absent
+                row.update({k: j[k] for k in ("source", "sourceUrl", "costUsd", "provider") if k in j})  # omitted when absent
                 out.append(row)
             except (OSError, ValueError, AttributeError, TypeError):
                 out.append({"videoId": f.stem})

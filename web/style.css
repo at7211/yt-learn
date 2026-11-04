@@ -318,6 +318,44 @@ button { font: inherit; }
 .settings-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .settings-actions .meta { margin: 0; }
 .settings .err { margin: 0 0 14px; }
+.settings-fields select:disabled { color: var(--faint); cursor: not-allowed; }
+.page .presets button:disabled { color: var(--faint); background: var(--active); cursor: not-allowed; opacity: .6; }
+.providers { border: 0; margin: 0 0 16px; padding: 0; }
+.providers legend { padding: 0; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
+.provider-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.provider-list label {
+  display: inline-flex; align-items: center; gap: 8px; height: var(--control-h); padding: 0 16px 0 12px;
+  border-radius: var(--radius-control); background: var(--active); color: var(--muted); font: 500 14px/1 var(--tc); cursor: pointer;
+}
+.provider-list label:hover { background: var(--raised); }
+.provider-list label:has(input:checked) { background: var(--text); color: #000; font-weight: 600; }
+.provider-list input { margin: 0; accent-color: #000; }
+.keybox { background: var(--active); border-radius: 14px; padding: 14px 16px; margin: 0 0 16px; }
+.settings-body .keybox p { margin: 0 0 8px; }
+.settings-body .keybox p:last-child { margin-bottom: 0; }
+.key-status { color: var(--text); font-weight: 500; }
+.key-status.unset { color: var(--muted); font-weight: 400; }
+.key-row, .key-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 8px; }
+.key-row[hidden] { display: none; }
+.key-row input {
+  flex: 1; min-width: 0; max-width: 420px; height: var(--control-h); background: var(--raised); color: var(--text);
+  border: 1px solid var(--control); border-radius: var(--radius-control); padding: 0 16px; font: 14px ui-monospace, Menlo, monospace;
+}
+.key-row input:focus { outline: 2px solid var(--text); outline-offset: 0; border-color: var(--text); }
+.page .key-row button, .page .key-actions button { background: var(--raised); }
+.page .key-row button:hover, .page .key-actions button:hover { background: var(--control); }
+.page button:disabled { cursor: progress; opacity: .6; }
+#key-result.ok { color: var(--mint); }
+#key-result.bad { color: var(--negative); }
+.usage { margin: var(--pad) 0 0; }
+.usage p { margin: 0; }
+.usage-line { font: 500 14px/1.45 var(--tc); color: var(--muted); font-variant-numeric: tabular-nums; }
+.usage-line.warn { color: var(--gold); }
+.usage-line.over { color: var(--negative); font-weight: 600; }
+.usage-cli { font-size: 12px; }
+.card .cwarn { margin: 4px 0 0; color: var(--gold); font-size: 13px; }
+.card .ccost { margin: 4px 0 0; color: var(--faint); font-size: 13px; font-variant-numeric: tabular-nums; }
+.lrow-cost { display: block; margin-top: 2px; font-size: 12px; color: var(--faint); }
 
 /* External-site lessons: Udemy, Netflix, HelloInterview (no local player) */
 .lrow-tag { display: inline-block; margin-right: 8px; padding: 0 6px; border-radius: 6px; background: var(--raised); color: var(--text); font-size: 11px; font-weight: 600; line-height: 18px; }

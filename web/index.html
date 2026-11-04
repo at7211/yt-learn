@@ -137,10 +137,31 @@
   <section id="lesson-list" class="sheet">
     <ul id="lessons" class="lesson-rows"><li class="lrow-empty">載入中…</li></ul>
   </section>
+  <div id="usage" class="usage" hidden>
+    <p id="usage-line" class="usage-line"></p>
+    <p id="usage-note" class="meta">本機估算，不是帳戶餘額：只算這個工具自己記下的用量，帳戶實際剩多少請看各家後台。</p>
+  </div>
   <details id="settings" class="settings" hidden>
     <summary id="settings-summary">設定</summary>
     <div class="sheet settings-body">
-      <p class="settings-lead">產課用的模型、思考強度（effort）與同時切句的數量。設定套用在之後開始的產課，正在跑的不受影響。</p>
+      <p class="settings-lead">產課用的語言模型來源、模型、思考強度（effort）、同時切句的數量與每月費用上限。設定套用在之後開始的產課，正在跑的不受影響。</p>
+      <fieldset class="providers">
+        <legend>語言模型來源</legend>
+        <div id="set-providers" class="provider-list"></div>
+      </fieldset>
+      <div id="keybox" class="keybox" hidden>
+        <p id="key-status" class="key-status"></p>
+        <div id="key-row" class="key-row">
+          <input id="key-input" type="password" autocomplete="off" spellcheck="false" aria-label="API key">
+        </div>
+        <div class="key-actions">
+          <button id="key-test" type="button">測試連線</button>
+          <button id="key-change" type="button" hidden>更換</button>
+          <button id="key-remove" type="button" hidden>移除</button>
+        </div>
+        <p id="key-result" class="meta" role="status"></p>
+        <p id="key-hint" class="meta"></p>
+      </div>
       <div class="presets" role="group" aria-label="預設組合">
         <button type="button" data-preset="fast" aria-pressed="false">快</button>
         <button type="button" data-preset="standard" aria-pressed="false">標準</button>
@@ -151,8 +172,10 @@
         <label>模型<select id="set-model"></select></label>
         <label>Effort<select id="set-effort"></select></label>
         <label>併行數<input id="set-workers" type="number" min="1" max="8" step="1" inputmode="numeric"></label>
+        <label>每月上限（美元）<input id="set-budget" type="number" min="0" step="any" inputmode="decimal" placeholder="不限"></label>
       </div>
-      <p class="meta">模型與 effort 只對 Claude 有效：改用 Codex（<code>YTLEARN_PROVIDER=codex</code>）時模型照 Codex 自己的設定，effort 最高到 high。併行數越大切句越快，同時開的 CLI 也越多。標準設定約每分鐘影片 1–2 美分。</p>
+      <p id="source-note" class="meta"></p>
+      <p class="meta">每月上限只算 API 來源（CLI 走訂閱額度，不計入）：到 80% 會提醒，到 100% 新的產課要按「這次仍要跑」才會開始；正在跑的會跑完。留空代表不限。金額是本機估算，不是帳戶餘額。</p>
       <p id="set-warning" class="err" hidden></p>
       <div class="settings-actions">
         <button id="set-save" type="button" class="primary">儲存</button>
