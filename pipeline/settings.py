@@ -34,6 +34,7 @@ ENV = {"provider": "YTLEARN_PROVIDER", "model": "YTLEARN_MODEL", "effort": "YTLE
 # (and web/settings.js until it learns them) still save, getting these defaults.
 OPTIONAL = ("provider", "budgetUsd")
 INCONSISTENT = "來源與模型不一致，改用預設"
+DROPPED = "provider 與 model 不一致，兩者都改用預設"
 
 _BAD = object()  # "invalid" sentinel: None is a valid budgetUsd
 
@@ -115,9 +116,11 @@ def _check(key, value):
     if key == "budgetUsd":
         if value is None:
             return None
-        if type(value) in (int, float) and math.isfinite(value) and value > 0:
-            return value
-        return _BAD
+        try:
+            ok = type(value) in (int, float) and math.isfinite(value) and value > 0
+        except OverflowError:  # a huge JSON int cannot become a float
+            ok = False
+        return value if ok else _BAD
     return value if isinstance(value, str) and value in VALID[key] else _BAD
 
 
@@ -127,8 +130,8 @@ def normalize(obj, partial: bool = False, models=None) -> tuple[dict, list[str]]
     With ``partial`` False every key is required except ``provider`` (missing → ``claude-cli``) and
     ``budgetUsd`` (missing → None); with True missing keys are simply left out. ``model`` is checked
     against the provider's rules (missing provider → ``claude-cli``) using the cached lists ``models``
-    (None → none cached). In partial mode a model the provider rejects drops ``provider`` too, so a
-    load never yields half a pair (an OpenAI provider with a Claude model). Unknown keys are errors
+    (None → none cached). In partial mode a model the provider rejects drops ``provider`` too, and
+    so does an API provider left without a valid model, so a load never yields half a pair. Unknown keys are errors
     either way, so a typo never silently does nothing."""
     if not isinstance(obj, dict):
         return {}, ["settings must be a JSON object"]
@@ -148,9 +151,8 @@ def normalize(obj, partial: bool = False, models=None) -> tuple[dict, list[str]]
                 out[key] = value
                 continue
             errs.append(_model_error(provider))
-            if partial and isinstance(value, str) and value and "provider" in obj:
-                out.pop("provider", None)
-                errs.append("provider 與 model 不一致，兩者都改用預設")
+            if partial and isinstance(value, str) and value and out.pop("provider", None) is not None:
+                errs.append(DROPPED)
             continue
         v = _check(key, value)
         if v is not _BAD:
@@ -161,6 +163,10 @@ def normalize(obj, partial: bool = False, models=None) -> tuple[dict, list[str]]
             errs.append("budgetUsd must be null or a positive number")
         else:
             errs.append(f"{key} must be one of {', '.join(VALID[key])}")
+    if partial and out.get("provider") in API_PROVIDERS and "model" not in out:
+        # an API provider without a model it accepts would reach the build half-configured
+        out.pop("provider")
+        errs.append(DROPPED)
     for key in obj:
         if key not in DEFAULTS:
             errs.append(f"unknown setting {key!r}")
@@ -234,13 +240,14 @@ def _from_env(env) -> dict:
 def resolve(saved: dict, env, models=None) -> dict:
     """Effective settings: saved > env > DEFAULTS. Env values outside what the settings page can
     express are ignored here (the build itself may still honour them). YTLEARN_MODEL is judged by
-    the final provider. If the merged provider and model do not fit together (only possible with an
+    the final provider (for anthropic-api only the MODELS whitelist, as for claude-cli). If the merged provider and model do not fit together (only possible with an
     API provider), both fall back to DEFAULTS and ``warning`` says so; a CLI provider never warns."""
     saved = {k: v for k, v in saved.items() if k in DEFAULTS}
     from_env = _from_env(env)
     provider = saved.get("provider", from_env.get("provider", DEFAULTS["provider"]))
     raw_model = env.get(ENV["model"])
-    if _model_ok(provider, raw_model, models):
+    # env model: claude-cli and anthropic-api keep the plain MODELS whitelist (no cached list)
+    if _model_ok(provider, raw_model, None if provider == "anthropic-api" else models):
         from_env["model"] = raw_model
     out = {**DEFAULTS, **from_env, **saved}
     if not _model_ok(out["provider"], out["model"], models):

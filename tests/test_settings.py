@@ -172,7 +172,7 @@ def test_codex_cli_model_not_validated():
     assert st.normalize(dict(st.DEFAULTS, provider="codex-cli", model="anything"))[1] == []
 
 
-@pytest.mark.parametrize("bad", [0, -1, True, "5", float("nan"), float("inf")])
+@pytest.mark.parametrize("bad", [0, -1, True, "5", float("nan"), float("inf"), 10**400])
 def test_budget_rejects(bad):
     assert st.normalize(dict(st.DEFAULTS, budgetUsd=bad))[1]
 
@@ -189,3 +189,33 @@ def test_models_cache_round_trip(tmp_path):
     assert out["openai"] == ["gpt-6-astra", "gpt-5-mini"] and out["fetchedAt"]
     out = st.save_models(tmp_path, "anthropic", ["claude-opus-5-5"])
     assert st.load_models(tmp_path)["openai"] == ["gpt-6-astra", "gpt-5-mini"] and out["anthropic"] == ["claude-opus-5-5"]
+
+
+def test_load_huge_budget_int_does_not_crash(tmp_path):
+    st.path_for(tmp_path).parent.mkdir(parents=True)
+    st.path_for(tmp_path).write_text('{"model": "claude-opus-5-5", "budgetUsd": ' + "9" * 400 + "}")
+    got = st.load(tmp_path)
+    assert "budgetUsd" not in got and got["model"] == "claude-opus-5-5" and "warning" in got
+
+
+@pytest.mark.parametrize("obj", [
+    {"provider": "openai-api", "model": 5, "effort": "high", "workers": 2},
+    {"provider": "openai-api", "effort": "high", "workers": 2},
+])
+def test_load_drops_api_provider_without_usable_model(tmp_path, obj):
+    st.path_for(tmp_path).parent.mkdir(parents=True)
+    st.path_for(tmp_path).write_text(json.dumps(obj))
+    got = st.load(tmp_path)
+    assert "provider" not in got and "warning" in got and got["effort"] == "high"
+
+
+def test_inconsistency_note_only_when_provider_dropped():
+    _, errs = st.normalize({"provider": "gpt", "model": "gpt-6-astra"}, partial=True, models={})
+    assert not any("不一致" in e for e in errs)
+    _, errs = st.normalize({"provider": "openai-api", "model": "gpt-6-astra"}, partial=True, models={})
+    assert any("不一致" in e for e in errs)
+
+
+def test_resolve_env_model_for_anthropic_api_is_whitelist_only():
+    r = st.resolve({}, {"YTLEARN_PROVIDER": "anthropic-api", "YTLEARN_MODEL": "claude-x"}, models={"anthropic": ["claude-x"], "openai": []})
+    assert r["provider"] == "anthropic-api" and r["model"] == st.DEFAULTS["model"] and "warning" not in r
