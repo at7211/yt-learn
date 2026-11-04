@@ -315,10 +315,12 @@ class BuildQueue:
         # Terminal transition first: an IllegalTransition here leaves the file for the orphan sweep.
         self.store.finish(vid, ok, message, lesson_url, usage=used, cost_usd=cost)
         # Delete before recording: dying in between loses one row at most, never records it twice.
+        # A file that cannot be deleted is left for the orphan sweep, which records it then (once).
         try:
             path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as e:
+            print(f"usage file: cannot delete {path.name} ({type(e).__name__}); left for the sweep", file=sys.stderr)
+            return
         self._record({"videoId": vid, "provider": snap.get("provider"), "model": model_id or snap.get("model"),
                       "usage": used, "costUsd": cost, "state": "done" if ok else "error", "partial": not ok})
 

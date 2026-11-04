@@ -552,3 +552,28 @@ def test_fallback_api_build_gets_the_resolved_snapshot(tmp_path, monkeypatch):
     monkeypatch.setenv("YTLEARN_WORKERS", "12")  # inexpressible: the API build uses the resolved 4
     e = _fallback_child_env(tmp_path, monkeypatch)
     assert e["YTLEARN_PROVIDER"] == "openai-api" and e["YTLEARN_MODEL"] == "gpt-6-astra" and e["YTLEARN_WORKERS"] == "4"
+
+
+def test_usage_file_that_cannot_be_deleted_is_left_for_the_sweep(tmp_path, monkeypatch):
+    """m-3: recording a row whose file stays behind would let the next sweep record it a second time."""
+    from pipeline import usage
+    real_unlink = Path.unlink
+
+    def unlink(self, *a, **kw):
+        if self.name.endswith(".usage.json"):
+            raise PermissionError("read-only")
+        return real_unlink(self, *a, **kw)
+    s, q = _usage_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    q.enqueue(V)
+    try:
+        _wait(lambda: s.get(V)["state"] == "done")
+        time.sleep(0.2)
+    finally:
+        q.shutdown()
+    assert not usage.path_for(tmp_path).exists()
+    assert len(list(q.log_dir.glob("*.usage.json"))) == 1
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    q.sweep_orphans()  # the stub's pid is gone: recorded exactly once now
+    rows = usage.path_for(tmp_path).read_text("utf-8").splitlines()
+    assert len(rows) == 1 and json.loads(rows[0])["state"] == "orphan"
