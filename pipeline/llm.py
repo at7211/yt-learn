@@ -416,6 +416,7 @@ class _HttpProvider(_CachedProvider):
     RETRY_STATUSES = (408, 429, 500, 502, 503, 504, 529)
     MAX_ATTEMPTS = 4
     RETRY_BUDGET_S = 120
+    CHECK_HINT = ""  # appended to auth (and quota) errors: where the user can check the key
     _sleep = time.sleep  # a builtin, so it does not bind as a method; tests replace it per instance
 
     def __init__(self, api_key, model=None, cache_dir=None, prompt_version=1, timeout=None, effort=None,
@@ -460,7 +461,7 @@ class _HttpProvider(_CachedProvider):
                         raise ProviderFatal("API 回應不是 JSON 物件", status)
                     return out
                 if status in (401, 403):
-                    raise ProviderFatal("API key 無效或沒有權限", status)
+                    raise ProviderFatal("API key 無效或沒有權限" + self.CHECK_HINT, status)
                 if 300 <= status < 400:
                     raise ProviderFatal("伺服器要求重新導向，已拒絕", status)
                 msg = keys.scrub(_server_message(raw or b""), [self.api_key])[:200]
@@ -489,6 +490,7 @@ class AnthropicApiProvider(_HttpProvider):
     so the CLI and the API share cached answers for the same model, prompt and effort setting."""
     name = "anthropic-api"
     default_timeout = 180.0
+    CHECK_HINT = "，請到 Anthropic Console 檢查"
     BASE = "https://api.anthropic.com"
     VERSION = "2026-10-21"
     MAX_TOKENS = 16000
@@ -539,6 +541,7 @@ class OpenAiApiProvider(_HttpProvider):
     """OpenAI Responses API with the user key and strict JSON-schema output."""
     name = "openai-api"
     default_timeout = 300.0
+    CHECK_HINT = "，請到 OpenAI 後台檢查"
     BASE = "https://api.openai.com"
     MAX_OUTPUT_TOKENS = 16000
     QUOTA_CODES = ("credit_balance_exhausted", "organization_spend_limit_exceeded",
@@ -563,7 +566,7 @@ class OpenAiApiProvider(_HttpProvider):
         except (ValueError, AttributeError):
             return None
         if isinstance(err, dict) and (err.get("code") in self.QUOTA_CODES or err.get("type") == "insufficient_quota"):
-            return ProviderFatal("OpenAI 額度或花費上限已到", 429)
+            return ProviderFatal("OpenAI 額度或花費上限已到" + self.CHECK_HINT, 429)
         return None
 
     def _send(self, system: str, user: str, schema: dict | None) -> dict:

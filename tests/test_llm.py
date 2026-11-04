@@ -648,3 +648,21 @@ def test_504_is_retried():
     p = AnthropicApiProvider(KEY, transport=t)
     p._sleep = lambda s: None
     assert p.complete_json("s", "u") == {"a": 3} and len(t.calls) == 2
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_errors_name_where_to_check(status):
+    from pipeline.llm import AnthropicApiProvider, OpenAiApiProvider, ProviderFatal
+    for cls, key, where in ((AnthropicApiProvider, KEY, "，請到 Anthropic Console 檢查"), (OpenAiApiProvider, OKEY, "，請到 OpenAI 後台檢查")):
+        t = fake_transport([(status, {}, {"error": {"message": "bad " + key}})])
+        with pytest.raises(ProviderFatal) as ei:
+            cls(key, transport=t).complete_json("s", "u")
+        assert str(ei.value) == "API key 無效或沒有權限" + where and ei.value.status == status
+
+
+def test_openai_quota_message_names_where_to_check():
+    from pipeline.llm import OpenAiApiProvider, ProviderFatal
+    t = fake_transport([(429, {}, {"error": {"type": "insufficient_quota", "code": "insufficient_quota", "message": "x"}})])
+    with pytest.raises(ProviderFatal) as ei:
+        OpenAiApiProvider(OKEY, transport=t).complete_json("s", "u")
+    assert str(ei.value) == "OpenAI 額度或花費上限已到，請到 OpenAI 後台檢查"
