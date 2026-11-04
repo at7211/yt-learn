@@ -413,7 +413,7 @@ class _HttpProvider(_CachedProvider):
     """An HTTP API behind the shared cache/retry layer. HTTP-level trouble is ProviderFatal (it stops
     the build); only content problems (truncated, refused, text not JSON) are _Failure and get the
     one suffix retry in ``complete_json``. Subclasses implement ``_headers`` and ``_call``."""
-    RETRY_STATUSES = (408, 429, 500, 502, 503, 529)
+    RETRY_STATUSES = (408, 429, 500, 502, 503, 504, 529)
     MAX_ATTEMPTS = 4
     RETRY_BUDGET_S = 120
     _sleep = time.sleep  # a builtin, so it does not bind as a method; tests replace it per instance

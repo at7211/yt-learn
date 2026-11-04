@@ -640,3 +640,11 @@ def test_urllib_transport_header_with_illegal_characters_is_a_scrubbed_transport
     with pytest.raises(TransportError) as ei:
         urllib_transport("GET", "http://127.0.0.1:9/v1/models", {"x-api-key": bad}, None, 2)
     assert str(ei.value) == "API key 含不允許的字元" and "sk-ant" not in str(ei.value) and "def" not in str(ei.value)
+
+
+def test_504_is_retried():
+    from pipeline.llm import AnthropicApiProvider
+    t = fake_transport([(504, {}, {"error": {"message": "gateway timeout"}}), anth_ok({"a": 3})])
+    p = AnthropicApiProvider(KEY, transport=t)
+    p._sleep = lambda s: None
+    assert p.complete_json("s", "u") == {"a": 3} and len(t.calls) == 2
