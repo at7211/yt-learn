@@ -41,6 +41,7 @@ ROOT = Path(__file__).resolve().parent
 MAX_BODY = 4 * 1024 * 1024  # a 40-min json3 capture is ~150 KB
 VENDORS = {"anthropic": "Anthropic", "openai": "OpenAI"}
 LIST_MODELS = {"anthropic": llm.AnthropicApiProvider.list_models, "openai": llm.OpenAiApiProvider.list_models}
+PCT_MAX = 9999  # the budget percentage shown is clamped here
 # keys.json and models.json are read-merge-write files: concurrent /keys and /keys/test saves take turns
 _SAVE_LOCK = threading.Lock()
 
@@ -239,9 +240,12 @@ class Handler(SimpleHTTPRequestHandler):
         provider, budget, api = resolved["provider"], resolved.get("budgetUsd"), totals["apiUsd"]
         out = {"provider": provider, "budgetUsd": budget, "apiUsd": api, "pct": 0, "state": "none"}
         if provider in settings.API_PROVIDERS and budget is not None:
-            pct = math.floor(api / budget * 100)
-            out["pct"] = pct
-            out["state"] = "over" if pct >= 100 else "warn" if pct >= 80 else "ok"
+            # the state compares the amounts (a tiny budget makes the ratio overflow); pct is display only
+            out["state"] = "over" if api >= budget else "warn" if api >= 0.8 * budget else "ok"
+            try:
+                out["pct"] = min(math.floor(api / budget * 100), PCT_MAX)
+            except OverflowError:
+                out["pct"] = PCT_MAX
         return out
 
     def _gate(self, override, resolved=None):

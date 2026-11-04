@@ -535,3 +535,13 @@ def test_keys_with_illegal_characters_are_400(base, tmp_path):
     code, body, _ = req(base + "/keys/test", json.dumps({"provider": "anthropic", "key": zw}).encode(), "POST")
     assert code == 400 and json.loads(body)["error"] == "API key 含不允許的字元" and "sk-ant" not in body.decode()
     assert keys.load(tmp_path) == {}
+
+
+def test_usage_with_a_tiny_budget_does_not_overflow(base, tmp_path):
+    from pipeline import keys, usage
+    keys.save(tmp_path, {"anthropic": "sk-ant-00001234"})
+    settings.save(tmp_path, dict(settings.DEFAULTS, provider="anthropic-api", budgetUsd=1e-308))
+    usage.append(tmp_path, {"videoId": "a", "provider": "anthropic-api", "model": "m", "usage": {}, "costUsd": 0.5, "state": "done"})
+    code, body, _ = req(base + "/usage")
+    out = json.loads(body)
+    assert code == 200 and out["budgetState"] == "over" and out["pct"] == 9999
