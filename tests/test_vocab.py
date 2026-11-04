@@ -1,3 +1,5 @@
+import pytest
+
 from pipeline.llm import FakeProvider, ProviderError
 from pipeline.vocab import (
     VOCAB_SCHEMA,
@@ -193,3 +195,9 @@ def test_term_longer_than_cue_no_match():
 def test_overlapping_repeats_each_counted():
     cue, words = _mk(["very", "very", "very"], ["very", "very", "very"])
     assert find_spans("very very", cue, words) == [(0, 1), (1, 2)]
+
+
+def test_fatal_provider_error_propagates_through_pick_vocab():
+    from pipeline.llm import ProviderFatal
+    with pytest.raises(ProviderFatal):
+        pick_vocab(CUES, WORDS, FakeProvider([ProviderFatal("API key 無效或沒有權限", 401)]))

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import sys
 
-from pipeline.llm import ProviderError
+from pipeline.llm import ProviderError, ProviderFatal
 
 POS_ENUM = ["n.", "v.", "adj.", "adv.", "phr.", "idiom"]
 
@@ -142,6 +142,8 @@ def pick_vocab(cues: list[dict], words: list[dict], provider, max_items: int = 1
     target = min(max(5, round(len(words) / 10)), max_items)
     try:
         resp = provider.complete_json(VOCAB_SYSTEM, vocab_user_prompt(cues, words, target), VOCAB_SCHEMA)
+    except ProviderFatal:
+        raise  # bad key / quota / retries exhausted: stop the build, do not degrade
     except ProviderError as e:
         _warn(str(e))
         _failed(stats)

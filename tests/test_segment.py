@@ -126,3 +126,9 @@ def test_finalize_requires_full_contiguous_coverage():
 def test_segment_system_mentions_global_indices():
     assert "全域索引" in SEGMENT_SYSTEM
     assert "Hoffa" not in SEGMENT_SYSTEM
+
+
+def test_fatal_provider_error_propagates_through_make_cues():
+    from pipeline.llm import ProviderFatal
+    with pytest.raises(ProviderFatal):
+        make_cues(mk(20), (0, 19), FakeProvider([ProviderFatal("API key 無效或沒有權限", 401)]))

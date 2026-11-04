@@ -347,3 +347,197 @@ def test_cache_low_high_low_reuses_low(monkeypatch, tmp_path):
     d = ClaudeCliProvider(model="m", cache_dir=tmp_path)
     d.complete_json("s", "u")
     assert json.loads(d._cache_path("s", "u", None).read_text("utf-8"))["effort"] == "default"
+
+
+KEY = "sk-ant-test-0123456789"
+
+
+def fake_transport(outcomes):
+    """Each outcome: (status, headers, body_obj) or an Exception instance. Records (method, url, headers, body_obj, timeout)."""
+    calls = []
+
+    def t(method, url, headers, body, timeout):
+        calls.append((method, url, headers, json.loads(body) if body else None, timeout))
+        o = outcomes.pop(0)
+        if isinstance(o, Exception):
+            raise o
+        st, hd, obj = o
+        return st, hd, json.dumps(obj).encode()
+    t.calls = calls
+    return t
+
+
+def anth_ok(obj, usage=None, stop="end_turn"):
+    return (200, {}, {"content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": json.dumps(obj)}],
+                      "stop_reason": stop, "usage": usage or {"input_tokens": 10, "output_tokens": 5,
+                                                              "cache_read_input_tokens": 3, "cache_creation_input_tokens": 2}})
+
+
+def test_anthropic_request_shape_and_usage():
+    from pipeline.llm import AnthropicApiProvider
+    t = fake_transport([anth_ok({"a": 1})])
+    p = AnthropicApiProvider(KEY, model="claude-sonnet-5-5", effort="high", transport=t)
+    assert p.complete_json("sys", "usr", {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}) == {"a": 1}
+    method, url, headers, body, timeout = t.calls[0]
+    assert (method, url, timeout) == ("POST", "https://api.anthropic.com/v1/messages", 180.0)
+    assert headers["x-api-key"] == KEY and headers["anthropic-version"] == "2026-10-21" and headers["user-agent"] == "yt-learn"
+    assert body["system"] == "sys" and body["messages"] == [{"role": "user", "content": "usr"}]
+    assert body["max_tokens"] == 16000 and "temperature" not in body and "thinking" not in body
+    assert body["output_config"]["effort"] == "high" and body["output_config"]["format"]["schema"]["additionalProperties"] is False
+    assert p.usage == {"input": 10, "cacheRead": 3, "cacheWrite": 2, "output": 5} and p.effortSent == "high"
+
+
+def test_anthropic_cache_key_matches_claude_cli_and_hits_add_no_usage(tmp_path):
+    from pipeline.llm import AnthropicApiProvider
+    t = fake_transport([anth_ok({"a": 1})])
+    p = AnthropicApiProvider(KEY, model="claude-sonnet-5-5", cache_dir=tmp_path, transport=t)
+    p.complete_json("s", "u")
+    assert "effort" not in t.calls[0][3].get("output_config", {})
+    cli = ClaudeCliProvider(model="claude-sonnet-5-5", cache_dir=tmp_path)
+    assert cli._cache_path("s", "u", None) == p._cache_path("s", "u", None)
+    seen = []
+    cli.usage_sink = seen.append
+    assert cli.complete_json("s", "u") == {"a": 1}  # cache hit: no subprocess, no usage, sink not called
+    assert cli.usage == {"input": 0, "cacheRead": 0, "cacheWrite": 0, "output": 0} and seen == []
+
+
+def test_anthropic_retries_429_then_succeeds():
+    from pipeline.llm import AnthropicApiProvider
+    t = fake_transport([(429, {"retry-after": "0"}, {"type": "error", "error": {"type": "rate_limit_error", "message": "slow"}}), anth_ok({"a": 2})])
+    p = AnthropicApiProvider(KEY, transport=t)
+    p._sleep = lambda s: None
+    assert p.complete_json("s", "u") == {"a": 2} and len(t.calls) == 2
+
+
+def test_anthropic_truncated_then_ok_sums_usage_and_adds_suffix():
+    from pipeline.llm import AnthropicApiProvider
+    t = fake_transport([anth_ok({"a": 1}, stop="max_tokens"), anth_ok({"a": 1})])
+    p = AnthropicApiProvider(KEY, transport=t)
+    assert p.complete_json("s", "u") == {"a": 1}
+    assert t.calls[1][3]["messages"][0]["content"].endswith(llm.RETRY_SUFFIX)
+    assert p.usage["input"] == 20 and p.usage["output"] == 10
+
+
+def test_anthropic_401_is_fatal_with_status_no_retry_no_key():
+    from pipeline.llm import AnthropicApiProvider, ProviderFatal
+    t = fake_transport([(401, {}, {"type": "error", "error": {"type": "authentication_error", "message": "bad " + KEY}})])
+    with pytest.raises(ProviderFatal) as ei:
+        AnthropicApiProvider(KEY, transport=t).complete_json("s", "u")
+    assert ei.value.status == 401 and KEY not in str(ei.value) and "無效" in str(ei.value) and len(t.calls) == 1
+
+
+def test_anthropic_400_is_fatal_not_retried():
+    from pipeline.llm import AnthropicApiProvider, ProviderFatal
+    t = fake_transport([(400, {}, {"type": "error", "error": {"type": "invalid_request_error", "message": "x"}})])
+    with pytest.raises(ProviderFatal) as ei:
+        AnthropicApiProvider(KEY, transport=t).complete_json("s", "u")
+    assert ei.value.status == 400 and len(t.calls) == 1
+
+
+def test_exhausted_retries_are_fatal_with_exact_attempt_count():
+    from pipeline.llm import AnthropicApiProvider, ProviderFatal
+    err = (503, {}, {"type": "error", "error": {"type": "overloaded_error", "message": "x"}})
+    t = fake_transport([err] * 10)
+    p = AnthropicApiProvider(KEY, transport=t)
+    p._sleep = lambda s: None
+    with pytest.raises(ProviderFatal):
+        p.complete_json("s", "u")
+    assert len(t.calls) == 4
+
+
+def test_retry_after_beyond_budget_gives_up_without_sleeping():
+    from pipeline.llm import AnthropicApiProvider, ProviderFatal
+    t = fake_transport([(429, {"retry-after": "600"}, {"type": "error", "error": {"type": "rate_limit_error", "message": "x"}})])
+    p = AnthropicApiProvider(KEY, transport=t)
+    slept = []
+    p._sleep = slept.append
+    with pytest.raises(ProviderFatal):
+        p.complete_json("s", "u")
+    assert slept == [] and len(t.calls) == 1
+
+
+def test_transport_error_is_retried_then_fatal_and_scrubbed():
+    from pipeline.llm import AnthropicApiProvider, ProviderFatal, TransportError
+    t = fake_transport([TransportError("dns " + KEY)] * 10)
+    p = AnthropicApiProvider(KEY, transport=t)
+    p._sleep = lambda s: None
+    with pytest.raises(ProviderFatal) as ei:
+        p.complete_json("s", "u")
+    assert KEY not in str(ei.value) and len(t.calls) == 4
+
+
+def test_error_messages_never_contain_key():
+    from pipeline.llm import AnthropicApiProvider
+    for b in [(400, {}, {"error": {"message": "x " + KEY}}), (500, {}, {"error": {"message": KEY}}), (403, {}, {"error": {"message": KEY}}), (302, {"location": "http://evil/"}, {})]:
+        t = fake_transport([b] * 10)
+        p = AnthropicApiProvider(KEY, transport=t)
+        p._sleep = lambda s: None
+        with pytest.raises(ProviderError) as ei:
+            p.complete_json("s", "u")
+        assert KEY not in str(ei.value)
+
+
+def test_urllib_transport_refuses_redirects(monkeypatch):
+    import io
+    import urllib.error
+    import urllib.request
+    from pipeline.llm import urllib_transport
+    built = {}
+
+    class Opener:
+        def open(self, req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 302, "Found", {"location": "http://evil/"}, io.BytesIO(b""))
+
+    def build_opener(*handlers):
+        built["handlers"] = handlers
+        return Opener()
+    monkeypatch.setattr(urllib.request, "build_opener", build_opener)
+    status, headers, body = urllib_transport("GET", "https://api.anthropic.com/v1/models", {"x-api-key": KEY}, None, 5)
+    assert status == 302 and headers["location"] == "http://evil/" and body == b""
+    hs = [h for h in built["handlers"] if isinstance(h, urllib.request.HTTPRedirectHandler)]
+    assert len(hs) == 1 and type(hs[0]) is not urllib.request.HTTPRedirectHandler
+    req = urllib.request.Request("https://api.anthropic.com/v1/models")
+    assert hs[0].redirect_request(req, None, 302, "Found", {}, "http://evil/") is None
+
+
+def test_usage_sink_called_in_order_and_thread_safe():
+    import threading
+    from pipeline.llm import AnthropicApiProvider
+    seen = []
+    t = fake_transport([anth_ok({"a": 1})] * 8)
+    p = AnthropicApiProvider(KEY, transport=t)
+    p.usage_sink = seen.append
+    ths = [threading.Thread(target=lambda i=i: p.complete_json("s", f"u{i}")) for i in range(8)]
+    [th.start() for th in ths]
+    [th.join() for th in ths]
+    assert p.usage["input"] == 80 and [s["input"] for s in seen] == [10 * i for i in range(1, 9)]
+
+
+def test_anthropic_schema_strips_unsupported_keywords():
+    from pipeline.intro import INTRO_SCHEMA
+    from pipeline.llm import anthropic_schema
+    s = anthropic_schema(INTRO_SCHEMA)
+    assert "maxItems" not in s["properties"]["lines"] and s["properties"]["lines"]["minItems"] == 1 and s["additionalProperties"] is False
+
+
+def test_anthropic_list_models_filters_claude_single_attempt():
+    from pipeline.llm import AnthropicApiProvider, ProviderFatal
+    t = fake_transport([(200, {}, {"data": [{"id": "claude-opus-5-5"}, {"id": "other"}, {"id": "claude-haiku-5-5"}], "has_more": False})])
+    assert AnthropicApiProvider.list_models(KEY, t) == ["claude-opus-5-5", "claude-haiku-5-5"]
+    assert t.calls[0][1].startswith("https://api.anthropic.com/v1/models?limit=1000") and t.calls[0][4] == 20
+    t2 = fake_transport([(503, {}, {"error": {"message": "x"}})] * 5)
+    with pytest.raises(ProviderFatal):
+        AnthropicApiProvider.list_models(KEY, t2)
+    assert len(t2.calls) == 1
+
+
+def test_claude_cli_collects_usage_and_scrubs_stderr(monkeypatch):
+    install(monkeypatch, [ok({"is_error": False, "result": '{"a": 1}', "usage": {"input_tokens": 7, "output_tokens": 3}})])
+    p = ClaudeCliProvider()
+    p.complete_json("s", "u")
+    assert p.usage == {"input": 7, "cacheRead": 0, "cacheWrite": 0, "output": 3}
+    bad = types.SimpleNamespace(returncode=1, stdout="", stderr="leak sk-ant-api03-ABCDEFGH12 x")
+    install(monkeypatch, [bad, bad])
+    with pytest.raises(ProviderError) as ei:
+        ClaudeCliProvider().complete_json("s", "u")
+    assert "ABCDEFGH12" not in str(ei.value)
