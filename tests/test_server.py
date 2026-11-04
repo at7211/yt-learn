@@ -122,7 +122,7 @@ def test_static_web_served(base):
 
 # ---------------------------------------------------------------- settings
 
-SETTINGS_ENV = ("YTLEARN_MODEL", "YTLEARN_EFFORT", "YTLEARN_WORKERS")
+SETTINGS_ENV = ("YTLEARN_MODEL", "YTLEARN_EFFORT", "YTLEARN_WORKERS", "YTLEARN_PROVIDER", "YTLEARN_BUDGET_USD")
 
 
 @pytest.fixture
@@ -134,7 +134,7 @@ def clean_env(monkeypatch):
 def test_settings_get_defaults_when_no_file(base, tmp_path, clean_env):
     code, body, _ = req(base + "/settings")
     assert code == 200
-    assert json.loads(body) == {"settings": {"model": "claude-sonnet-5-5", "effort": "default", "workers": 4}}
+    assert json.loads(body) == {"settings": dict(settings.DEFAULTS, **{"model": "claude-sonnet-5-5", "effort": "default", "workers": 4})}
     assert not (tmp_path / "data" / "settings.json").exists()
 
 
@@ -144,9 +144,10 @@ def test_settings_get_reflects_env_then_saved(base, tmp_path, clean_env, monkeyp
     assert json.loads(req(base + "/settings")[1])["settings"]["effort"] == "low"
     s = {"model": "claude-opus-5-5", "effort": "high", "workers": 3}
     code, body, _ = req(base + "/settings", json.dumps(s).encode(), "POST")
-    assert code == 200 and json.loads(body) == {"ok": True, "settings": s}
-    assert json.loads((tmp_path / "data" / "settings.json").read_text("utf-8")) == s
-    assert json.loads(req(base + "/settings")[1]) == {"settings": s}
+    full = dict(settings.DEFAULTS, **s)
+    assert code == 200 and json.loads(body) == {"ok": True, "settings": full}
+    assert json.loads((tmp_path / "data" / "settings.json").read_text("utf-8")) == full
+    assert json.loads(req(base + "/settings")[1]) == {"settings": full}
 
 
 @pytest.mark.parametrize("body", [
@@ -172,7 +173,7 @@ def test_settings_post_invalid_keeps_existing_file(base, tmp_path):
     assert req(base + "/settings", json.dumps(good).encode(), "POST")[0] == 200
     bad = dict(good, effort="huge")
     assert req(base + "/settings", json.dumps(bad).encode(), "POST")[0] == 400
-    assert json.loads((tmp_path / "data" / "settings.json").read_text("utf-8")) == good
+    assert json.loads((tmp_path / "data" / "settings.json").read_text("utf-8")) == dict(settings.DEFAULTS, **good)
 
 
 def test_settings_get_broken_file_warns(base, tmp_path, clean_env):

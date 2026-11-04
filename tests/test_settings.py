@@ -21,6 +21,7 @@ def test_defaults_are_valid():
     {"model": "claude-sonnet-5-5", "effort": "default", "workers": "4"},
     {"model": "claude-sonnet-5-5", "effort": "default"},
     {"model": "claude-sonnet-5-5", "effort": "default", "workers": 4, "extra": 1},
+    {**st.DEFAULTS, "provider": "gpt"},
 ])
 def test_normalize_rejects(bad):
     _, errs = st.normalize(bad)
@@ -37,9 +38,10 @@ def test_load_missing_is_empty(tmp_path):
 
 def test_save_first_write_creates_dir_and_round_trips(tmp_path):
     s = {"model": "claude-opus-5-5", "effort": "high", "workers": 2}
-    assert st.save(tmp_path, s) == s
-    assert json.loads((tmp_path / "data" / "settings.json").read_text("utf-8")) == s
-    assert st.load(tmp_path) == s
+    full = dict(st.DEFAULTS, **s)
+    assert st.save(tmp_path, s) == full
+    assert json.loads((tmp_path / "data" / "settings.json").read_text("utf-8")) == full
+    assert st.load(tmp_path) == full
     assert [p.name for p in (tmp_path / "data").iterdir()] == ["settings.json"]
 
 
@@ -75,16 +77,16 @@ def test_concurrent_saves_leave_one_valid_file(tmp_path):
     for t in threads:
         t.join()
     got = st.load(tmp_path)
-    assert got in choices
+    assert got in [dict(st.DEFAULTS, **x) for x in choices]
     assert [p.name for p in (tmp_path / "data").iterdir()] == ["settings.json"]
 
 
 def test_resolve_priority():
     env = {"YTLEARN_MODEL": "claude-opus-5-5", "YTLEARN_EFFORT": "low", "YTLEARN_WORKERS": "6"}
     assert st.resolve({}, {}) == st.DEFAULTS
-    assert st.resolve({}, env) == {"model": "claude-opus-5-5", "effort": "low", "workers": 6}
+    assert st.resolve({}, env) == dict(st.DEFAULTS, **{"model": "claude-opus-5-5", "effort": "low", "workers": 6})
     saved = {"model": "claude-haiku-5-5", "effort": "default", "warning": "x"}
-    assert st.resolve(saved, env) == {"model": "claude-haiku-5-5", "effort": "default", "workers": 6}
+    assert st.resolve(saved, env) == dict(st.DEFAULTS, **{"model": "claude-haiku-5-5", "effort": "default", "workers": 6})
     # env values the settings page cannot express are ignored in the effective view
     assert st.resolve({}, {"YTLEARN_MODEL": "opus", "YTLEARN_WORKERS": "abc"}) == st.DEFAULTS
 
@@ -96,3 +98,94 @@ def test_apply_to_env():
     assert out == {"PATH": "/bin", "YTLEARN_MODEL": "claude-haiku-5-5", "YTLEARN_WORKERS": "8"}
     assert base["YTLEARN_EFFORT"] == "max"  # input not mutated
     assert st.apply_to_env({"effort": "high"}, base)["YTLEARN_EFFORT"] == "high"
+
+
+def test_defaults_include_provider_and_budget():
+    assert st.DEFAULTS["provider"] == "claude-cli" and st.DEFAULTS["budgetUsd"] is None
+    assert st.normalize(st.DEFAULTS) == (st.DEFAULTS, [])
+
+
+def test_three_key_client_still_accepted():
+    clean, errs = st.normalize({"model": "claude-opus-5-5", "effort": "high", "workers": 2})
+    assert errs == [] and clean == {"provider": "claude-cli", "model": "claude-opus-5-5", "effort": "high", "workers": 2, "budgetUsd": None}
+
+
+def test_old_settings_file_without_provider_loads_as_claude_cli(tmp_path):
+    st.path_for(tmp_path).parent.mkdir(parents=True)
+    st.path_for(tmp_path).write_text(json.dumps({"model": "claude-opus-5-5", "effort": "high", "workers": 2}))
+    r = st.resolve(st.load(tmp_path), {})
+    assert r["provider"] == "claude-cli" and r["model"] == "claude-opus-5-5"
+
+
+def test_load_drops_provider_and_model_together_when_inconsistent(tmp_path):
+    st.path_for(tmp_path).parent.mkdir(parents=True)
+    st.path_for(tmp_path).write_text(json.dumps(dict(st.DEFAULTS, provider="openai-api", model="gpt-6-astra")))
+    saved = st.load(tmp_path)  # no data/models.json
+    assert "provider" not in saved and "model" not in saved and "warning" in saved
+    assert st.resolve(saved, {})["provider"] == "claude-cli"
+
+
+def test_env_provider_alias_and_budget_in_resolve():
+    assert st.resolve({}, {"YTLEARN_PROVIDER": "codex"})["provider"] == "codex-cli"
+    r = st.resolve({}, {"YTLEARN_PROVIDER": "openai-api"})  # no usable OpenAI model: falls back with a warning
+    assert r["provider"] == "claude-cli" and "warning" in r
+    r = st.resolve({}, {"YTLEARN_PROVIDER": "openai-api", "YTLEARN_MODEL": "gpt-6-astra"}, models={"openai": ["gpt-6-astra"], "anthropic": []})
+    assert r["provider"] == "openai-api" and r["model"] == "gpt-6-astra" and "warning" not in r
+    assert st.resolve({}, {"YTLEARN_PROVIDER": "nope"})["provider"] == "claude-cli"
+    assert "warning" not in st.resolve({}, {"YTLEARN_MODEL": "opus"})  # CLI source never warns
+    assert st.resolve({}, {"YTLEARN_BUDGET_USD": "2.5"})["budgetUsd"] == 2.5
+    assert st.resolve({}, {"YTLEARN_BUDGET_USD": "x"})["budgetUsd"] is None
+
+
+def test_resolve_rejects_inconsistent_provider_model_combo(tmp_path):
+    r = st.resolve({}, {"YTLEARN_PROVIDER": "openai-api", "YTLEARN_MODEL": "gpt-6-astra"})
+    assert r["provider"] == "claude-cli" and r["model"] == "claude-sonnet-5-5" and "warning" in r
+    r = st.resolve({"model": "claude-opus-5-5"}, {"YTLEARN_PROVIDER": "openai-api"})
+    assert r["provider"] == "claude-cli" and r["model"] == "claude-sonnet-5-5" and "warning" in r
+    r = st.resolve({}, {"YTLEARN_PROVIDER": "openai-api", "YTLEARN_MODEL": "gpt-6-astra"}, models={"openai": ["gpt-6-astra"], "anthropic": []})
+    assert r["provider"] == "openai-api" and r["model"] == "gpt-6-astra" and "warning" not in r
+
+
+def test_openai_model_requires_models_cache():
+    s = dict(st.DEFAULTS, provider="openai-api", model="gpt-6-astra")
+    assert any("測試連線" in e for e in st.normalize(s, models={})[1])
+    assert st.normalize(s, models={"openai": ["gpt-6-astra"], "anthropic": []}) == (s, [])
+
+
+def test_save_validates_with_models_cache(tmp_path):
+    s = dict(st.DEFAULTS, provider="openai-api", model="gpt-6-astra")
+    with pytest.raises(ValueError):
+        st.save(tmp_path, s)
+    st.save_models(tmp_path, "openai", ["gpt-6-astra"])
+    assert st.save(tmp_path, s) == s and st.load(tmp_path)["model"] == "gpt-6-astra"
+
+
+def test_anthropic_api_accepts_whitelist_or_cached_list():
+    s = dict(st.DEFAULTS, provider="anthropic-api", model="claude-sonnet-5-5")
+    assert st.normalize(s, models={})[1] == []
+    s["model"] = "claude-opus-6-0"
+    assert st.normalize(s, models={})[1]
+    assert st.normalize(s, models={"anthropic": ["claude-opus-6-0"], "openai": []})[1] == []
+
+
+def test_codex_cli_model_not_validated():
+    assert st.normalize(dict(st.DEFAULTS, provider="codex-cli", model="anything"))[1] == []
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, "5", float("nan"), float("inf")])
+def test_budget_rejects(bad):
+    assert st.normalize(dict(st.DEFAULTS, budgetUsd=bad))[1]
+
+
+def test_apply_to_env_writes_provider_and_budget():
+    env = st.apply_to_env({"provider": "openai-api", "budgetUsd": 3}, {"YTLEARN_BUDGET_USD": "9"})
+    assert env["YTLEARN_PROVIDER"] == "openai-api" and env["YTLEARN_BUDGET_USD"] == "3"
+    assert "YTLEARN_BUDGET_USD" not in st.apply_to_env({"budgetUsd": None}, {"YTLEARN_BUDGET_USD": "9"})
+
+
+def test_models_cache_round_trip(tmp_path):
+    assert st.load_models(tmp_path) == {}
+    out = st.save_models(tmp_path, "openai", ["gpt-6-astra", "gpt-5-mini"])
+    assert out["openai"] == ["gpt-6-astra", "gpt-5-mini"] and out["fetchedAt"]
+    out = st.save_models(tmp_path, "anthropic", ["claude-opus-5-5"])
+    assert st.load_models(tmp_path)["openai"] == ["gpt-6-astra", "gpt-5-mini"] and out["anthropic"] == ["claude-opus-5-5"]
