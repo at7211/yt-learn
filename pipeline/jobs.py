@@ -384,8 +384,9 @@ class BuildQueue:
                     except PermissionError:
                         continue  # exists, owned by someone else
                 used, cost, model_id, _ = self.read_usage(p)
+                provider = d.get("provider") if isinstance(d.get("provider"), str) else None
                 p.unlink()
-                self._record({"videoId": vid, "provider": None, "model": model_id, "usage": used,
+                self._record({"videoId": vid, "provider": provider, "model": model_id, "usage": used,
                               "costUsd": cost, "state": "orphan", "partial": True})
             except Exception as e:  # never let one bad file keep the server from starting
                 print(f"usage sweep: skipped {p.name}: {type(e).__name__}: {e}", file=sys.stderr)
@@ -442,6 +443,8 @@ class BuildQueue:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         log = self.log_dir / f"{vid}.log"
         env = settings.apply_to_env(to_env, {**os.environ, "YTLEARN_PROGRESS_FILE": str(self.progress_path(vid))})
+        # resolve() may have normalised the provider: the child, key isolation and the ledger must agree on it
+        env["YTLEARN_PROVIDER"] = snapshot["provider"]
         env = keys.env_for_build(self.root, env, snapshot["provider"])
         env["YTLEARN_USAGE_FILE"] = str(self.usage_path(vid, attempt, run_id))
         with open(log, "wb") as lf:

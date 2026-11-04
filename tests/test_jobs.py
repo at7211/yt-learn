@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 import threading
@@ -391,6 +392,7 @@ def test_ledger_row_written_on_success_and_failure(tmp_path, monkeypatch):
     finally:
         q.shutdown()
     rows = [json.loads(l) for l in usage.path_for(tmp_path).read_text("utf-8").splitlines()]
+    assert len(rows) == 2
     assert rows[0]["state"] == "done" and rows[0]["costUsd"] == 0.1 and rows[0]["provider"] == "anthropic-api" and rows[0]["partial"] is False
     assert rows[1]["state"] == "error" and rows[1]["usage"]["input"] == 5 and rows[1]["partial"] is True
     assert s.get(V)["attempt"] == 2 and not list((tmp_path / "data" / "jobs").glob("*.usage.json"))
@@ -406,7 +408,9 @@ def test_usage_survives_kill(tmp_path, monkeypatch):
         _wait(lambda: s.get(V)["state"] == "error")
     finally:
         q.shutdown()
-    row = json.loads(usage.path_for(tmp_path).read_text("utf-8").splitlines()[0])
+    lines = usage.path_for(tmp_path).read_text("utf-8").splitlines()
+    assert len(lines) == 1
+    row = json.loads(lines[0])
     assert row["usage"]["input"] == 5 and row["partial"] is True
 
 
@@ -462,3 +466,48 @@ def test_run_uses_snapshot_and_injects_only_selected_key(tmp_path, monkeypatch):
     assert "OPENAI_API_KEY" not in d["env"] and re.fullmatch(rf".*/{re.escape(V)}\.1\.[0-9a-f]{{8}}\.usage\.json", d["env"]["YTLEARN_USAGE_FILE"])
     assert not any("sk-" in a for a in d["argv"])
     assert "sk-ant" not in s.get(V)["message"]  # the dump stub prints the key to stdout; _tail is scrubbed
+
+
+def test_orphan_from_an_api_build_counts_toward_the_budget(tmp_path):
+    from datetime import datetime
+    from pipeline import usage
+    q = jobs.BuildQueue(JobStore(), tmp_path)
+    q.log_dir.mkdir(parents=True, exist_ok=True)
+    before = usage.month_totals(tmp_path)["apiUsd"]
+    (q.log_dir / f"{V}.3.cafebabe.usage.json").write_text(json.dumps({
+        "usage": {"input": 1, "cacheRead": 0, "cacheWrite": 0, "output": 0}, "costUsd": 0.5, "modelId": "m",
+        "provider": "anthropic-api", "ts": "x"}))  # no pid: the build is gone
+    q.sweep_orphans()
+    rows = [json.loads(l) for l in usage.path_for(tmp_path).read_text("utf-8").splitlines()]
+    assert len(rows) == 1 and rows[0]["provider"] == "anthropic-api" and rows[0]["state"] == "orphan"
+    assert usage.month_totals(tmp_path, datetime.now().astimezone())["apiUsd"] == pytest.approx(before + 0.5)
+
+
+def test_fallback_snapshot_provider_reaches_child_env_and_ledger(tmp_path, monkeypatch):
+    """No snapshot on the job and no settings file: resolve() normalises an unusable env provider, and the
+    child, the key isolation and the ledger must all see that same normalised provider."""
+    from pipeline import settings as st, usage
+    monkeypatch.setenv("YTLEARN_PROVIDER", "openai-api")  # with no OpenAI model resolve falls back
+    monkeypatch.delenv("YTLEARN_MODEL", raising=False)
+    expected = st.resolve({}, dict(os.environ))["provider"]
+    stub = Path(__file__).parent / "fixtures" / "stub_build.py"
+    (tmp_path / "pipeline").symlink_to(Path(jobs.__file__).parent)
+    (tmp_path / "data" / "raw").mkdir(parents=True)
+    (tmp_path / "data" / "raw" / f"{V}.json").write_text("{}")
+    dump = tmp_path / "dump.json"
+    monkeypatch.setenv("STUB_DUMP", str(dump))
+    monkeypatch.setenv("STUB_MODE", "dump")
+    s = JobStore()
+    s.add(V, False)  # no gate, no snapshot
+    s.claim(V)
+    s.ingested(V, 1)
+    q = jobs.BuildQueue(s, tmp_path, cmd_factory=lambda v: [sys.executable, str(stub), v])
+    q.enqueue(V)
+    try:
+        _wait(lambda: s.get(V)["state"] == "error")
+    finally:
+        q.shutdown()
+    assert expected == "claude-cli"
+    assert json.loads(dump.read_text("utf-8"))["env"]["YTLEARN_PROVIDER"] == expected
+    rows = [json.loads(l) for l in usage.path_for(tmp_path).read_text("utf-8").splitlines()]
+    assert len(rows) == 1 and rows[0]["provider"] == expected

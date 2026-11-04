@@ -367,6 +367,7 @@ def test_usage_file_holds_final_snapshot(tmp_path):
     assert main(["puh91fohvTA", "--usage-file", str(uf), "--model", "claude-sonnet-5-5"], data_dir=tmp_path, provider_factory=lambda *a, **k: fp) == 0
     d = json.loads(uf.read_text("utf-8"))
     assert d["usage"]["input"] == 400 and d["modelId"] == "claude-sonnet-5-5" and d["costUsd"] > 0 and d["ts"] and d["pid"] == os.getpid()
+    assert d["provider"] == "claude-cli"  # canonical name, so an orphan sweep can bill it to the right bucket
 
 
 def test_fatal_provider_error_stops_build_and_keeps_usage(tmp_path, capsys):

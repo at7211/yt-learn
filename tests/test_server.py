@@ -269,8 +269,9 @@ def test_settings_snapshot_taken_before_building(tmp_path, monkeypatch):
     real = jobs.JobStore.set_building
 
     def set_building(self, vid):
-        real(self, vid)
+        attempt = real(self, vid)
         settings.save(tmp_path, {"model": "claude-opus-5-5", "effort": "max", "workers": 8})
+        return attempt
 
     monkeypatch.setattr(jobs.JobStore, "set_building", set_building)
     env, _ = _capture_env(tmp_path, monkeypatch)

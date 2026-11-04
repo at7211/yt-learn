@@ -174,9 +174,10 @@ def progress_writer(path: Path):
     return write
 
 
-def usage_writer(path: Path, model_id: str | None):
-    """Return a usage sink that atomically rewrites ``path`` with the running token totals and their
-    USD estimate; write errors are ignored. The provider calls it under its usage lock."""
+def usage_writer(path: Path, model_id: str | None, provider: str | None = None):
+    """Return a usage sink that atomically rewrites ``path`` with the running token totals, their
+    USD estimate and the canonical ``provider`` (so an orphaned file is billed to the right bucket);
+    write errors are ignored. The provider calls it under its usage lock."""
     path = Path(path)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
 
@@ -185,7 +186,7 @@ def usage_writer(path: Path, model_id: str | None):
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_text(json.dumps({
                 "usage": dict(u), "costUsd": cost.cost_usd(model_id, u) if model_id else None,
-                "modelId": model_id, "pid": os.getpid(),
+                "modelId": model_id, "provider": provider, "pid": os.getpid(),
                 "ts": datetime.now().astimezone().isoformat(timespec="seconds")}), encoding="utf-8")
             os.replace(tmp, path)
         except OSError:
@@ -280,7 +281,7 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
                 else provider_factory(args.model, data / "cache" / vid, **extra))
     model_id = getattr(provider, "model", None) if is_codex else args.model  # bare name, for pricing
     if args.usage_file and hasattr(provider, "usage_sink"):
-        provider.usage_sink = usage_writer(args.usage_file, model_id)
+        provider.usage_sink = usage_writer(args.usage_file, model_id, args.provider)
     try:
         lesson, stats = build_lesson(raw, provider, args.limit_seconds, model_label=model_label,
                                      prompt_version=getattr(provider, "prompt_version", 1),
