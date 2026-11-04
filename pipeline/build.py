@@ -250,11 +250,11 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
     try:
         raw = _read_json(raw_path)
     except (OSError, ValueError) as e:
-        print(f"error: cannot read {raw_path}: {e}", file=sys.stderr)
+        print(f"error: cannot read {raw_path}: {keys.scrub(str(e), [api_key])}", file=sys.stderr)
         return 1
     errs = validate_raw(raw)
     if errs:
-        print("error: invalid raw capture:\n  " + "\n  ".join(errs), file=sys.stderr)
+        print(keys.scrub("error: invalid raw capture:\n  " + "\n  ".join(errs), [api_key]), file=sys.stderr)
         return 1
 
     out_path = data / "lessons" / f"{vid}.json"
@@ -292,7 +292,7 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
         print(f"error: {keys.scrub(str(e), [api_key])}", file=sys.stderr)
         return 3
     except ValueError as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"error: {keys.scrub(str(e), [api_key])}", file=sys.stderr)
         return 1
     if stats["chunks"] and stats["fallback_chunks"] == stats["chunks"]:
         hint = "API key 與模型" if api_key else f"{args.provider} 已登入"
@@ -300,7 +300,7 @@ def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_pro
         return 1
     errs = validate_lesson(lesson)
     if errs:
-        print("error: lesson failed validation:\n  " + "\n  ".join(errs), file=sys.stderr)
+        print(keys.scrub("error: lesson failed validation:\n  " + "\n  ".join(errs), [api_key]), file=sys.stderr)
         return 1
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")

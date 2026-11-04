@@ -16,6 +16,13 @@ from pipeline import settings
 KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 _MIN_SCRUB = 8
 _SK = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
+_LEGAL = re.compile(r"[\x21-\x7e]+")  # printable ASCII without space: anything else breaks the HTTP header
+BAD_CHARS = "API key 含不允許的字元"
+
+
+def legal(key: str) -> bool:
+    """Whether ``key`` can go into an HTTP header as is (printable ASCII, no spaces or control characters)."""
+    return isinstance(key, str) and _LEGAL.fullmatch(key) is not None
 
 
 def path_for(root) -> Path:
@@ -33,7 +40,10 @@ def load(root) -> dict[str, str]:
 
 
 def save(root, updates: dict) -> dict:
-    """Merge ``updates`` into the file ("" deletes a provider); return the stored keys."""
+    """Merge ``updates`` into the file ("" deletes a provider); return the stored keys. Raises
+    ValueError(BAD_CHARS) before writing anything if a key is not ``legal``."""
+    if any(name in KEY_ENV and isinstance(v, str) and v and not legal(v) for name, v in updates.items()):
+        raise ValueError(BAD_CHARS)
     merged = load(root)
     for name, value in updates.items():
         if name not in KEY_ENV:

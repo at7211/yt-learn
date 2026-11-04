@@ -384,6 +384,8 @@ def urllib_transport(method: str, url: str, headers: dict, body: bytes | None, t
         raise TransportError(str(e.reason)) from None
     except (TimeoutError, OSError, http.client.HTTPException) as e:  # socket.timeout is TimeoutError
         raise TransportError(str(e) or type(e).__name__) from None
+    except ValueError:  # (UnicodeError too) a header http.client refuses; its message would echo the key
+        raise TransportError(keys.BAD_CHARS) from None
 
 
 def _retry_after(headers: dict) -> float | None:

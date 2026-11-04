@@ -632,3 +632,11 @@ def test_openai_list_models_filters_and_sorts():
             {"id": "text-embedding-3", "created": 9}, {"id": "o3", "created": 2}, {"id": "gpt-image-1", "created": 8}, {"id": "gpt-5.5-pro", "created": 7}]
     t = fake_transport([(200, {}, {"object": "list", "data": data})])
     assert OpenAiApiProvider.list_models(OKEY, t) == ["gpt-6-astra", "o3", "gpt-5-mini"] and t.calls[0][4] == 20
+
+
+@pytest.mark.parametrize("bad", ["sk-ant-abc\ndef-123456", "sk-ant-abc​def-123456"])
+def test_urllib_transport_header_with_illegal_characters_is_a_scrubbed_transport_error(bad):
+    from pipeline.llm import TransportError, urllib_transport
+    with pytest.raises(TransportError) as ei:
+        urllib_transport("GET", "http://127.0.0.1:9/v1/models", {"x-api-key": bad}, None, 2)
+    assert str(ei.value) == "API key 含不允許的字元" and "sk-ant" not in str(ei.value) and "def" not in str(ei.value)

@@ -303,6 +303,8 @@ class Handler(SimpleHTTPRequestHandler):
         errs += [f"{k} must be a string" for k in VENDORS if k in obj and not isinstance(obj[k], str)]
         errs += [f"{VENDORS[k]} 的 API key 是空白" for k in VENDORS
                  if isinstance(obj.get(k), str) and obj[k] and not obj[k].strip()]  # "" (explicit) deletes
+        if not errs and any(obj[k].strip() and not keys.legal(obj[k].strip()) for k in VENDORS if k in obj):
+            errs.append(keys.BAD_CHARS)
         if errs:
             return self._json({"ok": False, "errors": errs}, 400)
         try:
@@ -323,6 +325,8 @@ class Handler(SimpleHTTPRequestHandler):
         if pasted is not None and not isinstance(pasted, str):
             return self._json({"ok": False, "error": "key must be a string"}, 400)
         pasted = (pasted or "").strip() or None
+        if pasted and not keys.legal(pasted):
+            return self._json({"ok": False, "error": keys.BAD_CHARS}, 400)
         key = pasted or keys.resolve(self.root, os.environ)[vendor][0]
         if not key:
             return self._json({"ok": False, "error": "請先貼上 API key"}, 400)

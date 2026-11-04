@@ -525,3 +525,13 @@ def test_usage_endpoint_reports_unpriced_api_rows(base, tmp_path):
                             "costUsd": None, "state": "done"})
     out = json.loads(req(base + "/usage")[1])
     assert out["unpricedApiRows"] == 1
+
+
+def test_keys_with_illegal_characters_are_400(base, tmp_path):
+    from pipeline import keys
+    zw = "sk-ant-0000​1234"
+    code, body, _ = req(base + "/keys", json.dumps({"anthropic": zw}).encode(), "POST")
+    assert code == 400 and "API key 含不允許的字元" in body.decode() and "sk-ant" not in body.decode()
+    code, body, _ = req(base + "/keys/test", json.dumps({"provider": "anthropic", "key": zw}).encode(), "POST")
+    assert code == 400 and json.loads(body)["error"] == "API key 含不允許的字元" and "sk-ant" not in body.decode()
+    assert keys.load(tmp_path) == {}

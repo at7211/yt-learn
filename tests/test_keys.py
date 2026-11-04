@@ -75,3 +75,14 @@ def test_load_tolerates_bad_file(tmp_path):
     keys.path_for(tmp_path).parent.mkdir(parents=True)
     keys.path_for(tmp_path).write_text("{not json")
     assert keys.load(tmp_path) == {}
+
+
+def test_save_rejects_keys_outside_printable_ascii(tmp_path):
+    import pytest
+    from pipeline import keys
+    for bad in ("sk-ant-abc​def12345", "sk-ant-abc def12345", "sk-ant-abc\ndef12345", "sk-ant-é12345678"):
+        with pytest.raises(ValueError, match="API key 含不允許的字元"):
+            keys.save(tmp_path, {"anthropic": bad})
+    assert keys.load(tmp_path) == {}
+    keys.save(tmp_path, {"anthropic": "sk-ant-00001234"})
+    assert keys.save(tmp_path, {"anthropic": ""}) == {}  # "" still deletes

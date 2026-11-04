@@ -457,3 +457,18 @@ def test_openai_api_label_and_model_from_env(tmp_path, monkeypatch, capsys):
     les = _lesson(tmp_path)
     assert les["model"] == "openai:gpt-6-astra" and les["modelId"] == "gpt-6-astra" and les["provider"] == "openai-api"
     assert "cost_usd=" in capsys.readouterr().out
+
+
+def test_main_scrubs_the_api_key_from_printed_errors(tmp_path, monkeypatch, capsys):
+    from pipeline import build
+    _raw(tmp_path)
+    for k in ("YTLEARN_PROVIDER", "YTLEARN_MODEL", "YTLEARN_EFFORT"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-0123456789")
+
+    def boom(*a, **kw):
+        raise ValueError("bad thing near sk-ant-test-0123456789")
+    monkeypatch.setattr(build, "build_lesson", boom)
+    assert main(["puh91fohvTA", "--provider", "anthropic-api"], data_dir=tmp_path, provider_factory=_effort_spy({})) == 1
+    err = capsys.readouterr().err
+    assert "bad thing near <key>" in err and "0123456789" not in err
