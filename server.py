@@ -252,9 +252,13 @@ class Handler(SimpleHTTPRequestHandler):
         if b["state"] == "over" and not override:
             return {"error": f"本月 API 費用已達上限 ${b['budgetUsd']:.2f}（本機估算）", "code": "budget",
                     "usage": totals}, None
+        warning = None
         if b["state"] == "warn":
-            return None, f"本月 API 費用已用 {b['pct']}%（約 ${b['apiUsd']:.2f}／${b['budgetUsd']:.2f}，本機估算）"
-        return None, None
+            warning = f"本月 API 費用已用 {b['pct']}%（約 ${b['apiUsd']:.2f}／${b['budgetUsd']:.2f}，本機估算）"
+        n = totals.get("unpricedApiRows", 0)
+        if n and b["state"] != "none":  # never blocks (spec decision 10): the cap just cannot see them
+            warning = _join(warning, f"本月有 {n} 次產課牌價未知，未計入上限")
+        return None, warning
 
     def _usage(self):
         totals = usage.month_totals(self.root)

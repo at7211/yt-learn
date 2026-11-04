@@ -34,3 +34,13 @@ def test_add_usage_and_zero():
     from pipeline import cost
     assert cost.zero_usage() == {"input": 0, "cacheRead": 0, "cacheWrite": 0, "output": 0}
     assert cost.add_usage({"input": 1, "cacheRead": 2, "cacheWrite": 3, "output": 4}, {"input": 10, "cacheRead": 0, "cacheWrite": 0, "output": 1}) == {"input": 11, "cacheRead": 2, "cacheWrite": 3, "output": 5}
+
+
+def test_cost_dated_snapshot_falls_back_to_its_base_price():
+    from pipeline import cost
+    prices = {"gpt-x": {"input": 1.0, "output": 2.0, "cacheRead": None, "cacheWrite": None, "source": "s", "asOf": "d"}}
+    u = {"input": 1_000_000, "cacheRead": 0, "cacheWrite": 0, "output": 1_000_000}
+    assert cost.cost_usd("gpt-x-2026-08-07", u, prices) == pytest.approx(3.0)
+    assert cost.price_date("gpt-x-2026-08-07", prices) == "d"
+    assert cost.cost_usd("gpt-y-2026-08-07", u, prices) is None  # base not priced either
+    assert cost.cost_usd("gpt-x-2026-8-7", u, prices) is None  # not a -YYYY-MM-DD suffix

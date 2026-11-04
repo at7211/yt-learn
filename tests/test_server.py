@@ -517,3 +517,11 @@ def test_post_keys_whitespace_only_is_400_and_empty_deletes(base, tmp_path):
     assert keys.load(tmp_path)["anthropic"] == "sk-ant-00001234"
     assert req(base + "/keys", json.dumps({"anthropic": ""}).encode(), "POST")[0] == 200
     assert keys.load(tmp_path) == {}
+
+
+def test_usage_endpoint_reports_unpriced_api_rows(base, tmp_path):
+    from pipeline import usage
+    usage.append(tmp_path, {"videoId": "a", "provider": "openai-api", "model": "gpt-new", "usage": {"input": 5, "output": 1},
+                            "costUsd": None, "state": "done"})
+    out = json.loads(req(base + "/usage")[1])
+    assert out["unpricedApiRows"] == 1

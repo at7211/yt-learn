@@ -555,3 +555,14 @@ def test_api_build_from_add_gets_the_resolved_snapshot(env, monkeypatch):
     e = _child_env_via_add(base, root, monkeypatch)
     assert e["YTLEARN_PROVIDER"] == "openai-api" and e["YTLEARN_MODEL"] == "gpt-6-astra" and e["YTLEARN_WORKERS"] == "4"
     assert "saved" not in e and "YTLEARN_SAVED" not in e
+
+
+def test_add_warns_about_unpriced_api_rows_without_blocking(env):
+    base, root = env
+    from pipeline import usage
+    _api_budget(root, 0.1, provider="openai-api", model="gpt-6-astra")
+    usage.append(root, {"videoId": "y", "provider": "openai-api", "model": "gpt-new", "usage": {"input": 5, "output": 1},
+                        "costUsd": None, "state": "done"})
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and "本月有 1 次產課牌價未知，未計入上限" in body["warning"]
+    assert body["job"]["warning"] == body["warning"]

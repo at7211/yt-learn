@@ -120,9 +120,11 @@ export function fmtUsd(x) {
   return '約 $' + x.toFixed(2);
 }
 
-// The #usage-line text from GET /usage: only API spend counts against the budget.
+// The #usage-line text from GET /usage: only API spend counts against the budget, and API builds
+// whose model has no price (unpricedApiRows) are named because the cap cannot see them.
 export function budgetText(u) {
   const api = typeof u.apiUsd === 'number' ? u.apiUsd : 0;
   const cap = typeof u.budgetUsd === 'number' ? '／上限 $' + u.budgetUsd.toFixed(2) : '';
-  return '本月 API ' + fmtUsd(api) + cap + '（本機估算）';
+  const n = Number.isInteger(u.unpricedApiRows) && u.unpricedApiRows > 0 ? u.unpricedApiRows : 0;
+  return '本月 API ' + fmtUsd(api) + cap + '（本機估算）' + (n ? '・本月有 ' + n + ' 次產課牌價未知，未計入上限' : '');
 }

@@ -28,11 +28,18 @@ def append(root, row: dict) -> None:
         f.write(line)
 
 
+def _used(u) -> bool:
+    """Whether a row's ``usage`` holds any tokens."""
+    return isinstance(u, dict) and any(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+                                       for v in u.values())
+
+
 def month_totals(root, now=None) -> dict:
-    """Totals for the local calendar month of ``now`` (default: now). ``costUsd`` None counts as 0;
+    """Totals for the local calendar month of ``now`` (default: now). ``costUsd`` None counts as 0,
+    and ``unpricedApiRows`` counts the API rows where that hid real usage (a model with no price);
     unreadable lines are skipped."""
     month = (now or datetime.now().astimezone()).strftime("%Y-%m")
-    out = {"month": month, "apiUsd": 0.0, "cliUsd": 0.0, "byProvider": {}, "rows": 0}
+    out = {"month": month, "apiUsd": 0.0, "cliUsd": 0.0, "byProvider": {}, "rows": 0, "unpricedApiRows": 0}
     try:
         text = path_for(root).read_text("utf-8", errors="replace")
     except OSError:
@@ -50,6 +57,8 @@ def month_totals(root, now=None) -> dict:
         name = provider if isinstance(provider, str) and provider else "unknown"
         if provider in settings.API_PROVIDERS:
             out["apiUsd"] += usd
+            if cost is None and _used(row.get("usage")):
+                out["unpricedApiRows"] += 1
         else:
             out["cliUsd"] += usd
         bucket = out["byProvider"].setdefault(name, {"usd": 0.0, "rows": 0})

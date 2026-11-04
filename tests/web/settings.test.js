@@ -64,3 +64,9 @@ test('modelsFor, summary with provider, fmtUsd, budgetText', () => {
   assert.equal(budgetText({ apiUsd: 0.85, budgetUsd: 1 }), '本月 API 約 $0.85／上限 $1.00（本機估算）');
   assert.equal(budgetText({ apiUsd: 0.85, budgetUsd: null }), '本月 API 約 $0.85（本機估算）');
 });
+
+test('budgetText names API builds whose price is unknown', () => {
+  assert.equal(budgetText({ apiUsd: 0.85, budgetUsd: 1, unpricedApiRows: 2 }),
+    '本月 API 約 $0.85／上限 $1.00（本機估算）・本月有 2 次產課牌價未知，未計入上限');
+  assert.equal(budgetText({ apiUsd: 0.85, budgetUsd: 1, unpricedApiRows: 0 }), '本月 API 約 $0.85／上限 $1.00（本機估算）');
+});
