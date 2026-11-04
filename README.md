@@ -112,7 +112,7 @@ python3 -m pipeline.build <videoId> --model claude-opus-5-5 --effort high   # �
 
 - **進度卡**：產課中顯示目前累計的「約 $x・y tokens」；完成卡與課程列表的每一堂課也顯示費用。課程檔裡有 `usage`（input、cacheRead、cacheWrite、output 的 token 數）與 `costUsd`。模型不在牌價表裡時顯示「牌價未知」，帳本記 token、金額為 `null`，不會擋產課。
 - **帳本**：每支產課結束後在 `data/usage.jsonl`（不進 git）追加一行，記時間、影片、來源、模型、token、`costUsd` 與狀態。失敗或中途停止的產課那一行標 `partial: true`；server 當掉時留下的孤兒產課，會在下次啟動時以 `state: "orphan"` 補記。首頁會顯示本月 API 合計與上限的使用率，CLI 的等值金額另列、不計入上限。
-- **牌價表**：`pipeline/prices.json`，每個模型一列：`input`、`output`、`cacheRead`、`cacheWrite`（每百萬 token 美元）、`source`（牌價網址）與 `asOf`（抄錄日期）。牌價會變，所以這是**估算，不是帳單**，實際金額以 Anthropic／OpenAI 後台為準。新模型或牌價更新時自己改這個檔（`cacheRead`／`cacheWrite` 填 `null` 代表照 `input` 計），不用動程式。OpenAI 的快取寫入 token 怎麼計入 input 沒有官方文件證實，程式假設它包含在 input 內，屬估算。
+- **牌價表**：`pipeline/prices.json`，每個模型一列：`input`、`output`、`cacheRead`、`cacheWrite`（每百萬 token 美元）、`source`（牌價網址）與 `asOf`（抄錄日期）。牌價會變，所以這是**估算，不是帳單**，實際金額以 Anthropic／OpenAI 後台為準。新模型或牌價更新時自己改這個檔（`cacheRead`／`cacheWrite` 填 `null` 代表照 `input` 計），不用動程式。OpenAI 的快取寫入 token 怎麼計入 input 沒有官方文件證實，程式假設它包含在 input 內，屬估算。逾時而放棄、再重試的請求，廠商那邊可能已經處理完並計費，但本機拿不到它的用量，不會記進帳本，所以實際帳單可能比本機估算多一點。
 - 回覆都快取在 `data/cache/`。Anthropic API 與 Claude CLI 對同一個模型、prompt 與 effort 共用快取，所以用 API 產過的影片切回 `claude-cli` 重產，不會再呼叫（`llm_calls=0`）；OpenAI 與 Codex 各有自己的快取。
 
 ## 快捷鍵
