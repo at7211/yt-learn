@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import threading
 import time
@@ -191,8 +192,8 @@ def test_requeue_after_error_is_not_dropped(tmp_path, monkeypatch):
     q = jobs.BuildQueue(s, tmp_path, cmd_factory=lambda v: [sys.executable, str(stub), v])
     real, fired = s.finish, []
 
-    def finish(vid, ok, msg, url=None):
-        real(vid, ok, msg, url)
+    def finish(vid, ok, msg, url=None, **kw):
+        real(vid, ok, msg, url, **kw)
         if not ok and not fired:
             fired.append(1)
             monkeypatch.setenv("STUB_MODE", "ok")
@@ -308,3 +309,156 @@ def test_error_reports_the_step_it_failed_in():
     s2.finish(V, False, "boom")
     assert JobStore.to_public(s2.get(V))["failedIn"] == "building"
     assert "failedIn" not in JobStore.to_public(JobStore()._new(V, 1))
+
+
+SNAP = dict(provider="anthropic-api", model="claude-sonnet-5-5", effort="default", workers=1, budgetUsd=1.0)
+
+
+def test_gate_runs_only_when_a_new_attempt_is_created():
+    from pipeline.jobs import BudgetBlocked
+    calls = []
+    gate = lambda: (calls.append(1), (None, "w"))[1]
+    s = JobStore()
+    j = s.add(V, False, gate=gate, snapshot=SNAP)
+    assert calls == [1] and j["settings"] == SNAP and j["approved"] is True and JobStore.to_public(j)["warning"] == "w"
+    assert s.add(V, False, gate=gate, snapshot={"provider": "claude-cli"})["settings"] == SNAP and calls == [1]  # queued: no gate, snapshot kept
+    assert JobStore().add(V, True, gate=gate) ["state"] == "done" and calls == [1]  # lesson_ok, no job: no gate
+    blocked = lambda: ({"error": "over", "code": "budget"}, None)
+    s2 = at("error")
+    with pytest.raises(BudgetBlocked) as ei:
+        s2.add(V, False, gate=blocked, snapshot=SNAP)
+    assert ei.value.info["code"] == "budget" and s2.get(V)["state"] == "error" and s2.get(V)["attempt"] == 1
+
+
+def test_stale_capturing_requeue_also_passes_the_gate():
+    from pipeline.jobs import BudgetBlocked
+    s = at("capturing")
+    s._jobs[V]["updatedAt"] -= jobs.STALE_CAPTURE_SECONDS + 1  # same trick as the existing stale test; never patch time (add holds the lock)
+    with pytest.raises(BudgetBlocked):
+        s.add(V, False, gate=lambda: ({"error": "over", "code": "budget"}, None), snapshot=SNAP)
+    assert s.get(V)["state"] == "capturing" and s.get(V)["attempt"] == 1  # blocked before any state change
+
+
+def test_error_clears_approval():
+    s = JobStore()
+    s.add(V, False, gate=lambda: (None, None), snapshot=SNAP)
+    assert s.needs_approval(V) is False
+    s.claim(V)
+    s.fail(V, 1, "x")
+    assert s.needs_approval(V) is True
+    s.ingested(V, None)  # error -> captured without /add
+    assert s.needs_approval(V) is True
+    s.approve(V, SNAP)
+    assert s.needs_approval(V) is False
+    s.set_building(V)
+    s.finish(V, False, "boom")
+    assert s.needs_approval(V) is True
+
+
+def test_fail_captured():
+    s = at("captured")
+    s.fail_captured(V, "本月已達上限")
+    assert s.get(V)["state"] == "error" and s.get(V)["message"] == "本月已達上限" and s.get(V)["failedIn"] == "captured"
+
+
+def _usage_queue(tmp_path, monkeypatch, mode="usage", exit_code="0", **kw):
+    stub = Path(__file__).parent / "fixtures" / "stub_build.py"
+    (tmp_path / "pipeline").symlink_to(Path(jobs.__file__).parent)
+    (tmp_path / "data" / "raw").mkdir(parents=True)
+    (tmp_path / "data" / "raw" / f"{V}.json").write_text("{}")
+    monkeypatch.setenv("STUB_MODE", mode)
+    monkeypatch.setenv("STUB_EXIT", exit_code)
+    s = JobStore()
+    s.add(V, False, gate=lambda: (None, None), snapshot=SNAP)
+    s.claim(V)
+    s.ingested(V, 1)
+    q = jobs.BuildQueue(s, tmp_path, cmd_factory=lambda v: [sys.executable, str(stub), v], **kw)
+    return s, q
+
+
+def test_ledger_row_written_on_success_and_failure(tmp_path, monkeypatch):
+    from pipeline import usage
+    s, q = _usage_queue(tmp_path, monkeypatch)
+    q.enqueue(V)
+    try:
+        _wait(lambda: s.get(V)["state"] == "done")
+        monkeypatch.setenv("STUB_EXIT", "1")
+        s.add(V, False, gate=lambda: (None, None), snapshot=SNAP)  # done -> queued: a new attempt (2)
+        s.claim(V)
+        s.ingested(V, 2)
+        q.enqueue(V)
+        _wait(lambda: s.get(V)["state"] == "error")
+    finally:
+        q.shutdown()
+    rows = [json.loads(l) for l in usage.path_for(tmp_path).read_text("utf-8").splitlines()]
+    assert rows[0]["state"] == "done" and rows[0]["costUsd"] == 0.1 and rows[0]["provider"] == "anthropic-api" and rows[0]["partial"] is False
+    assert rows[1]["state"] == "error" and rows[1]["usage"]["input"] == 5 and rows[1]["partial"] is True
+    assert s.get(V)["attempt"] == 2 and not list((tmp_path / "data" / "jobs").glob("*.usage.json"))
+    pub = JobStore.to_public(s.get(V))
+    assert pub["usage"]["input"] == 5 and pub["costUsd"] == 0.1 and pub["settings"] == {"provider": "anthropic-api", "model": "claude-sonnet-5-5"}
+
+
+def test_usage_survives_kill(tmp_path, monkeypatch):
+    from pipeline import usage
+    s, q = _usage_queue(tmp_path, monkeypatch, mode="slow_usage", timeout=1.5)
+    q.enqueue(V)
+    try:
+        _wait(lambda: s.get(V)["state"] == "error")
+    finally:
+        q.shutdown()
+    row = json.loads(usage.path_for(tmp_path).read_text("utf-8").splitlines()[0])
+    assert row["usage"]["input"] == 5 and row["partial"] is True
+
+
+def test_progress_exposes_usage_from_usage_file(tmp_path, monkeypatch):
+    s, q = _usage_queue(tmp_path, monkeypatch, mode="slow_usage", timeout=5)
+    q.enqueue(V)
+    try:
+        _wait(lambda: (q.progress(V) or {}).get("usage"))
+        p = q.progress(V)
+        assert p["phase"] == "segment" and p["usage"]["input"] == 5 and p["costUsd"] == 0.1
+    finally:
+        q.shutdown()
+
+
+def test_orphan_usage_file_is_swept_only_when_its_process_is_gone(tmp_path, monkeypatch):
+    import subprocess
+    from pipeline import usage
+    s, q = _usage_queue(tmp_path, monkeypatch)
+    q.shutdown()
+    q.log_dir.mkdir(parents=True, exist_ok=True)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        (q.log_dir / f"{V}.7.deadbeef.usage.json").write_text(json.dumps({"usage": {"input": 9, "cacheRead": 0, "cacheWrite": 0, "output": 0}, "costUsd": 0.3, "modelId": "m", "pid": child.pid, "ts": "x"}))
+        q2 = jobs.BuildQueue(s, tmp_path)  # restart while the orphan build is still alive: leave it alone
+        q2.shutdown()
+        assert not usage.path_for(tmp_path).exists() and (q.log_dir / f"{V}.7.deadbeef.usage.json").exists()
+    finally:
+        child.kill()
+        child.wait()
+    (q.log_dir / "x.1.badbadba.usage.json").write_text("{not json")  # a corrupt file must never break startup
+    q3 = jobs.BuildQueue(s, tmp_path)  # the process is gone now: record once and delete
+    q3.shutdown()
+    rows = [json.loads(l) for l in usage.path_for(tmp_path).read_text("utf-8").splitlines()]
+    assert len(rows) == 1 and rows[0]["videoId"] == V and rows[0]["state"] == "orphan" and rows[0]["partial"] is True and rows[0]["costUsd"] == 0.3 and rows[0]["model"] == "m"
+    assert not (q.log_dir / f"{V}.7.deadbeef.usage.json").exists() and (q.log_dir / "x.1.badbadba.usage.json").exists()
+
+
+def test_run_uses_snapshot_and_injects_only_selected_key(tmp_path, monkeypatch):
+    from pipeline import keys, settings as st
+    keys.save(tmp_path, {"openai": "sk-openai-xyz7890", "anthropic": "sk-ant-abcdef1234"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-inherited-00000000")
+    dump = tmp_path / "dump.json"
+    monkeypatch.setenv("STUB_DUMP", str(dump))
+    s, q = _usage_queue(tmp_path, monkeypatch, mode="dump")
+    st.save(tmp_path, dict(st.DEFAULTS, provider="claude-cli"))  # changed after /add: must not matter
+    q.enqueue(V)
+    try:
+        _wait(lambda: s.get(V)["state"] == "error")
+    finally:
+        q.shutdown()
+    d = json.loads(dump.read_text("utf-8"))
+    assert d["env"]["YTLEARN_PROVIDER"] == "anthropic-api" and d["env"]["ANTHROPIC_API_KEY"] == "sk-ant-abcdef1234"
+    assert "OPENAI_API_KEY" not in d["env"] and re.fullmatch(rf".*/{re.escape(V)}\.1\.[0-9a-f]{{8}}\.usage\.json", d["env"]["YTLEARN_USAGE_FILE"])
+    assert not any("sk-" in a for a in d["argv"])
+    assert "sk-ant" not in s.get(V)["message"]  # the dump stub prints the key to stdout; _tail is scrubbed

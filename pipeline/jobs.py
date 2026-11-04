@@ -10,10 +10,11 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pipeline import settings
+from pipeline import keys, settings, usage
 from pipeline.ids import parse_youtube_id, source_of
 from pipeline.schema import validate_lesson
 
@@ -37,6 +38,15 @@ class IllegalTransition(Exception):
     pass
 
 
+class BudgetBlocked(Exception):
+    """Raised by ``JobStore.add`` when its gate refuses a new attempt; ``info`` is
+    ``{"error", "code": "budget", "usage"}`` for the HTTP response."""
+
+    def __init__(self, info: dict):
+        super().__init__(info.get("error", "budget"))
+        self.info = info
+
+
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
 
@@ -54,10 +64,23 @@ class JobStore:
         job["updatedAt"] = time.time()
 
     def _new(self, vid, attempt):
-        job = {"videoId": vid, "state": "queued", "attempt": attempt, "message": "", "updatedAt": 0.0}
+        job = {"videoId": vid, "state": "queued", "attempt": attempt, "message": "", "updatedAt": 0.0,
+               "approved": False}
         self._set(job, "queued")
         self._jobs[vid] = job
         return job
+
+    @staticmethod
+    def _admit(job, snapshot, warning):
+        """Mark a new attempt as approved with the settings snapshot it will build with."""
+        job["settings"] = snapshot
+        job["approved"] = True
+        if warning is None:
+            job.pop("warning", None)
+        else:
+            job["warning"] = warning
+        job.pop("usage", None)  # the previous attempt's numbers
+        job.pop("costUsd", None)
 
     def _need(self, vid):
         job = self._jobs.get(vid)
@@ -73,6 +96,15 @@ class JobStore:
             out["lessonUrl"] = job["lessonUrl"]
         if job["state"] == "error" and job.get("failedIn"):
             out["failedIn"] = job["failedIn"]
+        if job["state"] in ("done", "error"):
+            for k in ("usage", "costUsd"):
+                if job.get(k) is not None:
+                    out[k] = job[k]
+        if job.get("warning"):
+            out["warning"] = job["warning"]
+        snap = job.get("settings")
+        if snap:
+            out["settings"] = {"provider": snap.get("provider"), "model": snap.get("model")}
         return out
 
     def get(self, vid):
@@ -80,7 +112,10 @@ class JobStore:
             job = self._jobs.get(vid)
             return dict(job) if job else None
 
-    def add(self, vid, lesson_ok: bool):
+    def add(self, vid, lesson_ok: bool, gate=None, snapshot=None):
+        """``gate() -> (blocked | None, warning | None)`` runs under the lock, only when a new attempt
+        is about to be created; ``blocked`` raises BudgetBlocked before any state change. ``gate``
+        None passes. The gate must not touch this store (the lock is not re-entrant)."""
         with self._lock:
             job = self._jobs.get(vid)
             if lesson_ok:
@@ -92,16 +127,39 @@ class JobStore:
                 job["lessonUrl"] = f"index.html?v={vid}"
                 return dict(job)
             if job is None:
-                return dict(self._new(vid, 1))
+                warning = self._pass(gate)
+                job = self._new(vid, 1)
+                self._admit(job, snapshot, warning)
+                return dict(job)
             st = job["state"]
-            if st == "capturing" and time.time() - job["updatedAt"] > STALE_CAPTURE_SECONDS:
-                self._set(job, "error", "擷取逾時")
-                st = "error"
-            if st in ("error", "done"):
+            stale = st == "capturing" and time.time() - job["updatedAt"] > STALE_CAPTURE_SECONDS
+            if stale or st in ("error", "done"):
+                warning = self._pass(gate)  # may raise: nothing has changed yet
+                if stale:
+                    self._set(job, "error", "擷取逾時")
                 job.pop("lessonUrl", None)
                 job["attempt"] += 1
                 self._set(job, "queued")
+                self._admit(job, snapshot, warning)
             return dict(job)
+
+    @staticmethod
+    def _pass(gate):
+        if gate is None:
+            return None
+        blocked, warning = gate()
+        if blocked is not None:
+            raise BudgetBlocked(blocked)
+        return warning
+
+    def approve(self, vid, snapshot, warning=None):
+        with self._lock:
+            self._admit(self._need(vid), snapshot, warning)
+
+    def needs_approval(self, vid) -> bool:
+        with self._lock:
+            job = self._jobs.get(vid)
+            return job is not None and not job.get("approved")
 
     def claim(self, vid) -> int:
         with self._lock:
@@ -117,6 +175,16 @@ class JobStore:
             if job["state"] != "capturing" or job["attempt"] != attempt:
                 raise IllegalTransition(f"cannot fail from {job['state']} attempt {attempt}")
             self._set(job, "error", message)
+            job["approved"] = False
+
+    def fail_captured(self, vid, message):
+        """captured -> error (an /ingest the budget gate refused)."""
+        with self._lock:
+            job = self._need(vid)
+            if job["state"] != "captured":
+                raise IllegalTransition(f"cannot fail_captured from {job['state']}")
+            self._set(job, "error", message)
+            job["approved"] = False
 
     def ingested(self, vid, attempt) -> bool:
         with self._lock:
@@ -133,14 +201,15 @@ class JobStore:
             self._set(job, "captured")  # queued / capturing(match or manual, no attempt) / error
             return True
 
-    def set_building(self, vid):
+    def set_building(self, vid) -> int:
         with self._lock:
             job = self._need(vid)
             if job["state"] != "captured":
                 raise IllegalTransition(f"cannot build from {job['state']}")
             self._set(job, "building")
+            return job["attempt"]
 
-    def finish(self, vid, ok, message, lesson_url=None):
+    def finish(self, vid, ok, message, lesson_url=None, usage=None, cost_usd=None):
         with self._lock:
             job = self._need(vid)
             if job["state"] != "building":
@@ -150,6 +219,16 @@ class JobStore:
                 job["lessonUrl"] = lesson_url
             else:
                 self._set(job, "error", message)
+                job["approved"] = False
+            for k, v in (("usage", usage), ("costUsd", cost_usd)):
+                if v is None:
+                    job.pop(k, None)
+                else:
+                    job[k] = v
+
+
+def _num(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
@@ -173,6 +252,9 @@ class BuildQueue:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._proc: subprocess.Popen | None = None
+        self._runs: dict[str, tuple[int, str]] = {}  # vid -> (attempt, run_id) of the build in flight
+        self._snapshots: dict[str, dict] = {}  # vid -> settings snapshot of that build
+        self.sweep_orphans()
 
     def _cmd(self, vid):
         if self.cmd_factory:
@@ -201,7 +283,7 @@ class BuildQueue:
                 self._run(vid)
             except Exception as e:  # worker must survive anything
                 try:
-                    self._finish(vid, False, f"{type(e).__name__}: {e}")
+                    self._finish(vid, False, self._scrub(f"{type(e).__name__}: {e}"))
                 except Exception:
                     pass
             finally:
@@ -215,14 +297,98 @@ class BuildQueue:
         # (error -> captured) landing right after it can be enqueued.
         with self._lock:
             self._pending.discard(vid)
-        self.store.finish(vid, ok, message, lesson_url)
+            run = self._runs.pop(vid, None)
+            snap = self._snapshots.pop(vid, None) or {}
+        if run is None:  # never got as far as starting a build: no usage to account for
+            self.store.finish(vid, ok, message, lesson_url)
+            return
+        path = self.usage_path(vid, *run)
+        used, cost, model_id, _ = self.read_usage(path)
+        if ok:  # the lesson's own totals win
+            try:
+                lesson = json.loads((self.root / "data" / "lessons" / f"{vid}.json").read_text("utf-8"))
+            except (OSError, ValueError):
+                lesson = None
+            if isinstance(lesson, dict) and isinstance(lesson.get("usage"), dict):
+                used, cost = lesson["usage"], _num(lesson.get("costUsd"))
+                model_id = lesson.get("modelId") if isinstance(lesson.get("modelId"), str) else model_id
+        # Terminal transition first: an IllegalTransition here leaves the file for the orphan sweep.
+        self.store.finish(vid, ok, message, lesson_url, usage=used, cost_usd=cost)
+        # Delete before recording: dying in between loses one row at most, never records it twice.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        self._record({"videoId": vid, "provider": snap.get("provider"), "model": model_id or snap.get("model"),
+                      "usage": used, "costUsd": cost, "state": "done" if ok else "error", "partial": not ok})
+
+    def _record(self, row):
+        try:
+            usage.append(self.root, row)
+        except OSError as e:
+            print(f"usage ledger: cannot write row for {row.get('videoId')}: {e}", file=sys.stderr)
+
+    def _scrub(self, text: str) -> str:
+        return keys.scrub(text, keys.all_keys(self.root, os.environ))
 
     def _tail(self, log: Path, n=5):
         try:
-            lines = log.read_text("utf-8", errors="replace").splitlines()
+            text = log.read_text("utf-8", errors="replace")
         except OSError:
             return ""
-        return "\n".join(lines[-n:])
+        return "\n".join(self._scrub(text).splitlines()[-n:])
+
+    def usage_path(self, vid, attempt, run_id) -> Path:
+        return self.log_dir / f"{vid}.{attempt}.{run_id}.usage.json"
+
+    @staticmethod
+    def read_usage(path):
+        """``(usage, costUsd, modelId, pid)`` from a build's usage file; all None when it is missing
+        (a fully cached or early-failing build never writes one) or unreadable."""
+        try:
+            d = json.loads(Path(path).read_text("utf-8"))
+        except (OSError, ValueError):
+            return None, None, None, None
+        if not isinstance(d, dict):
+            return None, None, None, None
+        used = d.get("usage") if isinstance(d.get("usage"), dict) else None
+        model_id = d.get("modelId") if isinstance(d.get("modelId"), str) else None
+        pid = d.get("pid") if type(d.get("pid")) is int else None
+        return used, _num(d.get("costUsd")), model_id, pid
+
+    def sweep_orphans(self):
+        """Record and delete usage files left by builds that are no longer running (a server killed
+        mid-build). A file whose pid is still alive is left alone; any bad file is skipped."""
+        with self._lock:
+            current = {self.usage_path(v, a, r).name for v, (a, r) in self._runs.items()}
+        try:
+            files = sorted(self.log_dir.glob("*.usage.json"))
+        except OSError:
+            return
+        for p in files:
+            if p.name in current:
+                continue
+            try:
+                vid, attempt, _run_id, _u, _j = p.name.rsplit(".", 4)
+                int(attempt)
+                d = json.loads(p.read_text("utf-8"))
+                if not isinstance(d, dict):
+                    raise ValueError("not an object")
+                pid = d.get("pid")
+                if type(pid) is int:
+                    try:
+                        os.kill(pid, 0)
+                        continue  # still running (a build from before a restart): leave it
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError:
+                        continue  # exists, owned by someone else
+                used, cost, model_id, _ = self.read_usage(p)
+                p.unlink()
+                self._record({"videoId": vid, "provider": None, "model": model_id, "usage": used,
+                              "costUsd": cost, "state": "orphan", "partial": True})
+            except Exception as e:  # never let one bad file keep the server from starting
+                print(f"usage sweep: skipped {p.name}: {type(e).__name__}: {e}", file=sys.stderr)
 
     def progress_path(self, vid) -> Path:
         return self.log_dir / f"{vid}.progress.json"
@@ -236,7 +402,16 @@ class BuildQueue:
         if not (isinstance(d, dict) and isinstance(d.get("phase"), str)
                 and isinstance(d.get("done"), int) and isinstance(d.get("total"), int)):
             return None
-        return {"phase": d["phase"], "done": d["done"], "total": d["total"]}
+        out = {"phase": d["phase"], "done": d["done"], "total": d["total"]}
+        with self._lock:
+            run = self._runs.get(vid)
+        if run is not None:
+            used, cost, _, _ = self.read_usage(self.usage_path(vid, *run))
+            if used is not None:
+                out["usage"] = used
+            if cost is not None:
+                out["costUsd"] = cost
+        return out
 
     def _clear_progress(self, vid):
         try:
@@ -245,15 +420,30 @@ class BuildQueue:
             pass
 
     def _run(self, vid):
-        # One snapshot of data/settings.json per build, taken before it is visible as "building":
-        # a POST /settings after this point only affects builds that start later.
-        saved = settings.load(self.root)
-        warning = saved.pop("warning", None)
+        self.sweep_orphans()  # usage files of builds that ended after a restart get recorded now
+        # The settings snapshot taken at /add time; without one (direct ingest, older flow) take it now,
+        # before the job is visible as "building": a POST /settings after this point does not matter.
+        job = self.store.get(vid)
+        snapshot = job.get("settings") if job else None
+        if snapshot:
+            warning, to_env = snapshot.get("warning"), snapshot
+        else:
+            saved = settings.load(self.root)
+            load_warning = saved.pop("warning", None)
+            snapshot = settings.resolve(saved, os.environ)
+            warning = load_warning or snapshot.get("warning")
+            to_env = saved  # as before: only what the file holds touches the env, the rest is inherited
         self._clear_progress(vid)  # before "building" is visible, so a GET never shows the last run's bar
-        self.store.set_building(vid)
+        attempt = self.store.set_building(vid)
+        run_id = uuid.uuid4().hex[:8]
+        with self._lock:
+            self._runs[vid] = (attempt, run_id)
+            self._snapshots[vid] = snapshot
         self.log_dir.mkdir(parents=True, exist_ok=True)
         log = self.log_dir / f"{vid}.log"
-        env = settings.apply_to_env(saved, {**os.environ, "YTLEARN_PROGRESS_FILE": str(self.progress_path(vid))})
+        env = settings.apply_to_env(to_env, {**os.environ, "YTLEARN_PROGRESS_FILE": str(self.progress_path(vid))})
+        env = keys.env_for_build(self.root, env, snapshot["provider"])
+        env["YTLEARN_USAGE_FILE"] = str(self.usage_path(vid, attempt, run_id))
         with open(log, "wb") as lf:
             if warning:
                 lf.write(f"warning: {warning}\n".encode("utf-8"))
