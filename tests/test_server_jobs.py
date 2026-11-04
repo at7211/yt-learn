@@ -524,3 +524,34 @@ def test_reingest_400_when_settings_inconsistent(env, monkeypatch):
     assert code == 400 and "請到設定頁重新儲存" in body["errors"][0]
     assert body["job"]["state"] == "error" and body["job"]["failedIn"] == "captured"
     assert (root / "data" / "raw" / f"{V}.json").exists()
+
+
+def _child_env_via_add(base, root, monkeypatch):
+    """/add -> claim -> ingest, built by the dump stub; returns the build child's environment."""
+    dump = root / "dump.json"
+    monkeypatch.setenv("STUB_MODE", "dump")
+    monkeypatch.setenv("STUB_DUMP", str(dump))
+    assert req(base + "/add", ADD)[0] == 200
+    req(base + "/jobs/" + V + "/claim", {})
+    assert req(base + "/ingest?attempt=1", GOOD)[0] == 200
+    wait_state(base, V, ("error",))
+    return json.loads(dump.read_text("utf-8"))["env"]
+
+
+def test_cli_build_from_add_keeps_env_only_settings(env, monkeypatch):
+    """No settings file: env values the settings page cannot express still reach a CLI build (R11)."""
+    base, root = env
+    monkeypatch.setenv("YTLEARN_MODEL", "opus")
+    monkeypatch.setenv("YTLEARN_WORKERS", "12")
+    e = _child_env_via_add(base, root, monkeypatch)
+    assert e["YTLEARN_MODEL"] == "opus" and e["YTLEARN_WORKERS"] == "12" and e["YTLEARN_PROVIDER"] == "claude-cli"
+
+
+def test_api_build_from_add_gets_the_resolved_snapshot(env, monkeypatch):
+    base, root = env
+    _api_budget(root, 0.0, provider="openai-api", model="gpt-6-astra")
+    monkeypatch.setenv("YTLEARN_MODEL", "opus")
+    monkeypatch.setenv("YTLEARN_WORKERS", "12")
+    e = _child_env_via_add(base, root, monkeypatch)
+    assert e["YTLEARN_PROVIDER"] == "openai-api" and e["YTLEARN_MODEL"] == "gpt-6-astra" and e["YTLEARN_WORKERS"] == "4"
+    assert "saved" not in e and "YTLEARN_SAVED" not in e

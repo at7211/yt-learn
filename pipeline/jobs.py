@@ -427,13 +427,17 @@ class BuildQueue:
         job = self.store.get(vid)
         snapshot = job.get("settings") if job else None
         if snapshot:
-            warning, to_env = snapshot.get("warning"), snapshot
+            warning, saved = snapshot.get("warning"), snapshot.get("saved")
         else:
-            saved = settings.load(self.root)
+            models = settings.load_models(self.root)
+            saved = settings.load(self.root, models)
             load_warning = saved.pop("warning", None)
-            snapshot = settings.resolve(saved, os.environ)
+            snapshot = settings.resolve(saved, os.environ, models=models)
             warning = load_warning or snapshot.get("warning")
-            to_env = saved  # as before: only what the file holds touches the env, the rest is inherited
+        # A CLI build gets only what the file holds, the rest of the env inherited as before (so env-only
+        # values resolve() cannot express, e.g. YTLEARN_MODEL=opus, still reach it); an API build gets the
+        # full resolved snapshot. A snapshot without "saved" (older callers) falls back to the full one.
+        to_env = saved if snapshot["provider"] not in settings.API_PROVIDERS and saved is not None else snapshot
         self._clear_progress(vid)  # before "building" is visible, so a GET never shows the last run's bar
         attempt = self.store.set_building(vid)
         run_id = uuid.uuid4().hex[:8]

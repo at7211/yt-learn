@@ -239,7 +239,9 @@ def _from_env(env) -> dict:
 
 def resolve(saved: dict, env, models=None) -> dict:
     """Effective settings: saved > env > DEFAULTS. Env values outside what the settings page can
-    express are ignored here (the build itself may still honour them). YTLEARN_MODEL is judged by
+    express (e.g. YTLEARN_MODEL=opus, YTLEARN_WORKERS=12) are dropped here in favour of DEFAULTS. A CLI
+    build the server starts still honours them, because it applies only the file-held settings to its
+    inherited env (ruling R11); an API build gets this resolved result, so they never reach it. YTLEARN_MODEL is judged by
     the final provider (for anthropic-api only the MODELS whitelist, as for claude-cli). If the merged provider and model do not fit together (only possible with an
     API provider), both fall back to DEFAULTS and ``warning`` says so; a CLI provider never warns."""
     saved = {k: v for k, v in saved.items() if k in DEFAULTS}

@@ -215,16 +215,22 @@ class Handler(SimpleHTTPRequestHandler):
         return self._resolved_and_load_warning()[0]
 
     def _resolved_and_load_warning(self):
-        """``(resolved, load warning | None)``: resolve() drops the settings-file warning, so it is kept apart."""
+        """``(resolved, load warning | None, saved)``: resolve() drops the settings-file warning, so it is
+        kept apart; ``saved`` is what the file holds (without the warning)."""
         models = settings.load_models(self.root)
         saved = settings.load(self.root, models)
-        return settings.resolve(saved, os.environ, models=models), saved.get("warning")
+        load_warning = saved.pop("warning", None)
+        return settings.resolve(saved, os.environ, models=models), load_warning, saved
 
     @staticmethod
-    def _snapshot(resolved, load_warning):
-        """The job's settings snapshot; its ``warning`` is the settings-file warning ``_run`` logs.
-        Only called once ``resolved`` has no inconsistency warning of its own."""
-        return dict(resolved, warning=load_warning) if load_warning else resolved
+    def _snapshot(resolved, load_warning, saved):
+        """The job's settings snapshot; its ``warning`` is the settings-file warning ``_run`` logs and its
+        ``saved`` the file-held settings a CLI build applies (ruling R11). Only called once ``resolved``
+        has no inconsistency warning of its own."""
+        snap = dict(resolved, saved=dict(saved))
+        if load_warning:
+            snap["warning"] = load_warning
+        return snap
 
     def _budget(self, resolved=None, totals=None) -> dict:
         """This month's API spend against the budget. ``state`` is "none" for a CLI provider or no budget."""
@@ -344,7 +350,7 @@ class Handler(SimpleHTTPRequestHandler):
         vid = parse_lesson_id(obj.get("url") if isinstance(obj, dict) else None)
         if vid is None:
             return self._json({"ok": False, "errors": ["無法辨識的 YouTube、Udemy、Netflix 或 HelloInterview 網址"]}, 400)
-        resolved, load_warning = self._resolved_and_load_warning()
+        resolved, load_warning, saved = self._resolved_and_load_warning()
         lesson_ok = self._lesson_ok(vid)
         if resolved.get("warning") and not lesson_ok:  # a finished lesson still opens: nothing builds
             return self._json({"ok": False, "errors": [resolved["warning"] + "，請到設定頁重新儲存"]}, 400)
@@ -354,7 +360,7 @@ class Handler(SimpleHTTPRequestHandler):
             blocked, warning = self._gate(override, resolved)
             return blocked, _join(load_warning, warning)
         try:
-            job = self.jobs.add(vid, lesson_ok, gate=gate, snapshot=self._snapshot(resolved, load_warning))
+            job = self.jobs.add(vid, lesson_ok, gate=gate, snapshot=self._snapshot(resolved, load_warning, saved))
         except BudgetBlocked as e:
             return self._json({"ok": False, **e.info}, 402)
         out = {"job": JobStore.to_public(job)}
@@ -413,7 +419,7 @@ class Handler(SimpleHTTPRequestHandler):
         print(f"[ingest] {vid} {len(obj['events'])} events -> {dest}", flush=True)
         if enqueue and self.jobs.needs_approval(vid):
             # a new attempt that never went through /add (re-ingest after an error): same gate as /add
-            resolved, load_warning = self._resolved_and_load_warning()
+            resolved, load_warning, saved = self._resolved_and_load_warning()
             refused = None
             if resolved.get("warning"):
                 msg = resolved["warning"] + "，請到設定頁重新儲存"
@@ -423,7 +429,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if blocked is not None:
                     refused = (402, blocked["error"], blocked)
                 else:
-                    self.jobs.approve(vid, self._snapshot(resolved, load_warning), _join(load_warning, warning))
+                    self.jobs.approve(vid, self._snapshot(resolved, load_warning, saved), _join(load_warning, warning))
             if refused is not None:
                 code, msg, body = refused
                 try:

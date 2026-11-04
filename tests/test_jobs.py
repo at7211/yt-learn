@@ -511,3 +511,44 @@ def test_fallback_snapshot_provider_reaches_child_env_and_ledger(tmp_path, monke
     assert json.loads(dump.read_text("utf-8"))["env"]["YTLEARN_PROVIDER"] == expected
     rows = [json.loads(l) for l in usage.path_for(tmp_path).read_text("utf-8").splitlines()]
     assert len(rows) == 1 and rows[0]["provider"] == expected
+
+
+def _fallback_child_env(tmp_path, monkeypatch):
+    """A job with no snapshot (the fallback in _run), built by the dump stub; returns the child env."""
+    stub = Path(__file__).parent / "fixtures" / "stub_build.py"
+    (tmp_path / "pipeline").symlink_to(Path(jobs.__file__).parent)
+    (tmp_path / "data" / "raw").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "data" / "raw" / f"{V}.json").write_text("{}")
+    dump = tmp_path / "dump.json"
+    monkeypatch.setenv("STUB_DUMP", str(dump))
+    monkeypatch.setenv("STUB_MODE", "dump")
+    s = JobStore()
+    s.add(V, False)
+    s.claim(V)
+    s.ingested(V, 1)
+    q = jobs.BuildQueue(s, tmp_path, cmd_factory=lambda v: [sys.executable, str(stub), v])
+    q.enqueue(V)
+    try:
+        _wait(lambda: s.get(V)["state"] == "error")
+    finally:
+        q.shutdown()
+    return json.loads(dump.read_text("utf-8"))["env"]
+
+
+def test_fallback_cli_build_keeps_env_only_settings(tmp_path, monkeypatch):
+    monkeypatch.delenv("YTLEARN_PROVIDER", raising=False)
+    monkeypatch.setenv("YTLEARN_MODEL", "opus")
+    monkeypatch.setenv("YTLEARN_WORKERS", "12")
+    e = _fallback_child_env(tmp_path, monkeypatch)
+    assert e["YTLEARN_MODEL"] == "opus" and e["YTLEARN_WORKERS"] == "12" and e["YTLEARN_PROVIDER"] == "claude-cli"
+
+
+def test_fallback_api_build_gets_the_resolved_snapshot(tmp_path, monkeypatch):
+    from pipeline import keys, settings as st
+    keys.save(tmp_path, {"openai": "sk-openai-xyz7890"})
+    st.save_models(tmp_path, "openai", ["gpt-6-astra"])
+    (tmp_path / "data" / "settings.json").write_text(json.dumps({"provider": "openai-api", "model": "gpt-6-astra"}))
+    monkeypatch.delenv("YTLEARN_PROVIDER", raising=False)
+    monkeypatch.setenv("YTLEARN_WORKERS", "12")  # inexpressible: the API build uses the resolved 4
+    e = _fallback_child_env(tmp_path, monkeypatch)
+    assert e["YTLEARN_PROVIDER"] == "openai-api" and e["YTLEARN_MODEL"] == "gpt-6-astra" and e["YTLEARN_WORKERS"] == "4"
