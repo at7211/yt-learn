@@ -428,6 +428,10 @@ class _HttpProvider(_CachedProvider):
     def _fatal(self, msg: str, status: int | None) -> ProviderFatal:
         return ProviderFatal(keys.scrub(msg, [self.api_key])[:300], status)
 
+    def _no_retry(self, status: int, raw: bytes) -> ProviderFatal | None:
+        """Hook: a ProviderFatal here stops a retryable status from being retried (default: none)."""
+        return None
+
     def _request(self, method: str, url: str, body: dict | None, *, attempts: int | None = None,
                  timeout: float | None = None) -> dict:
         attempts = self.MAX_ATTEMPTS if attempts is None else attempts
@@ -458,6 +462,10 @@ class _HttpProvider(_CachedProvider):
                 if 300 <= status < 400:
                     raise ProviderFatal("伺服器要求重新導向，已拒絕", status)
                 msg = keys.scrub(_server_message(raw or b""), [self.api_key])[:200]
+                if status in self.RETRY_STATUSES:
+                    stop = self._no_retry(status, raw or b"")
+                    if stop is not None:
+                        raise stop
                 if status not in self.RETRY_STATUSES:
                     raise self._fatal(f"API 回 {status}：{msg}", status)
                 detail = f"API 回 {status}：{msg}"
@@ -523,6 +531,105 @@ class AnthropicApiProvider(_HttpProvider):
             return []
         return [m["id"] for m in data
                 if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"].startswith("claude-")]
+
+
+class OpenAiApiProvider(_HttpProvider):
+    """OpenAI Responses API with the user key and strict JSON-schema output."""
+    name = "openai-api"
+    default_timeout = 300.0
+    BASE = "https://api.openai.com"
+    MAX_OUTPUT_TOKENS = 16000
+    QUOTA_CODES = ("credit_balance_exhausted", "organization_spend_limit_exceeded",
+                   "project_spend_limit_exceeded", "organization_usage_limit_exceeded", "insufficient_quota")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.effortSent = self.effort  # drops to "high" after one effort-related 400
+
+    def _cache_fields(self, system, user, schema):
+        return {"provider": "openai", **super()._cache_fields(system, user, schema)}  # effort = the setting
+
+    def _headers(self) -> dict:
+        return {"authorization": "Bearer " + self.api_key, "content-type": "application/json",
+                "user-agent": "yt-learn"}
+
+    def _no_retry(self, status, raw):
+        if status != 429:
+            return None
+        try:
+            err = json.loads(raw).get("error")
+        except (ValueError, AttributeError):
+            return None
+        if isinstance(err, dict) and (err.get("code") in self.QUOTA_CODES or err.get("type") == "insufficient_quota"):
+            return ProviderFatal("OpenAI 額度或花費上限已到", 429)
+        return None
+
+    def _send(self, system: str, user: str, schema: dict | None) -> dict:
+        body = {"model": self.model, "instructions": system, "input": user,
+                "max_output_tokens": self.MAX_OUTPUT_TOKENS, "store": False}  # no temperature: reasoning models
+        if schema is not None:
+            body["text"] = {"format": {"type": "json_schema", "name": "ytlearn",
+                                       "schema": strict_schema(schema), "strict": True}}
+        if self.effortSent:
+            body["reasoning"] = {"effort": self.effortSent}
+        return self._request("POST", self.BASE + "/v1/responses", body)
+
+    def _call(self, system: str, user: str, schema: dict | None) -> dict:
+        try:
+            resp = self._send(system, user, schema)
+        except ProviderFatal as e:
+            if (e.status == 400 and self.effortSent in ("xhigh", "max")
+                    and any(w in str(e).lower() for w in ("effort", "reasoning"))):
+                self.effortSent = "high"
+                resp = self._send(system, user, schema)
+            else:
+                raise
+        self.record_usage(self._usage(resp.get("usage")))  # billed even when the content is unusable
+        if resp.get("status") == "incomplete":
+            d = resp.get("incomplete_details")
+            reason = d.get("reason") if isinstance(d, dict) else None
+            raise _Failure("回覆不完整：" + str(reason or "未知"))
+        texts = []
+        for item in resp.get("output") or []:
+            if not (isinstance(item, dict) and item.get("type") == "message"):
+                continue
+            for c in item.get("content") or []:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "refusal":
+                    raise _Failure("模型拒答")
+                if c.get("type") == "output_text" and isinstance(c.get("text"), str):
+                    texts.append(c["text"])
+        if not texts:
+            raise _Failure("回覆沒有文字內容")
+        return _parse_object("".join(texts), "回覆文字")
+
+    @staticmethod
+    def _usage(u) -> dict:
+        u = u if isinstance(u, dict) else {}
+        det = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
+
+        def n(d, k):
+            v = d.get(k)
+            return v if isinstance(v, int) and not isinstance(v, bool) else 0
+        cached, cw = n(det, "cached_tokens"), n(det, "cache_write_tokens")
+        # Assumes cache writes are counted inside input_tokens (the official docs do not confirm this).
+        return {"input": max(0, n(u, "input_tokens") - cached - cw), "cacheRead": cached,
+                "cacheWrite": cw, "output": n(u, "output_tokens")}
+
+    @staticmethod
+    def list_models(api_key, transport=urllib_transport) -> list[str]:
+        p = OpenAiApiProvider(api_key, transport=transport)
+        d = p._request("GET", OpenAiApiProvider.BASE + "/v1/models", None, attempts=1, timeout=20)
+        data = d.get("data")
+        if not isinstance(data, list):
+            return []
+        keep = re.compile(r"^(gpt-[56]|o[34])")
+        drop = re.compile(r"realtime|audio|image|tts|transcribe|embedding|moderation|search|instruct|codex|pro")
+        ms = [m for m in data if isinstance(m, dict) and isinstance(m.get("id"), str)
+              and keep.match(m["id"]) and not drop.search(m["id"])]
+        ms.sort(key=lambda m: m.get("created") if isinstance(m.get("created"), (int, float)) else 0, reverse=True)
+        return [m["id"] for m in ms]
 
 
 def configured_codex_model() -> str | None:

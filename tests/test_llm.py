@@ -567,3 +567,68 @@ def test_claude_cli_is_error_result_is_scrubbed(monkeypatch):
     with pytest.raises(ProviderError) as ei:
         ClaudeCliProvider().complete_json("s", "u")
     assert "ABCDEFGH12" not in str(ei.value)
+
+
+OKEY = "sk-openai-test-0123456789"
+
+
+def oa_ok(obj, status="completed", refusal=None):
+    content = [{"type": "refusal", "refusal": refusal}] if refusal else [{"type": "output_text", "text": json.dumps(obj)}]
+    return (200, {}, {"status": status, "incomplete_details": None if status == "completed" else {"reason": "max_output_tokens"},
+                      "output": [{"type": "reasoning", "summary": []}, {"type": "message", "content": content}],
+                      "usage": {"input_tokens": 12, "input_tokens_details": {"cached_tokens": 4, "cache_write_tokens": 2},
+                                "output_tokens": 6, "output_tokens_details": {"reasoning_tokens": 2}}})
+
+
+def test_openai_request_shape_and_usage():
+    from pipeline.llm import OpenAiApiProvider
+    t = fake_transport([oa_ok({"a": 1})])
+    p = OpenAiApiProvider(OKEY, model="gpt-6-astra", effort="xhigh", transport=t)
+    assert p.complete_json("sys", "usr", {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}) == {"a": 1}
+    method, url, headers, body, timeout = t.calls[0]
+    assert (method, url, timeout) == ("POST", "https://api.openai.com/v1/responses", 300.0)
+    assert headers["authorization"] == "Bearer " + OKEY
+    assert body["instructions"] == "sys" and body["input"] == "usr" and body["store"] is False and body["max_output_tokens"] == 16000
+    assert body["text"]["format"]["strict"] is True and body["text"]["format"]["schema"]["additionalProperties"] is False
+    assert body["reasoning"] == {"effort": "xhigh"} and "temperature" not in body
+    assert p.usage == {"input": 6, "cacheRead": 4, "cacheWrite": 2, "output": 6} and p.effortSent == "xhigh"
+
+
+def test_openai_effort_400_falls_back_to_high_once():
+    from pipeline.llm import OpenAiApiProvider
+    t = fake_transport([(400, {}, {"error": {"type": "invalid_request_error", "message": "Unsupported reasoning effort"}}), oa_ok({"a": 1}), oa_ok({"a": 2})])
+    p = OpenAiApiProvider(OKEY, model="m", effort="max", transport=t)
+    assert p.complete_json("s", "u") == {"a": 1} and t.calls[1][3]["reasoning"] == {"effort": "high"} and p.effortSent == "high"
+    assert p.complete_json("s", "u2") == {"a": 2} and t.calls[2][3]["reasoning"] == {"effort": "high"} and len(t.calls) == 3
+
+
+def test_openai_cache_key_uses_requested_effort_and_provider(tmp_path):
+    from pipeline.llm import OpenAiApiProvider
+    p = OpenAiApiProvider(OKEY, model="m", effort="max", cache_dir=tmp_path, transport=fake_transport([]))
+    f = p._cache_fields("s", "u", None)
+    assert f["provider"] == "openai" and f["effort"] == "max"
+
+
+def test_openai_incomplete_and_refusal_fail_but_bill():
+    from pipeline.llm import OpenAiApiProvider
+    t = fake_transport([oa_ok({"a": 1}, status="incomplete"), oa_ok({"a": 1}, refusal="no")])
+    p = OpenAiApiProvider(OKEY, transport=t)
+    with pytest.raises(ProviderError):
+        p.complete_json("s", "u")
+    assert p.usage["output"] == 12 and len(t.calls) == 2
+
+
+def test_openai_quota_429_is_fatal_not_retried():
+    from pipeline.llm import OpenAiApiProvider, ProviderFatal
+    t = fake_transport([(429, {}, {"error": {"type": "insufficient_quota", "code": "insufficient_quota", "message": "x"}})])
+    with pytest.raises(ProviderFatal) as ei:
+        OpenAiApiProvider(OKEY, transport=t).complete_json("s", "u")
+    assert len(t.calls) == 1 and "額度" in str(ei.value) and ei.value.status == 429
+
+
+def test_openai_list_models_filters_and_sorts():
+    from pipeline.llm import OpenAiApiProvider
+    data = [{"id": "gpt-5-mini", "created": 1}, {"id": "gpt-6-astra", "created": 3}, {"id": "gpt-4o-realtime", "created": 5},
+            {"id": "text-embedding-3", "created": 9}, {"id": "o3", "created": 2}, {"id": "gpt-image-1", "created": 8}, {"id": "gpt-5.5-pro", "created": 7}]
+    t = fake_transport([(200, {}, {"object": "list", "data": data})])
+    assert OpenAiApiProvider.list_models(OKEY, t) == ["gpt-6-astra", "o3", "gpt-5-mini"] and t.calls[0][4] == 20
