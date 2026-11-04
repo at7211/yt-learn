@@ -212,8 +212,19 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _resolved(self) -> dict:
         """The effective settings a new attempt builds with (may carry a provider/model ``warning``)."""
+        return self._resolved_and_load_warning()[0]
+
+    def _resolved_and_load_warning(self):
+        """``(resolved, load warning | None)``: resolve() drops the settings-file warning, so it is kept apart."""
         models = settings.load_models(self.root)
-        return settings.resolve(settings.load(self.root, models), os.environ, models=models)
+        saved = settings.load(self.root, models)
+        return settings.resolve(saved, os.environ, models=models), saved.get("warning")
+
+    @staticmethod
+    def _snapshot(resolved, load_warning):
+        """The job's settings snapshot; its ``warning`` is the settings-file warning ``_run`` logs.
+        Only called once ``resolved`` has no inconsistency warning of its own."""
+        return dict(resolved, warning=load_warning) if load_warning else resolved
 
     def _budget(self, resolved=None, totals=None) -> dict:
         """This month's API spend against the budget. ``state`` is "none" for a CLI provider or no budget."""
@@ -280,6 +291,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json({"ok": False, "errors": ["body must be a JSON object"]}, 400)
         errs = [f"unknown key provider {k!r}" for k in obj if k not in VENDORS]
         errs += [f"{k} must be a string" for k in VENDORS if k in obj and not isinstance(obj[k], str)]
+        errs += [f"{VENDORS[k]} 的 API key 是空白" for k in VENDORS
+                 if isinstance(obj.get(k), str) and obj[k] and not obj[k].strip()]  # "" (explicit) deletes
         if errs:
             return self._json({"ok": False, "errors": errs}, 400)
         try:
@@ -331,13 +344,17 @@ class Handler(SimpleHTTPRequestHandler):
         vid = parse_lesson_id(obj.get("url") if isinstance(obj, dict) else None)
         if vid is None:
             return self._json({"ok": False, "errors": ["無法辨識的 YouTube、Udemy、Netflix 或 HelloInterview 網址"]}, 400)
-        resolved = self._resolved()
-        if resolved.get("warning"):
+        resolved, load_warning = self._resolved_and_load_warning()
+        lesson_ok = self._lesson_ok(vid)
+        if resolved.get("warning") and not lesson_ok:  # a finished lesson still opens: nothing builds
             return self._json({"ok": False, "errors": [resolved["warning"] + "，請到設定頁重新儲存"]}, 400)
         override = obj.get("override") is True
+
+        def gate():
+            blocked, warning = self._gate(override, resolved)
+            return blocked, _join(load_warning, warning)
         try:
-            job = self.jobs.add(vid, self._lesson_ok(vid), gate=lambda: self._gate(override, resolved),
-                                snapshot=resolved)
+            job = self.jobs.add(vid, lesson_ok, gate=gate, snapshot=self._snapshot(resolved, load_warning))
         except BudgetBlocked as e:
             return self._json({"ok": False, **e.info}, 402)
         out = {"job": JobStore.to_public(job)}
@@ -396,7 +413,7 @@ class Handler(SimpleHTTPRequestHandler):
         print(f"[ingest] {vid} {len(obj['events'])} events -> {dest}", flush=True)
         if enqueue and self.jobs.needs_approval(vid):
             # a new attempt that never went through /add (re-ingest after an error): same gate as /add
-            resolved = self._resolved()
+            resolved, load_warning = self._resolved_and_load_warning()
             refused = None
             if resolved.get("warning"):
                 msg = resolved["warning"] + "，請到設定頁重新儲存"
@@ -406,7 +423,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if blocked is not None:
                     refused = (402, blocked["error"], blocked)
                 else:
-                    self.jobs.approve(vid, resolved, warning)
+                    self.jobs.approve(vid, self._snapshot(resolved, load_warning), _join(load_warning, warning))
             if refused is not None:
                 code, msg, body = refused
                 try:
@@ -433,6 +450,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+
+
+def _join(*warnings):
+    """Non-empty warnings joined with "；", or None."""
+    return "；".join(w for w in warnings if w) or None
 
 
 class _Server(ThreadingHTTPServer):

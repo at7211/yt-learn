@@ -462,3 +462,65 @@ def test_reingest_after_error_passes_the_gate(env):
     assert (root / "data" / "raw" / f"{V}.json").exists()
     code, body = req(base + "/jobs/" + V)
     assert body["job"]["state"] == "error" and body["job"]["failedIn"] == "captured"
+
+
+def test_settings_file_warning_reaches_build_log_and_add_response(env):
+    base, root = env
+    (root / "data").mkdir(exist_ok=True)
+    (root / "data" / "settings.json").write_text(json.dumps({"workers": 99}), "utf-8")
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and "settings.json" in body["warning"] and body["job"]["warning"] == body["warning"]
+    req(base + "/jobs/" + V + "/claim", {})
+    assert req(base + "/ingest?attempt=1", GOOD)[0] == 200
+    assert wait_state(base, V, ("done", "error"))["state"] == "done"
+    assert "warning: settings.json" in (root / "data" / "jobs" / f"{V}.log").read_text("utf-8")
+
+
+def test_settings_warning_joins_budget_warning(env):
+    base, root = env
+    _api_budget(root, 0.85)
+    s = json.loads((root / "data" / "settings.json").read_text("utf-8"))
+    (root / "data" / "settings.json").write_text(json.dumps(dict(s, workers=99)), "utf-8")
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and "settings.json" in body["warning"] and "85%" in body["warning"]
+
+
+def test_done_lesson_opens_despite_inconsistent_settings(env, monkeypatch):
+    base, root = env
+    monkeypatch.setenv("YTLEARN_PROVIDER", "openai-api")
+    full_lesson(root)
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and body["job"]["state"] == "done"
+
+
+def test_add_400_inconsistent_settings_when_build_would_start(env, monkeypatch):
+    base, root = env
+    monkeypatch.setenv("YTLEARN_PROVIDER", "openai-api")
+    code, body = req(base + "/add", ADD)
+    assert code == 400 and "請到設定頁重新儲存" in body["errors"][0] and req(base + "/jobs/" + V)[0] == 404
+
+
+def _errored_job(base, root):
+    req(base + "/add", ADD)
+    req(base + "/jobs/" + V + "/claim", {})
+    req(base + "/jobs/" + V + "/fail", {"attempt": 1, "message": "x"})
+
+
+def test_reingest_after_error_under_warn_builds(env):
+    base, root = env
+    _api_budget(root, 0.0)
+    _errored_job(base, root)
+    _api_budget(root, 0.85)
+    code, body = req(base + "/ingest", GOOD)
+    assert code == 200 and "85%" in body["job"]["warning"]
+    assert wait_state(base, V, ("done", "error"))["state"] == "done"
+
+
+def test_reingest_400_when_settings_inconsistent(env, monkeypatch):
+    base, root = env
+    _errored_job(base, root)
+    monkeypatch.setenv("YTLEARN_PROVIDER", "openai-api")
+    code, body = req(base + "/ingest", GOOD)
+    assert code == 400 and "請到設定頁重新儲存" in body["errors"][0]
+    assert body["job"]["state"] == "error" and body["job"]["failedIn"] == "captured"
+    assert (root / "data" / "raw" / f"{V}.json").exists()

@@ -507,3 +507,13 @@ def test_keys_test_uses_saved_key_and_keeps_other_list(tmp_path):
         assert seen[0]["x-api-key"] == "sk-ant-00001234"
         assert settings.load_models(tmp_path)["openai"] == ["gpt-6-astra"]
 
+
+
+def test_post_keys_whitespace_only_is_400_and_empty_deletes(base, tmp_path):
+    from pipeline import keys
+    keys.save(tmp_path, {"anthropic": "sk-ant-00001234"})
+    code, body, _ = req(base + "/keys", json.dumps({"anthropic": "   \n"}).encode(), "POST")
+    assert code == 400 and "API key 是空白" in json.loads(body)["errors"][0]
+    assert keys.load(tmp_path)["anthropic"] == "sk-ant-00001234"
+    assert req(base + "/keys", json.dumps({"anthropic": ""}).encode(), "POST")[0] == 200
+    assert keys.load(tmp_path) == {}
