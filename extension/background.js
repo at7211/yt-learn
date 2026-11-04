@@ -399,7 +399,7 @@ async function runJobInner(requested, opts) {
   log('add', videoId, mode, requested.url);
   const add = await api('/add', { method: 'POST', body: { url: requested.url } });
   const job = add.json && add.json.job;
-  if (add.status !== 200 || !job) return { ok: false, error: '加入工作失敗：' + serverError(add) };
+  if (add.status !== 200 || !job) return { ok: false, error: ytLearnAddError(add.status, add.json, requested.site) };
   log('add:job', JSON.stringify(job));
   if (job.videoId !== videoId) {
     log('add:id-mismatch', videoId, job.videoId);
@@ -972,6 +972,17 @@ function serverError(r) {
   if (typeof j.error === 'string' && j.error) return j.error;
   if (Array.isArray(j.errors) && j.errors.length) return j.errors.join('；');
   return 'HTTP ' + r.status;
+}
+
+// Message for a failed POST /add; a monthly-budget 402 gets a hint that depends on the site.
+function ytLearnAddError(status, json, site) {
+  const j = json || {};
+  if (status === 402 && j.code === 'budget') {
+    return j.error + (site === 'youtube'
+      ? '（到 yt-learn 首頁可以選擇仍要跑）'
+      : '（到 yt-learn 首頁調高或關閉每月上限後，再回這一頁重試）');
+  }
+  return '加入工作失敗：' + serverError({ status, json });
 }
 
 /* ---------- ownedTabs（storage.session：{tabId: {videoId, attempt, createdAt}}） ---------- */
