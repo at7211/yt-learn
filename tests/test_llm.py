@@ -541,3 +541,29 @@ def test_claude_cli_collects_usage_and_scrubs_stderr(monkeypatch):
     with pytest.raises(ProviderError) as ei:
         ClaudeCliProvider().complete_json("s", "u")
     assert "ABCDEFGH12" not in str(ei.value)
+
+
+def test_retry_waits_at_least_retry_after_and_max_attempts_override():
+    from pipeline.llm import AnthropicApiProvider, ProviderFatal
+    err = (429, {"retry-after": "3"}, {"type": "error", "error": {"type": "rate_limit_error", "message": "x"}})
+    t = fake_transport([err, anth_ok({"a": 1})])
+    p = AnthropicApiProvider(KEY, transport=t)
+    slept = []
+    p._sleep = slept.append
+    assert p.complete_json("s", "u") == {"a": 1}
+    assert len(slept) == 1 and slept[0] >= 3
+    t2 = fake_transport([(503, {}, {"error": {"message": "x"}})] * 5)
+    p2 = AnthropicApiProvider(KEY, transport=t2)
+    p2._sleep = lambda s: None
+    p2.MAX_ATTEMPTS = 2
+    with pytest.raises(ProviderFatal):
+        p2.complete_json("s", "u")
+    assert len(t2.calls) == 2
+
+
+def test_claude_cli_is_error_result_is_scrubbed(monkeypatch):
+    bad = ok({"is_error": True, "result": "boom sk-ant-api03-ABCDEFGH12"})
+    install(monkeypatch, [bad, bad])
+    with pytest.raises(ProviderError) as ei:
+        ClaudeCliProvider().complete_json("s", "u")
+    assert "ABCDEFGH12" not in str(ei.value)

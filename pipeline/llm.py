@@ -41,14 +41,11 @@ class ProviderFatal(ProviderError):
         self.status = status
 
 
-class Provider(Protocol):
-    def complete_json(self, system: str, user: str, schema: dict | None = None) -> dict: ...
+class _UsageMixin:
+    """Token usage totals with an optional sink. The sink runs inside the lock with a copy of the
+    total, so the snapshots it sees are monotonic even with concurrent calls."""
 
-
-class FakeProvider:
-    def __init__(self, responses: list[dict | Exception]):
-        self.responses = list(responses)
-        self.calls: list[tuple[str, str, dict | None]] = []
+    def _init_usage(self) -> None:
         self.usage = zero_usage()
         self._usage_lock = threading.Lock()
         self.usage_sink: Callable[[dict], None] | None = None
@@ -58,6 +55,17 @@ class FakeProvider:
             self.usage = add_usage(self.usage, u)
             if self.usage_sink is not None:
                 self.usage_sink(dict(self.usage))
+
+
+class Provider(Protocol):
+    def complete_json(self, system: str, user: str, schema: dict | None = None) -> dict: ...
+
+
+class FakeProvider(_UsageMixin):
+    def __init__(self, responses: list[dict | Exception]):
+        self.responses = list(responses)
+        self.calls: list[tuple[str, str, dict | None]] = []
+        self._init_usage()
 
     def complete_json(self, system: str, user: str, schema: dict | None = None) -> dict:
         self.calls.append((system, user, schema))
@@ -102,7 +110,7 @@ def _anthropic_usage(u) -> dict:
             "cacheWrite": n("cache_creation_input_tokens"), "output": n("output_tokens")}
 
 
-class _CachedProvider:
+class _CachedProvider(_UsageMixin):
     """Shared cache + one retry + usage accounting around a call; subclasses implement ``_call``."""
     name = "claude"
     default_timeout = 180.0
@@ -116,17 +124,7 @@ class _CachedProvider:
         self.timeout = self.default_timeout if timeout is None else timeout
         self.calls = 0
         self.cache_hits = 0
-        self.usage = zero_usage()
-        self._usage_lock = threading.Lock()
-        self.usage_sink: Callable[[dict], None] | None = None
-
-    def record_usage(self, u: dict) -> None:
-        """Add one response's usage. The sink runs inside the lock so its snapshots are monotonic.
-        Cache hits never call this."""
-        with self._usage_lock:
-            self.usage = add_usage(self.usage, u)
-            if self.usage_sink is not None:
-                self.usage_sink(dict(self.usage))
+        self._init_usage()  # cache hits never call record_usage
 
     def _cache_fields(self, system: str, user: str, schema: dict | None) -> dict:
         # Claude keeps the original key shape so caches built before CodexCliProvider existed still hit.
@@ -227,7 +225,7 @@ class ClaudeCliProvider(_CachedProvider):
         if isinstance(outer.get("usage"), dict):
             self.record_usage(_anthropic_usage(outer["usage"]))
         if outer.get("is_error"):
-            raise _Failure(f"claude CLI error: {str(outer.get('result'))[:200]}")
+            raise _Failure(f"claude CLI error: {keys.scrub(str(outer.get('result')), [])[:200]}")
         so = outer.get("structured_output")
         if isinstance(so, dict):
             return so
@@ -430,8 +428,9 @@ class _HttpProvider(_CachedProvider):
     def _fatal(self, msg: str, status: int | None) -> ProviderFatal:
         return ProviderFatal(keys.scrub(msg, [self.api_key])[:300], status)
 
-    def _request(self, method: str, url: str, body: dict | None, *, attempts: int = MAX_ATTEMPTS,
+    def _request(self, method: str, url: str, body: dict | None, *, attempts: int | None = None,
                  timeout: float | None = None) -> dict:
+        attempts = self.MAX_ATTEMPTS if attempts is None else attempts
         data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers = self._headers()
         t = self.timeout if timeout is None else timeout
