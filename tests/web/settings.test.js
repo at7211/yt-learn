@@ -70,3 +70,13 @@ test('budgetText names API builds whose price is unknown', () => {
     '本月 API 約 $0.85／上限 $1.00（本機估算）・本月有 2 次產課牌價未知，未計入上限');
   assert.equal(budgetText({ apiUsd: 0.85, budgetUsd: 1, unpricedApiRows: 0 }), '本月 API 約 $0.85／上限 $1.00（本機估算）');
 });
+
+test('parseBudget refuses an unparseable monthly cap instead of clearing it', async () => {
+  const { parseBudget } = await import('../../web/settings.js');
+  assert.deepEqual(parseBudget('', false), { value: null });
+  assert.deepEqual(parseBudget('  ', false), { value: null });
+  assert.deepEqual(parseBudget('12.5', false), { value: 12.5 });
+  assert.deepEqual(parseBudget('', true), { error: '每月上限不是數字' }); // type=number: badInput, value ''
+  assert.deepEqual(parseBudget('abc', false), { error: '每月上限不是數字' });
+  assert.deepEqual(parseBudget('Infinity', false), { error: '每月上限不是數字' });
+});

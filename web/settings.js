@@ -114,6 +114,17 @@ export function summary(s) {
   return '設定：' + parts.join('・');
 }
 
+// The monthly-cap input: blank is no cap (null), a finite number is the cap, and anything else, including a
+// type=number input whose validity.badInput is set (its value then reads ''), is refused rather than
+// saved as null, which would silently remove the cap.
+export function parseBudget(raw, badInput) {
+  const text = String(raw == null ? '' : raw).trim();
+  if (badInput) return { error: '每月上限不是數字' };
+  if (text === '') return { value: null };
+  const n = Number(text);
+  return Number.isFinite(n) ? { value: n } : { error: '每月上限不是數字' };
+}
+
 // 0.1234 -> 「約 $0.12」; null / undefined (model not in the price table) -> 「牌價未知」.
 export function fmtUsd(x) {
   if (typeof x !== 'number' || !Number.isFinite(x)) return '牌價未知';

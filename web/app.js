@@ -7,7 +7,7 @@ import { waitForAck, shouldApplyLiveStatus } from './handshake.js';
 import { introRows } from './intro.js';
 import { dictWord, dictUrl, clickWord } from './dict.js';
 import { barState, costText } from './progress.js';
-import { DEFAULTS, EFFORTS, PRESETS, PROVIDERS, normalize, presetOf, summary, shortModel, modelsFor, fmtUsd, budgetText } from './settings.js';
+import { DEFAULTS, EFFORTS, PRESETS, PROVIDERS, normalize, presetOf, summary, shortModel, modelsFor, fmtUsd, budgetText, parseBudget } from './settings.js';
 
 // ---------------------------------------------------------------- util
 const $ = (id) => document.getElementById(id);
@@ -109,10 +109,15 @@ function currentProvider() {
   return r ? r.value : DEFAULTS.provider;
 }
 
+function readBudget() {
+  const input = $('set-budget');
+  return parseBudget(input.value, Boolean(input.validity && input.validity.badInput));
+}
+
 function readSettingsForm() {
-  const budget = $('set-budget').value.trim();
+  const budget = readBudget();
   return { provider: currentProvider(), model: $('set-model').value, effort: $('set-effort').value,
-           workers: Number($('set-workers').value), budgetUsd: budget === '' ? null : Number(budget) };
+           workers: Number($('set-workers').value), budgetUsd: budget.error ? NaN : budget.value };
 }
 
 // The model <select> for `provider`, selecting `model`. codex-cli keeps the stored model as the one
@@ -325,6 +330,8 @@ function initSettings(listed) {
   $('key-change').onclick = () => { SET.changingKey = true; renderSource(); $('key-input').focus(); };
   $('key-input').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); testKey(); } };
   $('set-save').onclick = async () => {
+    const budget = readBudget();
+    if (budget.error) { result.textContent = ''; warn('無法儲存：' + budget.error); return; }
     const { settings, errors } = normalize(readSettingsForm(), SET.models);
     if (errors.length) { result.textContent = ''; warn('無法儲存：' + errors.join('；')); return; }
     result.textContent = '儲存中…';
