@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import server
+from pipeline import settings
 from tests.test_schema import GOOD
 
 FIX = Path(__file__).parent / "fixtures"
@@ -22,6 +23,8 @@ V2 = "abcdefghijk"
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("YTLEARN_BUILD_CMD", f"{sys.executable} {STUB}")
     monkeypatch.setenv("STUB_MODE", "ok")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     (tmp_path / "web").mkdir()
     (tmp_path / "pipeline").symlink_to(Path(server.__file__).parent / "pipeline")
     srv = server.make_server(tmp_path, 0)
@@ -391,3 +394,71 @@ def test_jobs_get_carries_progress_only_while_building(env, monkeypatch):
     job = wait_state(base, V, {"done", "error"})
     assert job["state"] == "done" and "progress" not in job
     assert not (root / "data" / "jobs" / f"{V}.progress.json").exists()
+
+
+ADD = {"url": "https://www.youtube.com/watch?v=" + V}
+
+
+def _api_budget(root, spent, budget=1.0, provider="anthropic-api", model="claude-sonnet-5-5"):
+    from pipeline import keys, usage
+    keys.save(root, {"anthropic": "sk-ant-00001234", "openai": "sk-openai-xyz7890"})
+    if provider == "openai-api":
+        settings.save_models(root, "openai", [model])
+    settings.save(root, dict(settings.DEFAULTS, provider=provider, model=model, budgetUsd=budget))
+    usage.append(root, {"videoId": "z", "provider": provider, "model": model, "usage": {}, "costUsd": spent, "state": "done"})
+
+
+def test_add_402_when_over_budget_and_override(env):
+    base, root = env
+    _api_budget(root, 1.2)
+    code, body = req(base + "/add", ADD)
+    assert code == 402 and body["code"] == "budget" and req(base + "/jobs/" + V)[0] == 404
+    code, body = req(base + "/add", dict(ADD, override=True))
+    assert code == 200 and body["job"]["state"] == "queued" and body["job"]["settings"] == {"provider": "anthropic-api", "model": "claude-sonnet-5-5"}
+
+
+def test_override_then_extension_readd_is_not_blocked(env):
+    base, root = env
+    _api_budget(root, 1.2)
+    req(base + "/add", dict(ADD, override=True))
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and body["job"]["state"] == "queued" and body["job"]["attempt"] == 1
+
+
+def test_done_lesson_is_not_gated(env):
+    base, root = env
+    _api_budget(root, 1.2)
+    (root / "data" / "lessons").mkdir(parents=True)
+    lesson = json.loads(STUB.with_name("lesson_min.json").read_text("utf-8")); lesson["videoId"] = V
+    (root / "data" / "lessons" / f"{V}.json").write_text(json.dumps(lesson), "utf-8")
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and body["job"]["state"] == "done"
+
+
+def test_add_warning_at_80_percent(env):
+    base, root = env
+    _api_budget(root, 0.8, provider="openai-api", model="gpt-6-astra")
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and "80%" in body["warning"] and body["job"]["warning"] == body["warning"]
+
+
+def test_add_ignores_budget_for_cli_provider(env):
+    base, root = env
+    from pipeline import usage
+    settings.save(root, dict(settings.DEFAULTS, budgetUsd=1.0))
+    usage.append(root, {"videoId": "z", "provider": "anthropic-api", "model": "m", "usage": {}, "costUsd": 5, "state": "done"})
+    assert req(base + "/add", ADD)[0] == 200
+
+
+def test_reingest_after_error_passes_the_gate(env):
+    base, root = env
+    _api_budget(root, 0.0)
+    req(base + "/add", ADD)
+    req(base + "/jobs/" + V + "/claim", {})
+    req(base + "/jobs/" + V + "/fail", {"attempt": 1, "message": "x"})
+    _api_budget(root, 1.2)  # spent since
+    code, body = req(base + "/ingest", GOOD)  # error -> captured without /add
+    assert code == 402 and body["code"] == "budget" and body["job"]["state"] == "error"
+    assert (root / "data" / "raw" / f"{V}.json").exists()
+    code, body = req(base + "/jobs/" + V)
+    assert body["job"]["state"] == "error" and body["job"]["failedIn"] == "captured"

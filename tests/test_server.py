@@ -10,17 +10,47 @@ from pipeline import jobs, settings
 from tests.test_schema import GOOD
 
 
-@pytest.fixture
-def base(tmp_path):
+MODELS_BODY = json.dumps({"data": [{"id": "gpt-6-astra", "created": 2}, {"id": "gpt-5-mini", "created": 1}, {"id": "claude-opus-5-5", "created": 3}]}).encode()
+E401 = json.dumps({"type": "error", "error": {"type": "authentication_error", "message": "bad"}}).encode()
+
+
+def _serve(tmp_path, transport):
     (tmp_path / "web").mkdir()
     (tmp_path / "web" / "index.html").write_text("hi")
-    srv = server.make_server(tmp_path, 0)
+    srv = server.make_server(tmp_path, 0, transport=transport)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
-    yield f"http://127.0.0.1:{srv.server_address[1]}"
-    srv.shutdown()
-    srv.server_close()
-    t.join()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join()
+
+
+def _no_network(method, url, headers, body, timeout):
+    raise AssertionError("no network in tests")
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_keys(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+
+@pytest.fixture
+def base(tmp_path):
+    yield from _serve(tmp_path, _no_network)
+
+
+@pytest.fixture
+def base_with_models(tmp_path):
+    yield from _serve(tmp_path, lambda m, u, h, b, t: (200, {}, MODELS_BODY))
+
+
+@pytest.fixture
+def base_401(tmp_path):
+    yield from _serve(tmp_path, lambda m, u, h, b, t: (401, {}, E401))
 
 
 def req(url, data=None, method=None, headers=None):
@@ -134,7 +164,7 @@ def clean_env(monkeypatch):
 def test_settings_get_defaults_when_no_file(base, tmp_path, clean_env):
     code, body, _ = req(base + "/settings")
     assert code == 200
-    assert json.loads(body) == {"settings": dict(settings.DEFAULTS, **{"model": "claude-sonnet-5-5", "effort": "default", "workers": 4})}
+    assert json.loads(body)["settings"] == dict(settings.DEFAULTS, **{"model": "claude-sonnet-5-5", "effort": "default", "workers": 4})
     assert not (tmp_path / "data" / "settings.json").exists()
 
 
@@ -147,7 +177,7 @@ def test_settings_get_reflects_env_then_saved(base, tmp_path, clean_env, monkeyp
     full = dict(settings.DEFAULTS, **s)
     assert code == 200 and json.loads(body) == {"ok": True, "settings": full}
     assert json.loads((tmp_path / "data" / "settings.json").read_text("utf-8")) == full
-    assert json.loads(req(base + "/settings")[1]) == {"settings": full}
+    assert json.loads(req(base + "/settings")[1])["settings"] == full
 
 
 @pytest.mark.parametrize("body", [
@@ -386,3 +416,94 @@ def test_max_body_is_4mb(base):
     code, _, _ = raw_req(base, "POST", "/ingest", b"",
                          {"Content-Type": "application/json", "Content-Length": str(server.MAX_BODY + 1)})
     assert code == 400
+
+
+def test_lessons_list_carries_cost(base, tmp_path):
+    from tests.test_build import load
+    d = tmp_path / "data" / "lessons"
+    d.mkdir(parents=True)
+    a = dict(load("lesson_min.json"), videoId="aaaaaaaaaaa", costUsd=0.5, provider="openai-api")
+    b = dict(load("lesson_min.json"), videoId="bbbbbbbbbbb")
+    (d / "aaaaaaaaaaa.json").write_text(json.dumps(a), "utf-8")
+    (d / "bbbbbbbbbbb.json").write_text(json.dumps(b), "utf-8")
+    rows = {r["videoId"]: r for r in json.loads(req(base + "/lessons")[1])}
+    assert rows["aaaaaaaaaaa"]["costUsd"] == 0.5 and rows["aaaaaaaaaaa"]["provider"] == "openai-api"
+    assert "costUsd" not in rows["bbbbbbbbbbb"] and "provider" not in rows["bbbbbbbbbbb"]
+
+
+def test_get_settings_includes_masked_keys_and_models(base, tmp_path):
+    from pipeline import keys
+    keys.save(tmp_path, {"anthropic": "sk-ant-00001234"})
+    code, body, _ = req(base + "/settings")
+    out = json.loads(body)
+    assert out["keys"]["anthropic"] == {"set": True, "tail": "1234", "source": "file"} and out["models"] == {}
+    assert "sk-ant" not in body.decode()
+
+
+def test_post_settings_api_provider_requires_key(base, tmp_path):
+    from pipeline import keys
+    s = dict(settings.DEFAULTS, provider="anthropic-api")
+    code, body, _ = req(base + "/settings", json.dumps(s).encode(), "POST")
+    assert code == 400 and "Anthropic" in json.loads(body)["errors"][0]
+    keys.save(tmp_path, {"anthropic": "sk-ant-00001234"})
+    assert req(base + "/settings", json.dumps(s).encode(), "POST")[0] == 200
+
+
+def test_post_keys_saves_and_masks(base, tmp_path):
+    code, body, _ = req(base + "/keys", json.dumps({"openai": "sk-openai-xyz7890"}).encode(), "POST")
+    assert code == 200 and json.loads(body)["keys"]["openai"]["tail"] == "7890"
+    assert "sk-openai" not in body.decode() and "sk-openai" not in req(base + "/keys")[1].decode()
+    assert req(base + "/keys", json.dumps({"openai": 5}).encode(), "POST")[0] == 400
+
+
+def test_keys_test_saves_key_on_success(base_with_models, tmp_path):
+    from pipeline import keys
+    code, body, _ = req(base_with_models + "/keys/test", json.dumps({"provider": "openai", "key": "sk-openai-xyz7890"}).encode(), "POST")
+    out = json.loads(body)
+    assert code == 200 and out["models"] == ["gpt-6-astra", "gpt-5-mini"]
+    assert keys.load(tmp_path)["openai"] == "sk-openai-xyz7890" and settings.load_models(tmp_path)["openai"] == out["models"]
+    assert "sk-openai" not in body.decode()
+
+
+def test_keys_test_401_reports_without_key(base_401, tmp_path):
+    from pipeline import keys
+    code, body, _ = req(base_401 + "/keys/test", json.dumps({"provider": "anthropic", "key": "sk-ant-bad-0000"}).encode(), "POST")
+    assert code == 400 and "無效" in json.loads(body)["error"] and "sk-ant-bad" not in body.decode() and keys.load(tmp_path) == {}
+
+
+def test_keys_test_without_key_400(base):
+    assert req(base + "/keys/test", json.dumps({"provider": "anthropic"}).encode(), "POST")[0] == 400
+
+
+def test_usage_endpoint_states(base, tmp_path):
+    from pipeline import keys, usage
+    keys.save(tmp_path, {"anthropic": "sk-ant-00001234"})
+    settings.save(tmp_path, dict(settings.DEFAULTS, provider="anthropic-api", budgetUsd=1.0))
+    usage.append(tmp_path, {"videoId": "a", "provider": "anthropic-api", "model": "m", "usage": {}, "costUsd": 0.85, "state": "done"})
+    out = json.loads(req(base + "/usage")[1])
+    assert out["budgetUsd"] == 1.0 and out["budgetState"] == "warn" and out["apiUsd"] == 0.85 and out["pct"] == 85
+
+
+def test_pasted_keys_are_stripped(base_with_models, tmp_path):
+    from pipeline import keys
+    code, body, _ = req(base_with_models + "/keys", json.dumps({"anthropic": "  sk-ant-00001234\n"}).encode(), "POST")
+    assert code == 200 and keys.load(tmp_path)["anthropic"] == "sk-ant-00001234" and "sk-ant" not in body.decode()
+    code, body, _ = req(base_with_models + "/keys/test", json.dumps({"provider": "openai", "key": "sk-openai-xyz7890\n"}).encode(), "POST")
+    assert code == 200 and keys.load(tmp_path)["openai"] == "sk-openai-xyz7890" and "sk-openai" not in body.decode()
+
+
+def test_keys_test_uses_saved_key_and_keeps_other_list(tmp_path):
+    from pipeline import keys
+    seen = []
+
+    def fake(method, url, headers, body, timeout):
+        seen.append(headers)
+        return 200, {}, MODELS_BODY
+    for base in _serve(tmp_path, fake):
+        keys.save(tmp_path, {"anthropic": "sk-ant-00001234"})
+        settings.save_models(tmp_path, "openai", ["gpt-6-astra"])
+        code, body, _ = req(base + "/keys/test", json.dumps({"provider": "anthropic"}).encode(), "POST")
+        assert code == 200 and json.loads(body)["models"] == ["claude-opus-5-5"] and "sk-ant" not in body.decode()
+        assert seen[0]["x-api-key"] == "sk-ant-00001234"
+        assert settings.load_models(tmp_path)["openai"] == ["gpt-6-astra"]
+
