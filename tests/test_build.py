@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,7 @@ def fake_provider():
 
 def test_build_with_fake_provider_matches_schema():
     lesson, stats = build_lesson(load("raw_small.json"), fake_provider())
-    assert stats == {"chunks": 2, "fallback_chunks": 0, "vocab_failed": 0, "intro_failed": 0}
+    assert [stats[k] for k in ("chunks", "fallback_chunks", "vocab_failed", "intro_failed")] == [2, 0, 0, 0]
     assert lesson["intro"] == INTRO
     assert validate_lesson(lesson) == []
     assert lesson["videoId"] == "puh91fohvTA" and lesson["coveredSeconds"] == 1378
@@ -202,7 +203,7 @@ def test_progress_file_written_by_cli(tmp_path, monkeypatch):
 
 
 def _spy_factory(seen):
-    def factory(model, cache_dir, provider="claude"):
+    def factory(model, cache_dir, provider="claude-cli"):
         seen.update(model=model, provider=provider)
         return fake_provider()
     return factory
@@ -214,20 +215,20 @@ def test_provider_flag_defaults_to_claude_and_switches_to_codex(tmp_path, monkey
     monkeypatch.delenv("YTLEARN_PROVIDER", raising=False)
     seen = {}
     assert main(["puh91fohvTA"], data_dir=tmp_path, provider_factory=_spy_factory(seen)) == 0
-    assert seen == {"model": "claude-sonnet-5-5", "provider": "claude"}
+    assert seen == {"model": "claude-sonnet-5-5", "provider": "claude-cli"}
     assert json.loads((tmp_path / "lessons" / "puh91fohvTA.json").read_text("utf-8"))["model"] == "claude-sonnet-5-5"
     seen = {}
     assert main(["puh91fohvTA", "--provider", "codex", "--force"], data_dir=tmp_path, provider_factory=_spy_factory(seen)) == 0
-    assert seen == {"model": None, "provider": "codex"}
+    assert seen == {"model": None, "provider": "codex-cli"}
     assert json.loads((tmp_path / "lessons" / "puh91fohvTA.json").read_text("utf-8"))["model"] == "codex:default"
     seen = {}
     monkeypatch.setenv("YTLEARN_PROVIDER", "codex")
     assert main(["puh91fohvTA", "--force", "--model", "gpt-6-astra"], data_dir=tmp_path, provider_factory=_spy_factory(seen)) == 0
-    assert seen == {"model": "gpt-6-astra", "provider": "codex"}
+    assert seen == {"model": "gpt-6-astra", "provider": "codex-cli"}
     assert json.loads((tmp_path / "lessons" / "puh91fohvTA.json").read_text("utf-8"))["model"] == "codex:gpt-6-astra"
     seen = {}
     assert main(["puh91fohvTA", "--force", "--provider", "claude"], data_dir=tmp_path, provider_factory=_spy_factory(seen)) == 0
-    assert seen["provider"] == "claude"
+    assert seen["provider"] == "claude-cli"
 
 
 def test_unknown_provider_from_env_is_rejected(tmp_path, monkeypatch):
@@ -238,7 +239,7 @@ def test_unknown_provider_from_env_is_rejected(tmp_path, monkeypatch):
 
 
 def _effort_spy(seen):
-    def factory(model, cache_dir, provider="claude", **kw):
+    def factory(model, cache_dir, provider="claude-cli", **kw):
         seen.update(model=model, provider=provider, **kw)
         return fake_provider()
     return factory
@@ -262,10 +263,10 @@ def test_effort_and_model_from_env_reach_factory_and_lesson(raw_dir, monkeypatch
     monkeypatch.setenv("YTLEARN_EFFORT", "low")
     seen = {}
     assert main(["puh91fohvTA"], data_dir=raw_dir, provider_factory=_effort_spy(seen)) == 0
-    assert seen == {"model": "claude-haiku-5-5", "provider": "claude", "effort": "low"}
+    assert seen == {"model": "claude-haiku-5-5", "provider": "claude-cli", "effort": "low"}
     les = _lesson(raw_dir)
     assert les["model"] == "claude-haiku-5-5" and les["effort"] == "low" and not validate_lesson(les)
-    assert "settings: provider=claude model=claude-haiku-5-5 effort=low workers=1" in capsys.readouterr().out
+    assert "settings: provider=claude-cli model=claude-haiku-5-5 effort=low workers=1" in capsys.readouterr().out
 
 
 def test_cli_flags_beat_env(raw_dir, monkeypatch):
@@ -274,7 +275,7 @@ def test_cli_flags_beat_env(raw_dir, monkeypatch):
     seen = {}
     assert main(["puh91fohvTA", "--model", "claude-opus-5-5", "--effort", "max"], data_dir=raw_dir,
                 provider_factory=_effort_spy(seen)) == 0
-    assert seen == {"model": "claude-opus-5-5", "provider": "claude", "effort": "max"}
+    assert seen == {"model": "claude-opus-5-5", "provider": "claude-cli", "effort": "max"}
     assert _lesson(raw_dir)["effort"] == "max"
 
 
@@ -290,10 +291,12 @@ def test_codex_ignores_ytlearn_model_and_caps_effort(raw_dir, monkeypatch, capsy
     monkeypatch.setenv("YTLEARN_EFFORT", "xhigh")
     seen = {}
     assert main(["puh91fohvTA", "--provider", "codex"], data_dir=raw_dir, provider_factory=_effort_spy(seen)) == 0
-    assert seen == {"model": None, "provider": "codex", "effort": "xhigh"}  # the provider caps it itself
+    assert seen == {"model": None, "provider": "codex-cli", "effort": "xhigh"}  # the provider caps it itself
     les = _lesson(raw_dir)
     assert les["model"] == "codex:default" and les["effort"] == "high"
-    assert "effort=high" in capsys.readouterr().out
+    assert les["modelId"] is None and les["costUsd"] is None and les["priceDate"] is None
+    out = capsys.readouterr().out
+    assert "effort=high" in out and "cost_usd=unknown" in out
 
 
 def test_unknown_effort_from_env_is_rejected(raw_dir, monkeypatch):
@@ -301,3 +304,155 @@ def test_unknown_effort_from_env_is_rejected(raw_dir, monkeypatch):
     with pytest.raises(SystemExit) as e:
         main(["puh91fohvTA"], data_dir=raw_dir)
     assert e.value.code == 2
+
+
+def _raw(tmp_path):
+    (tmp_path / "raw").mkdir(exist_ok=True)
+    (tmp_path / "raw" / "puh91fohvTA.json").write_text(json.dumps(load("raw_small.json")), "utf-8")
+
+
+class RecordingFake(FakeProvider):
+    """FakeProvider that bills 100 input / 10 output per answer and counts calls made after a fatal error."""
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.fatal_seen = False
+        self.calls_after_fatal = 0
+
+    def complete_json(self, system, user, schema=None):
+        if self.fatal_seen:
+            self.calls_after_fatal += 1
+        r = self.responses[0] if self.responses else None
+        if isinstance(r, Exception):
+            self.fatal_seen = True
+            self.responses.pop(0)
+            raise r
+        out = super().complete_json(system, user, schema)
+        self.record_usage({"input": 100, "cacheRead": 0, "cacheWrite": 0, "output": 10})
+        return out
+
+
+def test_main_openai_api_requires_key_and_model(tmp_path, monkeypatch, capsys):
+    _raw(tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert main(["puh91fohvTA", "--provider", "openai-api", "--model", "gpt-6-astra"], data_dir=tmp_path) == 1
+    assert "OPENAI_API_KEY" in capsys.readouterr().err
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-x-0123456789")
+    monkeypatch.delenv("YTLEARN_MODEL", raising=False)
+    assert main(["puh91fohvTA", "--provider", "openai-api"], data_dir=tmp_path) == 1
+    assert "--model" in capsys.readouterr().err
+
+
+def test_main_alias_claude_is_canonicalised(tmp_path, capsys):
+    _raw(tmp_path)
+    seen = {}
+    assert main(["puh91fohvTA", "--provider", "claude"], data_dir=tmp_path, provider_factory=_spy_factory(seen)) == 0
+    assert seen["provider"] == "claude-cli" and "provider=claude-cli" in capsys.readouterr().out
+
+
+def test_lesson_records_provider_usage_and_cost(tmp_path):
+    from pipeline import cost
+    _raw(tmp_path)
+    fp = RecordingFake(fake_provider().responses)
+    assert main(["puh91fohvTA", "--model", "claude-sonnet-5-5"], data_dir=tmp_path, provider_factory=lambda *a, **k: fp) == 0
+    lesson = json.loads((tmp_path / "lessons" / "puh91fohvTA.json").read_text("utf-8"))
+    assert lesson["provider"] == "claude-cli" and lesson["modelId"] == "claude-sonnet-5-5" and lesson["effortSent"] == "default"
+    assert lesson["usage"] == {"input": 400, "cacheRead": 0, "cacheWrite": 0, "output": 40}
+    assert lesson["costUsd"] == pytest.approx(cost.cost_usd("claude-sonnet-5-5", lesson["usage"])) and lesson["priceDate"] == "2026-11-04"
+
+
+def test_usage_file_holds_final_snapshot(tmp_path):
+    _raw(tmp_path)
+    uf = tmp_path / "u.json"
+    fp = RecordingFake(fake_provider().responses)
+    assert main(["puh91fohvTA", "--usage-file", str(uf), "--model", "claude-sonnet-5-5"], data_dir=tmp_path, provider_factory=lambda *a, **k: fp) == 0
+    d = json.loads(uf.read_text("utf-8"))
+    assert d["usage"]["input"] == 400 and d["modelId"] == "claude-sonnet-5-5" and d["costUsd"] > 0 and d["ts"] and d["pid"] == os.getpid()
+
+
+def test_fatal_provider_error_stops_build_and_keeps_usage(tmp_path, capsys):
+    from pipeline.llm import ProviderFatal
+    _raw(tmp_path)
+    r = fake_provider().responses
+    fp = RecordingFake([r[0], ProviderFatal("API key 無效或沒有權限", 401), r[2], r[3]])
+    uf = tmp_path / "u.json"
+    assert main(["puh91fohvTA", "--usage-file", str(uf), "--model", "claude-sonnet-5-5"], data_dir=tmp_path, provider_factory=lambda *a, **k: fp) == 3
+    assert "無效" in capsys.readouterr().err
+    assert not (tmp_path / "lessons" / "puh91fohvTA.json").exists()
+    assert json.loads(uf.read_text("utf-8"))["usage"]["input"] == 100
+    assert fp.calls_after_fatal == 0
+
+
+def test_fatal_error_cancels_queued_segment_chunks(monkeypatch):
+    """With 2 workers and 9 chunks, a fatal answer on one chunk must leave the queued chunks unsent."""
+    import threading
+    import time as _time
+    from pipeline import build
+    from pipeline.llm import ProviderFatal
+    monkeypatch.setattr(build, "chunk_words", lambda words: [(i, min(i + 17, len(words) - 1)) for i in range(0, len(words), 18)])
+
+    class Prov:
+        def __init__(self):
+            self.calls = 0
+            self.lock = threading.Lock()
+
+        def complete_json(self, system, user, schema=None):
+            with self.lock:
+                self.calls += 1
+                n = self.calls
+            if n == 1:
+                raise ProviderFatal("OpenAI 額度或花費上限已到", 429)
+            _time.sleep(0.3)  # the other in-flight chunk is still running when the fatal error lands
+            raise ProviderError("slow failure")
+
+    prov = Prov()
+    with pytest.raises(ProviderFatal):
+        build_lesson(load("raw_small.json"), prov, workers=2)
+    _time.sleep(0.5)  # anything still queued would have run by now
+    assert 1 <= prov.calls <= 2  # the fatal chunk plus at most the one already in flight; 7+ chunks never sent
+
+
+def test_env_provider_claude_cli_accepted(tmp_path, monkeypatch, capsys):
+    _raw(tmp_path)
+    monkeypatch.setenv("YTLEARN_PROVIDER", "claude-cli")
+    seen = {}
+    assert main(["puh91fohvTA"], data_dir=tmp_path, provider_factory=_spy_factory(seen)) == 0
+    assert seen["provider"] == "claude-cli" and "provider=claude-cli" in capsys.readouterr().out
+
+
+def test_anthropic_api_gets_key_and_default_model(tmp_path, monkeypatch, capsys):
+    from pipeline.build import DEFAULT_MODEL, _default_provider, canon_provider
+    from pipeline.llm import AnthropicApiProvider, OpenAiApiProvider
+    _raw(tmp_path)
+    for k in ("YTLEARN_PROVIDER", "YTLEARN_MODEL", "YTLEARN_EFFORT"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert main(["puh91fohvTA", "--provider", "anthropic-api"], data_dir=tmp_path) == 1
+    assert "缺少 ANTHROPIC_API_KEY（請在設定頁貼上 API key）" in capsys.readouterr().err
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-0123456789")
+    seen = {}
+    assert main(["puh91fohvTA", "--provider", "anthropic-api"], data_dir=tmp_path, provider_factory=_effort_spy(seen)) == 0
+    assert seen == {"model": DEFAULT_MODEL, "provider": "anthropic-api", "api_key": "sk-ant-test-0123456789"}
+    out = capsys.readouterr().out
+    assert "provider=anthropic-api" in out and "sk-ant-test" not in out
+    assert "usage=in:0/cr:0/cw:0/out:0 cost_usd=0" in out
+    les = _lesson(tmp_path)
+    assert les["model"] == DEFAULT_MODEL and les["provider"] == "anthropic-api" and "sk-ant" not in json.dumps(les)
+    p = _default_provider(DEFAULT_MODEL, None, "anthropic-api", api_key="k1")
+    assert isinstance(p, AnthropicApiProvider) and p.api_key == "k1" and p.model == DEFAULT_MODEL
+    o = _default_provider("gpt-6-astra", None, "openai-api", effort="high", api_key="k2")
+    assert isinstance(o, OpenAiApiProvider) and o.model == "gpt-6-astra" and o.effortSent == "high"
+    assert canon_provider("codex") == "codex-cli" and canon_provider("openai-api") == "openai-api"
+
+
+def test_openai_api_label_and_model_from_env(tmp_path, monkeypatch, capsys):
+    _raw(tmp_path)
+    for k in ("YTLEARN_PROVIDER", "YTLEARN_EFFORT"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-test-0123456789")
+    monkeypatch.setenv("YTLEARN_MODEL", "gpt-6-astra")
+    seen = {}
+    assert main(["puh91fohvTA", "--provider", "openai-api"], data_dir=tmp_path, provider_factory=_effort_spy(seen)) == 0
+    assert seen["model"] == "gpt-6-astra" and seen["provider"] == "openai-api"
+    les = _lesson(tmp_path)
+    assert les["model"] == "openai:gpt-6-astra" and les["modelId"] == "gpt-6-astra" and les["provider"] == "openai-api"
+    assert "cost_usd=" in capsys.readouterr().out
