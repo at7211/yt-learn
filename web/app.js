@@ -32,6 +32,7 @@ const S = {
   showZh: true,
   showEn: true,
   showVocab: true,
+  showShade: true,
   started: false, // true after the first PLAYING; subtitles and the panel stay hidden until then
   review: false,
   page: 0,
@@ -1200,6 +1201,12 @@ function toggleVocab() {
   $('btn-vocab').setAttribute('aria-pressed', String(S.showVocab));
   if (S.showVocab && S.lesson) { S.keys.panel = null; renderPanel(S.t || 0); } // rows measured 0 height while hidden
 }
+function toggleShade() {
+  S.showShade = !S.showShade;
+  $('stage').classList.toggle('no-shade', !S.showShade);
+  $('btn-shade').textContent = '黑底 ' + (S.showShade ? 'on' : 'off');
+  $('btn-shade').setAttribute('aria-pressed', String(S.showShade));
+}
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen();
   else $('stage').requestFullscreen?.();
@@ -1213,6 +1220,7 @@ function initControls() {
   $('btn-zh').onclick = toggleZh;
   $('btn-en').onclick = toggleEn;
   $('btn-vocab').onclick = toggleVocab;
+  $('btn-shade').onclick = toggleShade;
   $('btn-fs').onclick = toggleFullscreen;
   $('sub-en').addEventListener('click', onWordClick); // delegated: the word spans are rebuilt per cue
   // Keep focus off the buttons so Space never double-fires (button click + our handler).
@@ -1256,6 +1264,7 @@ function onKey(e) {
     case 'KeyZ': toggleZh(); break;
     case 'KeyE': toggleEn(); break;
     case 'KeyV': toggleVocab(); break;
+    case 'KeyB': toggleShade(); break;
     case 'KeyF': toggleFullscreen(); break;
     default: return;
   }
