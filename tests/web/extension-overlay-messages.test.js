@@ -319,10 +319,10 @@ test('menu clicks open the home page and the settings section', async () => {
   ]);
 });
 
-test('manifest asks for contextMenus and is version 1.7.0', () => {
+test('manifest asks for contextMenus and is version 1.8.0', () => {
   const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
   assert.ok(m.permissions.includes('contextMenus'));
-  assert.equal(m.version, '1.7.0');
+  assert.equal(m.version, '1.8.0');
   // tab.url comes from host permissions (youtube.com, udemy.com, the local server) and activeTab on icon click
   assert.ok(!m.permissions.includes('tabs') && m.permissions.includes('activeTab'));
 });
@@ -442,6 +442,7 @@ test('ytlearn:dict: anything but a Cambridge dictionary URL is ignored', async (
 test('overlay can import dict.js (web-accessible) and sends ytlearn:dict on a word click', () => {
   const m = JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8'));
   assert.ok(m.web_accessible_resources[0].resources.includes('dict.js'));
+  assert.ok(m.web_accessible_resources[0].resources.includes('phrase.js'), 'the phrase helpers are imported the same way');
   const src = readFileSync(new URL('../../extension/overlay.js', import.meta.url), 'utf8');
   assert.ok(src.includes("import(url('dict.js'))"));
   assert.ok(src.includes("type: 'ytlearn:dict'"));
@@ -1312,4 +1313,85 @@ test('extension code never uses innerHTML (netflix files included)', () => {
     const src = readFileSync(new URL('../../extension/' + f, import.meta.url), 'utf8');
     assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|DOMParser/.test(src), f);
   }
+});
+
+/* ---------- phrase explain: ytlearn:explain / ytlearn:explain-poll / ytlearn:notes (one short request each) ---------- */
+
+const KEY = '0123456789abcdef';
+const EXPLAIN = { type: 'ytlearn:explain', videoId: VID, cue: 1, a: 4, b: 7, phrase: "wouldn't it be great" };
+
+test('ytlearn:explain: POST /explain with exactly the validated fields; the reply is {status, json} as sent', async () => {
+  const w = load({ 'POST /explain': { status: 202, json: { ok: true, state: 'pending', key: KEY } } });
+  const { r, ret } = await ask(w, { ...EXPLAIN, extra: 'dropped', override: 'yes' });
+  assert.equal(ret, true);
+  assert.deepEqual(plain(r), { status: 202, json: { ok: true, state: 'pending', key: KEY } });
+  assert.deepEqual(w.calls.fetched, ['POST /explain']);
+  assert.deepEqual(plain(w.calls.bodies['POST /explain']), { videoId: VID, cue: 1, a: 4, b: 7, phrase: "wouldn't it be great", override: false });
+  const o = load({ 'POST /explain': { status: 200, json: { ok: true, state: 'done', key: KEY, note: {} } } });
+  await ask(o, { ...EXPLAIN, override: true });
+  assert.equal(o.calls.bodies['POST /explain'].override, true);
+});
+
+test('ytlearn:explain: 402 budget / 409 phrase / 429 busy pass through for the overlay to read', async () => {
+  for (const [status, code] of [[402, 'budget'], [409, 'phrase'], [429, 'busy']]) {
+    const json = { ok: false, error: 'e' + status, code };
+    const w = load({ 'POST /explain': { status, json } });
+    assert.deepEqual(plain((await ask(w, EXPLAIN)).r), { status, json });
+  }
+});
+
+test('ytlearn:explain: bad id or range is refused without a request', async () => {
+  const w = load({ 'POST /explain': { status: 202, json: {} } });
+  const bad = [{ videoId: '../x' }, { cue: -1 }, { a: 1.5 }, { b: '7' }, { a: 8, b: 7 }, { phrase: '' }, { phrase: 3 },
+    { phrase: 'x'.repeat(2001) }, { a: true }];
+  for (const b of bad) {
+    const { r, ret } = await ask(w, { ...EXPLAIN, ...b });
+    assert.equal(ret, false, JSON.stringify(b));
+    assert.ok(r.error, JSON.stringify(b));
+  }
+  assert.deepEqual(w.calls.fetched, []);
+});
+
+test('ytlearn:explain-poll: GET /explain/<key>; 404 passes through (the overlay re-POSTs); a bad key never reaches the server', async () => {
+  const w = load({ ['GET /explain/' + KEY]: { status: 404, json: { ok: false, error: 'no such explain job' } } });
+  const { r, ret } = await ask(w, { type: 'ytlearn:explain-poll', key: KEY });
+  assert.equal(ret, true);
+  assert.deepEqual(plain(r), { status: 404, json: { ok: false, error: 'no such explain job' } });
+  for (const key of ['../notes', 'ABCDEF0123456789', KEY + '0', '', undefined, 42]) {
+    const bad = await ask(w, { type: 'ytlearn:explain-poll', key });
+    assert.equal(bad.ret, false);
+    assert.ok(bad.r.error);
+  }
+  assert.deepEqual(w.calls.fetched, ['GET /explain/' + KEY]);
+});
+
+test('ytlearn:notes: GET /notes/<videoId>; server down -> {error}', async () => {
+  const notes = { '4-7': { phrase: 'p', cue: 1, a: 4, b: 7, result: {} } };
+  const w = load({ ['GET /notes/' + VID]: { status: 200, json: { ok: true, videoId: VID, notes } } });
+  assert.deepEqual(plain((await ask(w, { type: 'ytlearn:notes', videoId: VID })).r), { status: 200, json: { ok: true, videoId: VID, notes } });
+  const down = load({});
+  assert.match((await ask(down, { type: 'ytlearn:notes', videoId: VID })).r.error, /本機 server 沒有回應/);
+  assert.match((await ask(down, EXPLAIN)).r.error, /本機 server 沒有回應/);
+});
+
+test('phrase messages keep the sender check', async () => {
+  const w = load({ 'POST /explain': { status: 202, json: {} }, ['GET /notes/' + VID]: { status: 200, json: {} }, ['GET /explain/' + KEY]: { status: 200, json: {} } });
+  for (const msg of [EXPLAIN, { type: 'ytlearn:notes', videoId: VID }, { type: 'ytlearn:explain-poll', key: KEY }]) {
+    const foreign = await ask(w, msg, { id: 'someone-else', tab: { id: 1 } });
+    assert.equal(foreign.ret, false);
+    assert.equal(foreign.r, undefined);
+  }
+  assert.deepEqual(w.calls.fetched, []);
+});
+
+test('phrase messages for a Netflix lesson while Netflix is off -> {disabled:true}, no request; on -> ordinary', async () => {
+  const off = load({}, { nf: { perm: true } });
+  await settle();
+  for (const msg of [{ ...EXPLAIN, videoId: NID }, { type: 'ytlearn:notes', videoId: NID }]) {
+    assert.deepEqual(plain((await ask(off, msg)).r), { disabled: true });
+  }
+  assert.deepEqual(off.calls.fetched, []);
+  const on = load({ ['GET /notes/' + NID]: { status: 200, json: { ok: true, notes: {} } } }, { nf: { local: { netflix: ON }, perm: true } });
+  await settle();
+  assert.deepEqual(plain((await ask(on, { type: 'ytlearn:notes', videoId: NID })).r), { status: 200, json: { ok: true, notes: {} } });
 });

@@ -107,6 +107,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     openDict(url, msg.screen).then(sendResponse, (e) => sendResponse({ ok: false, error: errMsg(e) }));
     return true;
   }
+  if (msg.type === 'ytlearn:explain' || msg.type === 'ytlearn:explain-poll' || msg.type === 'ytlearn:notes') return onPhraseMessage(msg, sendResponse);
   if (msg.type === 'ytlearn:lesson' || msg.type === 'ytlearn:job' || msg.type === 'ytlearn:build') {
     if (!isNetflixId(msg.videoId)) return onLessonMessage(msg, sender, sendResponse);
     // A turned-off Netflix answers {disabled:true} before anything else; on, it is an ordinary lesson id.
@@ -317,6 +318,53 @@ async function overlayFetch(type, videoId) {
   } catch (e) {
     return { error: errMsg(e) };
   }
+}
+
+/* ---------- phrase explain (overlay.js: drag across subtitle words → 問 AI; 我的片語) ---------- */
+
+const EXPLAIN_KEY_RE = /^[0-9a-f]{16}$/;
+const MAX_PHRASE_CHARS = 2000;
+const isWordIndex = (n) => Number.isInteger(n) && n >= 0;
+
+// ytlearn:explain {videoId, cue, a, b, phrase, override?} → POST /explain; ytlearn:explain-poll {key} →
+// GET /explain/<key>; ytlearn:notes {videoId} → GET /notes/<videoId>. Each is one short request (api() gives
+// up after FETCH_TIMEOUT_MS): the overlay runs the polling loop itself. Answers {status, json} as the server
+// sent it (the overlay reads 402 budget / 409 phrase / 429 busy / poll 404 from it), {error} when the server
+// cannot be reached, {disabled:true} for a turned-off Netflix. Returns true when it answers asynchronously.
+function onPhraseMessage(msg, sendResponse) {
+  let path;
+  let init;
+  let videoId = null;
+  if (msg.type === 'ytlearn:explain-poll') {
+    if (typeof msg.key !== 'string' || !EXPLAIN_KEY_RE.test(msg.key)) {
+      sendResponse({ error: '無效的查詢代碼' });
+      return false;
+    }
+    path = '/explain/' + msg.key;
+  } else {
+    videoId = ytLearnParseLessonId(typeof msg.videoId === 'string' ? msg.videoId : '');
+    if (!videoId) {
+      sendResponse({ error: '無法辨識的影片 id' });
+      return false;
+    }
+    if (msg.type === 'ytlearn:notes') {
+      path = '/notes/' + videoId;
+    } else {
+      const { cue, a, b, phrase } = msg;
+      if (![cue, a, b].every(isWordIndex) || a > b || typeof phrase !== 'string' || !phrase || phrase.length > MAX_PHRASE_CHARS) {
+        sendResponse({ error: '選取的範圍不正確' });
+        return false;
+      }
+      path = '/explain';
+      init = { method: 'POST', body: { videoId, cue, a, b, phrase, override: msg.override === true } };
+    }
+  }
+  const go = () => api(path, init).then((r) => ({ status: r.status, json: r.json }), (e) => ({ error: errMsg(e) }));
+  const run = videoId && isNetflixId(videoId)
+    ? netflixEnabled().then((on) => (on ? go() : { disabled: true }))
+    : go();
+  run.then(sendResponse, (e) => sendResponse({ error: errMsg(e) }));
+  return true;
 }
 
 /* ---------- dictionary popup (overlay.js: click a subtitle word → ytlearn:dict) ---------- */
