@@ -152,11 +152,14 @@ def canon_provider(name: str) -> str:
     return PROVIDER_ALIASES.get(name, name)
 
 
-def _default_provider(model, cache_dir, provider="claude-cli", effort=None, api_key=None):
+def default_provider(model, cache_dir, provider="claude-cli", effort=None, api_key=None):
     name = canon_provider(provider)
     if name in API_KEY_ENV:  # API providers take the key first; main never passes model=None to them
         return PROVIDERS[name](api_key, model=model, cache_dir=cache_dir, effort=effort)
     return PROVIDERS[name](model=model, cache_dir=cache_dir, effort=effort)
+
+
+_default_provider = default_provider  # old name, kept for existing imports
 
 
 def progress_writer(path: Path):
@@ -194,7 +197,7 @@ def usage_writer(path: Path, model_id: str | None, provider: str | None = None):
     return write
 
 
-def main(argv=None, data_dir: Path | str = "data", provider_factory=_default_provider) -> int:
+def main(argv=None, data_dir: Path | str = "data", provider_factory=default_provider) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m pipeline.build")
     ap.add_argument("video_id")
     ap.add_argument("--limit-seconds", type=float, default=None)
