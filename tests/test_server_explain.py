@@ -326,3 +326,21 @@ def test_api_provider_without_key_is_400_with_default_factory(tmp_path):
         srv.shutdown()
         srv.server_close()
         t.join()
+
+
+def test_provider_factory_crash_is_json_500_not_a_dropped_connection(serve, tmp_path):
+    keys.save(tmp_path, {"anthropic": "sk-ant-test-00009999"})
+
+    def factory(resolved, root, cache_dir):
+        raise KeyError("sk-ant-test-00009999")
+    base = serve(factory)
+    code, out = post(base, ask())
+    assert code == 500 and out["ok"] is False and "KeyError" in out["error"] and "sk-ant" not in out["error"]
+
+
+def test_provider_factory_value_error_is_not_a_video_id_error(serve):
+    def factory(resolved, root, cache_dir):
+        raise ValueError("bad toml")
+    base = serve(factory)
+    code, out = post(base, ask())
+    assert code == 500 and "videoId" not in out["error"]

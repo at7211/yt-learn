@@ -533,11 +533,14 @@ class Handler(SimpleHTTPRequestHandler):
         cache_base = self.root / "data" / "cache"
         try:
             cache_dir = explain.contained(cache_base / vid / "explain", cache_base)
+        except ValueError:
+            return self._err(400, "videoId 格式不對")
+        try:
             provider = self.provider_factory(resolved, self.root, cache_dir)
         except explain.SetupError as e:
             return self._err(400, self._scrub(e))
-        except ValueError:
-            return self._err(400, "videoId 格式不對")
+        except Exception as e:  # a broken config or key file: a JSON error, never a dropped connection
+            return self._err(500, f"無法建立 AI provider（{type(e).__name__}），請檢查設定頁")
         name = settings.PROVIDER_ALIASES.get(resolved["provider"], resolved["provider"])
         model_id = explain.pricing_model(resolved, provider)
         root = self.root
@@ -548,7 +551,10 @@ class Handler(SimpleHTTPRequestHandler):
         def target():
             return explain.run(provider, lesson, cue, a, b, root=root, vid=vid, provider_name=name,
                                model_id=model_id, scrub=scrub)
-        job = self.explains.start(key, target)
+        try:
+            job = self.explains.start(key, target)
+        except Exception as e:
+            return self._err(500, f"無法啟動背景工作（{type(e).__name__}）")
         if job is None:
             return self._err(429, "AI 正忙，稍後再試", code="busy")
         out = {"ok": True, **job}

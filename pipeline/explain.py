@@ -25,7 +25,8 @@ MAX_CHARS = 600
 CONTEXT_BEFORE, CONTEXT_AFTER = 2, 1
 KEY_LEN = 16
 
-_STR = {"type": "string", "maxLength": MAX_CHARS}
+# No maxLength/maxItems here: strict structured-output modes reject them. validate() enforces the limits.
+_STR = {"type": "string"}
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -33,9 +34,9 @@ SCHEMA = {
         "meaningZh": _STR,
         "whyHere": _STR,
         "pattern": _STR,
-        "examples": {"type": "array", "minItems": 1, "maxItems": 4, "items": {
+        "examples": {"type": "array", "minItems": 1, "items": {
             "type": "object", "properties": {"en": _STR, "zh": _STR}, "required": ["en", "zh"]}},
-        "alternatives": {"type": "array", "minItems": 0, "maxItems": 3, "items": {
+        "alternatives": {"type": "array", "items": {
             "type": "object", "properties": {"en": _STR, "noteZh": _STR}, "required": ["en", "noteZh"]}},
     },
     "required": ["phrase", "meaningZh", "whyHere", "pattern", "examples", "alternatives"],
@@ -149,9 +150,24 @@ def validate(result) -> list[str]:
     return errs
 
 
-def clean(result: dict) -> dict:
-    """Only the schema's fields of a validated answer."""
-    return {"phrase": result["phrase"], "meaningZh": result["meaningZh"], "whyHere": result["whyHere"],
+def normalize(result):
+    """The model's answer with the soft limits applied before ``validate``: every string cut to
+    MAX_CHARS, examples to 4 and alternatives to 3. Anything of an unexpected type is left as is."""
+    def cut(v):
+        return v[:MAX_CHARS] if isinstance(v, str) else v
+    if not isinstance(result, dict):
+        return result
+    out = {k: cut(v) for k, v in result.items()}
+    for k, hi in (("examples", 4), ("alternatives", 3)):
+        v = result.get(k)
+        if isinstance(v, list):
+            out[k] = [{kk: cut(vv) for kk, vv in x.items()} if isinstance(x, dict) else x for x in v[:hi]]
+    return out
+
+
+def clean(result: dict, phrase: str | None = None) -> dict:
+    """Only the schema's fields of a validated answer; ``phrase`` (the server's) replaces the model's."""
+    return {"phrase": phrase if phrase is not None else result["phrase"], "meaningZh": result["meaningZh"], "whyHere": result["whyHere"],
             "pattern": result["pattern"],
             "examples": [{"en": x["en"], "zh": x["zh"]} for x in result["examples"]],
             "alternatives": [{"en": x["en"], "noteZh": x["noteZh"]} for x in result["alternatives"]]}
@@ -192,12 +208,28 @@ def load_notes(root, vid: str) -> dict:
     return {k: v for k, v in d.items() if isinstance(v, dict)} if isinstance(d, dict) else {}
 
 
+def _read_notes_for_save(path: Path, root, vid: str) -> dict:
+    """Like ``load_notes``, but a notes file that exists and cannot be parsed is first renamed to
+    ``<vid>.json.bad-<unix ts>`` so the fresh file does not silently replace it."""
+    try:
+        d = json.loads(path.read_text("utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        try:
+            os.replace(path, path.with_name(f"{path.name}.bad-{int(time.time())}"))
+        except OSError:
+            pass
+        return {}
+    return {k: v for k, v in d.items() if isinstance(v, dict)} if isinstance(d, dict) else {}
+
+
 def save_note(root, vid: str, note: dict) -> dict:
     """Merge ``note`` under its ``a-b`` key into the video's notes file (read-merge-atomic write under
     the per-video lock); returns the merged notes."""
     path = notes_path(root, vid)
     with _vid_lock(vid):
-        notes = load_notes(root, vid)
+        notes = _read_notes_for_save(path, root, vid)
         notes[note_key(note["a"], note["b"])] = note
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
@@ -314,12 +346,16 @@ def run(provider, lesson: dict, cue: int, a: int, b: int, *, root, vid: str, pro
             raise ExplainFailure(clean_msg(e)[:300]) from None
         except llm.ProviderError as e:
             raise ExplainFailure("AI 回覆失敗：" + clean_msg(e)[:300]) from None
+        raw = normalize(raw)
         errs = validate(raw)
         if errs:
+            forget = getattr(provider, "forget", None)
+            if forget:  # do not serve the bad answer again from the provider cache on a retry
+                forget(system, user, SCHEMA)
             raise ExplainFailure("AI 回覆的格式不對，請再試一次（" + clean_msg(errs[0])[:200] + "）")
         ok = True
         note = {"phrase": phrase, "cueEn": cue_en(lesson, cue), "cue": cue, "a": a, "b": b,
-                "result": clean(raw), "ts": datetime.now().astimezone().isoformat(timespec="seconds")}
+                "result": clean(raw, phrase), "ts": datetime.now().astimezone().isoformat(timespec="seconds")}
         try:
             save_note(root, vid, note)
         except (OSError, ValueError) as e:  # the answer is still shown; it just is not kept
@@ -368,23 +404,32 @@ class Jobs:
                 return None
             job = {"key": key, "state": "pending", "end": None}
             self._jobs[key] = job
-        threading.Thread(target=self._run, args=(job, target), name=f"explain-{key}", daemon=True).start()
+        try:
+            threading.Thread(target=self._run, args=(job, target), name=f"explain-{key}", daemon=True).start()
+        except BaseException:  # e.g. RuntimeError "can't start new thread": free the slot
+            self._finish(job, None, "內部錯誤：無法啟動背景工作")
+            raise
         return self.public(job)
 
     def running(self) -> int:
         with self._lock:
             return sum(j["state"] == "pending" for j in self._jobs.values())
 
-    def _run(self, job, target):
-        try:
-            note, err = target(), None
-        except ExplainFailure as e:
-            note, err = None, str(e)
-        except Exception as e:  # never leave a job pending forever
-            note, err = None, f"內部錯誤：{type(e).__name__}"
+    def _finish(self, job, note, err):
         with self._lock:
             job["end"] = self.clock()
             if err is None:
                 job["state"], job["note"] = "done", note
             else:
                 job["state"], job["error"] = "error", err
+
+    def _run(self, job, target):
+        note, err = None, "內部錯誤：工作被中斷"
+        try:
+            note, err = target(), None
+        except ExplainFailure as e:
+            err = str(e)
+        except Exception as e:  # never leave a job pending forever
+            err = f"內部錯誤：{type(e).__name__}"
+        finally:  # also on BaseException (SystemExit, KeyboardInterrupt): the slot is always released
+            self._finish(job, note, err)

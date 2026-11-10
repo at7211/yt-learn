@@ -84,8 +84,7 @@ def test_prompt_marks_data_untrusted_and_sends_json_context():
 
 def test_schema_bounds():
     s = explain.SCHEMA["properties"]
-    assert (s["examples"]["minItems"], s["examples"]["maxItems"]) == (1, 4)
-    assert s["alternatives"]["maxItems"] == 3 and s["meaningZh"]["maxLength"] == 600
+    assert s["examples"]["minItems"] == 1  # the upper limits are enforced by validate/normalize
     assert set(explain.SCHEMA["required"]) == {"phrase", "meaningZh", "whyHere", "pattern", "examples", "alternatives"}
 
 
@@ -289,3 +288,103 @@ def test_jobs_dedupe_cap_and_errors():
     while jobs.running() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert jobs.get("k2")["error"] == "內部錯誤：RuntimeError"
+
+
+# ---------------------------------------------------------------- review fixes
+
+class _ScriptedCached(llm._CachedProvider):
+    """A real caching provider whose model call is scripted (no process, no network)."""
+
+    def __init__(self, answers, cache_dir):
+        super().__init__(model="m", cache_dir=cache_dir)
+        self.answers = list(answers)
+        self.model_calls = 0
+
+    def _call(self, system, user, schema):
+        self.model_calls += 1
+        return copy.deepcopy(self.answers.pop(0))
+
+
+def _run_cached(fp, tmp_path):
+    return explain.run(fp, _lesson(), 1, 4, 7, root=tmp_path, vid=VID, provider_name="claude-cli",
+                       model_id="claude-sonnet-5-5")
+
+
+def test_bad_answer_is_not_served_from_cache_on_retry(tmp_path):
+    cache = tmp_path / "cache"
+    fp = _ScriptedCached([{"phrase": "x"}, good_result()], cache)
+    with pytest.raises(explain.ExplainFailure, match="格式不對"):
+        _run_cached(fp, tmp_path)
+    assert list(cache.glob("*.json")) == []  # the unusable answer was dropped
+    note = _run_cached(fp, tmp_path)  # the retry asks the model again
+    assert fp.model_calls == 2 and note["result"]["meaningZh"]
+    assert len(list(cache.glob("*.json"))) == 1  # the good one is cached
+
+
+def test_overlong_answer_is_trimmed_not_rejected():
+    r = good_result(whyHere="字" * 900,
+                    examples=[{"en": "e" * 700, "zh": "z"}] * 6,
+                    alternatives=[{"en": "a", "noteZh": "n"}] * 5)
+    assert explain.validate(explain.normalize(r)) == []
+    n = explain.normalize(r)
+    assert len(n["whyHere"]) == 600 and len(n["examples"]) == 4 and len(n["alternatives"]) == 3
+    assert len(n["examples"][0]["en"]) == 600
+    assert explain.validate(explain.normalize({"phrase": "x"})) != []  # still invalid
+
+
+def test_overlong_answer_runs_and_is_saved(tmp_path):
+    fp = FakeProvider([good_result(examples=[{"en": "a", "zh": "b"}] * 6)])
+    note = _run_cached(fp, tmp_path)
+    assert len(note["result"]["examples"]) == 4
+
+
+def test_schema_has_no_length_or_count_limits():
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                assert k not in ("maxLength", "maxItems"), k
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+    walk(explain.SCHEMA)
+
+
+def test_result_phrase_is_the_servers(tmp_path):
+    fp = FakeProvider([good_result(phrase="something the model made up")])
+    note = _run_cached(fp, tmp_path)
+    assert note["result"]["phrase"] == "wouldn't it be great" == note["phrase"]
+
+
+def test_job_slot_released_when_thread_cannot_start(monkeypatch):
+    jobs = explain.Jobs(max_running=1)
+
+    def boom(self):
+        raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(threading.Thread, "start", boom)
+    with pytest.raises(RuntimeError):
+        jobs.start("k1", lambda: None)
+    assert jobs.running() == 0 and jobs.get("k1")["state"] == "error"
+
+
+def test_job_marked_error_on_base_exception():
+    jobs = explain.Jobs()
+    job = {"key": "k", "state": "pending", "end": None}
+    jobs._jobs["k"] = job
+
+    def target():
+        raise SystemExit(1)
+    with pytest.raises(SystemExit):
+        jobs._run(job, target)
+    assert job["state"] == "error" and jobs.running() == 0
+
+
+def test_corrupt_notes_file_is_kept_as_bad_backup(tmp_path):
+    p = explain.notes_path(tmp_path, VID)
+    p.parent.mkdir(parents=True)
+    p.write_text("{not json", "utf-8")
+    note = {"phrase": "p", "cueEn": "c", "cue": 0, "a": 0, "b": 1, "result": {}, "ts": "t"}
+    explain.save_note(tmp_path, VID, note)
+    baks = list(p.parent.glob(f"{VID}.json.bad-*"))
+    assert len(baks) == 1 and baks[0].read_text("utf-8") == "{not json"
+    assert explain.load_notes(tmp_path, VID) == {"0-1": note}

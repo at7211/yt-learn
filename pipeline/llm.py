@@ -174,6 +174,14 @@ class _CachedProvider(_UsageMixin):
             except OSError:
                 pass
 
+    def forget(self, system: str, user: str, schema: dict | None = None) -> None:
+        """Drop the cached answer of this request (the caller found it unusable)."""
+        if self.cache_dir:
+            try:
+                self._cache_path(system, user, schema).unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def complete_json(self, system: str, user: str, schema: dict | None = None) -> dict:
         path = None
         if self.cache_dir:
