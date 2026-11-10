@@ -106,6 +106,9 @@ test('explainOutcome: the HTTP contract', () => {
   assert.equal(explainOutcome({ status: 200, json: { ok: true } }).kind, 'error');
   assert.deepEqual(explainOutcome({ error: '本機 server 沒有回應' }), { kind: 'down', error: '本機 server 沒有回應' });
   assert.equal(explainOutcome(undefined).kind, 'down');
+  const off = explainOutcome({ disabled: true });
+  assert.equal(off.kind, 'down');
+  assert.ok(!/無法連線/.test(off.error), 'a switched-off site is not a server outage');
 });
 
 // A scripted server: replies are consumed in order per route; the clock moves only in sleep().
@@ -234,6 +237,17 @@ test('cardNodes: done renders every field as text; model output with markup stay
     '其他例句', 'E1', '例一', '類似說法', 'A1', '較正式']);
   find(head, 'ph-x')[0].listeners.click();
   assert.equal(closed, 1);
+});
+
+test('cardNodes: a done card gets a 查字典 footer button only when a dict handler is given', () => {
+  const view = { kind: 'done', phrase: 'figure out', result: { meaningZh: '想出' } };
+  assert.equal(find(cardNodes(fakeDoc(), view, {})[1], 'ph-dict').length, 0);
+  let n = 0;
+  const btn = find(cardNodes(fakeDoc(), view, { dict: () => n++ })[1], 'ph-dict');
+  assert.equal(btn.length, 1);
+  assert.equal(btn[0].textContent, '查字典');
+  btn[0].listeners.click();
+  assert.equal(n, 1);
 });
 
 test('cardNodes: budget offers 這次仍要問, busy/error 再試一次, phrase mismatch nothing', () => {

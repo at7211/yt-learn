@@ -905,7 +905,11 @@ function hideYouTubeCaptions() {
 
 function onStateChange(ev) {
   const st = ev.data;
-  if (st === YT.PlayerState.PLAYING) { hideYouTubeCaptions(); closePhrase(); }
+  if (st === YT.PlayerState.PLAYING) {
+    hideYouTubeCaptions();
+    if (performance.now() < PH.holdPauseUntil) S.player.pauseVideo(); // seekTo from ENDED restarted playback: keep the card
+    else closePhrase();
+  }
   if (st === YT.PlayerState.PLAYING && !S.started) { S.started = true; $('stage').classList.add('started'); showIntro(); }
   if (st === YT.PlayerState.ENDED) enterReview();
   else if (st === YT.PlayerState.PLAYING && S.review) leaveReview();
@@ -1003,8 +1007,9 @@ function renderSubtitle(t) {
 // A plain click on a subtitle word → pause and look it up in the Cambridge dictionary, in one small popup
 // window that later lookups reuse (named target). Runs on pointerup: the pointerdown that started it
 // already gave the page the user activation window.open needs.
-function lookUpWord(target) {
-  const raw = clickWord(target);
+function lookUpWord(target) { lookUpText(clickWord(target)); }
+
+function lookUpText(raw) {
   if (!raw) return;
   const word = dictWord(raw);
   if (!word) return; // a number or punctuation only
@@ -1024,6 +1029,7 @@ const PH = {
   sel: null, // the drag in progress: { pointerId, ci, down, cur, moved, target }
   open: null, // the selection the button / card is about: { ci, a, b, phrase }
   gen: 0, // bumped on close: a running explain loop sees it and stops
+  holdPauseUntil: 0, // a note opened from the ended screen: a PLAYING caused by its seek is paused again
   swallowUntil: 0, // the click / dblclick that follow a pointerup are ours
   ask: null, card: null, // lazily created, inside the stage frame
 };
@@ -1056,7 +1062,18 @@ function onSubsDown(e) {
   if (S.ready) S.player.pauseVideo();
   PH.frozen = true;
   PH.sel = { pointerId: e.pointerId, ci, down: i, cur: i, moved: false, target: w };
-  try { w.setPointerCapture(e.pointerId); } catch (err) { /* the drag still works while over the words */ }
+  try { w.setPointerCapture(e.pointerId); } catch (err) {
+    // the drag still works while over the words; but a release elsewhere must still end it
+    const pid = e.pointerId;
+    const done = (ev) => {
+      if (ev.pointerId !== pid) return;
+      window.removeEventListener('pointerup', done, true);
+      window.removeEventListener('pointercancel', done, true);
+      setTimeout(() => { if (PH.sel && PH.sel.pointerId === pid) closePhrase(); }, 0); // after onSubsUp had its say
+    };
+    window.addEventListener('pointerup', done, true);
+    window.addEventListener('pointercancel', done, true);
+  }
   paintSel(i, i);
 }
 
@@ -1170,6 +1187,7 @@ function showCard(view) {
   const o = PH.open;
   if (PH.ask) PH.ask.hidden = true;
   PH.card.replaceChildren(...cardNodes(document, { ...view, phrase: o ? o.phrase : '' }, {
+    dict: () => { if (PH.open) lookUpText(PH.open.phrase); },
     close: () => closePhrase(),
     retry: () => askAI(false),
     override: () => askAI(true),
@@ -1288,8 +1306,11 @@ function openNoteFromPanel(note) {
   closePhrase(false);
   PH.frozen = false;
   if (S.ready) {
+    const ended = S.review || S.player.getPlayerState() === YT.PlayerState.ENDED;
     S.player.pauseVideo();
+    if (ended) PH.holdPauseUntil = performance.now() + 1500; // seekTo from ENDED may auto-play
     seek(cueStart(note.cue) + 0.05, false); // draws the target cue at once (see seek)
+    if (ended) S.player.pauseVideo();
   } else {
     S.keys.sub = null;
     render(cueStart(note.cue) + 0.05);

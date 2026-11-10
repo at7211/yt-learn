@@ -103,6 +103,7 @@ export function cardSections(result) {
 //       | 'gone' (poll 404: re-POST) | 'down' {error} (unreachable).
 export function explainOutcome(reply, isPoll = false) {
   if (!reply || typeof reply !== 'object') return { kind: 'down', error: '沒有回應' };
+  if (reply.disabled === true) return { kind: 'down', error: '這個網站的字幕疊加已關閉' };
   if (typeof reply.status !== 'number') return { kind: 'down', error: String(reply.error || '無法連線到本機 server') };
   const s = reply.status;
   const j = reply.json && typeof reply.json === 'object' ? reply.json : {};
@@ -204,7 +205,8 @@ function button(doc, text, cls, onClick) {
 export const LOADING_TEXT = 'AI 正在解釋這段字幕…（可能要 10–60 秒，關掉卡片也會在背景存進我的片語）';
 
 // The card's children for a view: {kind:'loading', phrase, warning?} | {kind:'done', phrase, result}
-// | {kind:'budget'|'busy'|'phrase'|'error', phrase, error}. on: {close, retry, override} click handlers.
+// | {kind:'budget'|'busy'|'phrase'|'error', phrase, error}. on: {close, retry, override, dict} click handlers
+// (dict: a 查字典 button in the footer of a done card).
 export function cardNodes(doc, view, on = {}) {
   const v = view || {};
   const head = mk(doc, 'div', null, 'ph-head');
@@ -242,6 +244,11 @@ export function cardNodes(doc, view, on = {}) {
     if (v.kind === 'budget') acts.append(button(doc, '這次仍要問', 'ph-go', on.override));
     else if (v.kind !== 'phrase') acts.append(button(doc, '再試一次', 'ph-go', on.retry));
     if (acts.children.length) body.append(acts);
+  }
+  if (v.kind === 'done' && typeof on.dict === 'function') {
+    const foot = mk(doc, 'div', null, 'ph-actions');
+    foot.append(button(doc, '查字典', 'ph-dict', on.dict));
+    body.append(foot);
   }
   return [head, body];
 }

@@ -669,8 +669,9 @@
 
   /* ---------- a plain click on a subtitle word → pause, Cambridge dictionary in a popup beside the video ---------- */
 
-  function lookUpWord(m, target) {
-    const raw = D.clickWord(target);
+  function lookUpWord(m, target) { lookUpText(m, D.clickWord(target)); }
+
+  function lookUpText(m, raw) {
     if (!raw) return;
     const word = D.dictWord(raw);
     if (!word) return; // a number or punctuation only
@@ -690,7 +691,14 @@
      our words / button / card does stays ours: stopPropagation keeps it from the site's player. Hit testing
      uses the closed shadow root's own elementFromPoint (document.elementFromPoint stops at the host). */
 
-  const wordOf = (n) => (n && typeof n.closest === 'function' ? n.closest('.w[data-i]') : null);
+  // The .w span a node belongs to; a hit on a .kw wrapper itself (the gap between its words) maps to its first .w.
+  const wordOf = (n) => {
+    if (!n || typeof n.closest !== 'function') return null;
+    const w = n.closest('.w[data-i]');
+    if (w) return w;
+    const kw = n.closest('.kw');
+    return kw && typeof kw.querySelector === 'function' ? kw.querySelector('.w[data-i]') : null;
+  };
   const subWords = (m) => [...m.ui.en.querySelectorAll('.w[data-i]')];
   const stop = (e) => e.stopPropagation();
 
@@ -710,7 +718,7 @@
       }, sig);
     }
     // the button, the card and the notes tab: clicks never reach the player; buttons never take focus (Space)
-    for (const box of [m.ui.ask, m.ui.card, m.ui.tab]) {
+    for (const box of [m.ui.ask, m.ui.card, m.ui.tab, m.ui.notes]) {
       for (const ev of ['pointerdown', 'pointerup', 'mouseup', 'click', 'dblclick']) box.addEventListener(ev, stop, sig);
       box.addEventListener('mousedown', (e) => {
         e.stopPropagation();
@@ -741,7 +749,18 @@
     m.video.pause();
     m.ph.frozen = true;
     m.ph.sel = { pointerId: e.pointerId, ci, down: i, cur: i, moved: false, target: w };
-    try { w.setPointerCapture(e.pointerId); } catch (err) { /* the drag still works while over the words */ }
+    try { w.setPointerCapture(e.pointerId); } catch (err) {
+      // the drag still works while over the words; but a release elsewhere must still end it
+      const pid = e.pointerId;
+      const done = (ev) => {
+        if (ev.pointerId !== pid) return;
+        window.removeEventListener('pointerup', done, true);
+        window.removeEventListener('pointercancel', done, true);
+        setTimeout(() => { if (M === m && m.ph.sel && m.ph.sel.pointerId === pid) closePhrase(m); }, 0); // after onSubsUp had its say
+      };
+      window.addEventListener('pointerup', done, { capture: true, signal: m.abort.signal });
+      window.addEventListener('pointercancel', done, { capture: true, signal: m.abort.signal });
+    }
     paintSel(m, i, i);
   }
 
@@ -839,6 +858,7 @@
       close: () => closePhrase(m),
       retry: () => askAI(m, false),
       override: () => askAI(m, true),
+      dict: () => { if (m.ph.open) lookUpText(m, m.ph.open.phrase); },
     }));
     card.hidden = false;
     const p = Ph.placeAbove(o ? anchorRect(m, o.a, o.b) : anchorRect(m, -1, -1), m.ui.frame.getBoundingClientRect(), card.offsetWidth);

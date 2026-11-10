@@ -64,7 +64,13 @@ function fakeEl(tag = 'div') {
     remove: () => { if (e.parentNode) e.parentNode.children = e.parentNode.children.filter((k) => k !== e); e.parentNode = null; },
     addEventListener: (n, f) => { (e.listeners[n] = e.listeners[n] || []).push(f); },
     attachShadow: () => { e.shadow = fakeEl('#shadow'); return e.shadow; },
-    querySelector: () => null,
+    querySelector: (q) => (q === '.w[data-i]' ? descendants(e).find((k) => k.classList && k.classList.contains('w') && k.dataset.i != null) || null : null),
+    closest: (q) => { // only the two selectors the phrase code uses
+      for (let n = e; n; n = n.parentNode) {
+        if (q === '.kw' ? n.classList && n.classList.contains('kw') : n.classList && n.classList.contains('w') && n.dataset && n.dataset.i != null) return n;
+      }
+      return null;
+    },
     // only what the phrase code asks for: the subtitle's word spans
     querySelectorAll: (q) => (q === '.w[data-i]' ? descendants(e).filter((k) => k.classList && k.classList.contains('w') && k.dataset.i != null) : []),
     contains: (k) => descendants(e).includes(k),
@@ -590,6 +596,32 @@ test('engine on YouTube: a note row seeks with video.currentTime and does not pl
   assert.equal(card.hidden, false);
   for (const f of b.video.listeners.play || []) f({});
   assert.equal(card.hidden, true);
+});
+
+test('engine: a press / click / dblclick on the gap of a .kw wrapper is ours (handled as its first word, propagation stopped)', async () => {
+  const lesson = LESSON('puh91fohvTA');
+  lesson.cues[0].tokens = ['proof', 'of'];
+  lesson.cues[0].b = 1;
+  lesson.cues[1] = { a: 2, b: 2, tokens: ['x'], zh: 'x' };
+  lesson.words = [{ t: 2, e: 3 }, { t: 3, e: 4 }, { t: 10, e: 12 }];
+  lesson.vocab = [{ id: 'v1', term: 'proof of', hits: [{ cue: 0, a: 0, b: 1 }] }];
+  const b = await boot(YURL, { replies: { 'ytlearn:lesson': { lesson }, 'ytlearn:notes': { status: 200, json: { ok: true, notes: {} } } } });
+  await b.toggle();
+  await flush();
+  const root = shadowOf(b);
+  const kw = findCls(root, 'kw')[0];
+  assert.ok(kw, 'the vocab hit is a .kw wrapper');
+  const subs = findCls(root, 'subs')[0];
+  const call = (name, extra = {}) => {
+    let stopped = false;
+    for (const f of subs.listeners[name] || []) f({ target: kw, button: 0, pointerId: 1, clientX: 0, clientY: 0, stopPropagation() { stopped = true; }, preventDefault() { }, ...extra });
+    return stopped;
+  };
+  const pauses = b.video.pauses;
+  assert.equal(call('pointerdown'), true, 'pointerdown on the wrapper is stopped');
+  assert.ok(b.video.pauses > pauses, 'and starts the press (pauses the video)');
+  assert.equal(call('pointerup'), true);
+  for (const ev of ['mousedown', 'mouseup', 'click', 'dblclick']) assert.equal(call(ev), true, ev + ' on the wrapper never reaches the player');
 });
 
 test('overlay source: phrase.js imported, explain messages, no HTML sinks', () => {
