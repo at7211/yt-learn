@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MAX_WORDS, POLL_MS, POLL_LIMIT_MS, TIMEOUT_TEXT, spanRange, phraseText, noteKey, dragKind, noteList, noteAtWord,
-  notedWords, noteFor, cardSections, explainOutcome, runExplain,
+  notedWords, noteFor, cardSections, explainOutcome, runExplain, unionRect, placeAbove, cardNodes, noteRowNodes, LOADING_TEXT,
 } from '../../web/phrase.js';
+import { readFileSync } from 'node:fs';
 
 const CUE = { a: 10, b: 15, tokens: ["wouldn't", 'it', 'be', 'great', 'to', 'know?'], en: "wouldn't it be great to know?" };
 
@@ -189,4 +190,77 @@ test('runExplain: cancelled (card closed) stops polling without another request'
   const { io, log } = harness([P()], [PP(), PP(), DONE], { cancelAfter: 2 });
   assert.deepEqual(await runExplain(io, BODY), { kind: 'cancelled' });
   assert.deepEqual(log.map((x) => x[0]), ['post', 'sleep', 'poll', 'sleep']);
+});
+
+test('unionRect / placeAbove: box above the anchor, clamped inside the frame', () => {
+  assert.equal(unionRect([]), null);
+  assert.equal(unionRect([{ left: 1, top: 1, right: 1, bottom: 1 }]), null, 'zero-size rects (hidden) do not count');
+  assert.deepEqual(unionRect([{ left: 10, top: 50, right: 30, bottom: 70 }, { left: 40, top: 48, right: 60, bottom: 72 }]),
+    { left: 10, top: 48, right: 60, bottom: 72 });
+  const frame = { left: 100, top: 0, right: 1100, bottom: 562 };
+  assert.deepEqual(placeAbove({ left: 600, top: 400, right: 700, bottom: 440 }, frame, 400),
+    { cx: 550, left: 350, bottom: 170, maxHeight: 384 });
+  assert.equal(placeAbove({ left: 100, top: 400, right: 140, bottom: 440 }, frame, 400).left, 8, 'clamped at the left edge');
+  assert.equal(placeAbove({ left: 1050, top: 400, right: 1100, bottom: 440 }, frame, 400).left, 1000 - 400 - 8, 'and at the right');
+  assert.equal(placeAbove({ left: 600, top: 20, right: 700, bottom: 40 }, frame, 400).maxHeight, 80);
+});
+
+// A tiny document: elements record className / textContent / children / listeners. No innerHTML at all.
+function fakeDoc() {
+  const mkEl = (tag) => {
+    const e = { tagName: tag, className: '', textContent: '', children: [], listeners: {}, type: '', title: '' };
+    e.append = (...k) => { for (const c of k) e.children.push(c); };
+    e.addEventListener = (n, f) => { e.listeners[n] = f; };
+    return e;
+  };
+  return { createElement: mkEl };
+}
+const texts = (n) => [n.textContent, ...n.children.flatMap(texts)].filter(Boolean);
+const find = (n, cls) => (String(n.className).split(' ').includes(cls) ? [n] : []).concat(n.children.flatMap((c) => find(c, cls)));
+
+test('cardNodes: loading shows the phrase, the wait text and a budget warning', () => {
+  const [head, body] = cardNodes(fakeDoc(), { kind: 'loading', phrase: 'figure out', warning: '本月已用 80%' });
+  assert.equal(find(head, 'ph-phrase')[0].textContent, 'figure out');
+  assert.deepEqual(texts(body), [LOADING_TEXT, '本月已用 80%']);
+});
+
+test('cardNodes: done renders every field as text; model output with markup stays literal text', () => {
+  let closed = 0;
+  const [head, body] = cardNodes(fakeDoc(), { kind: 'done', phrase: 'p', result: {
+    meaningZh: '<img src=x onerror=alert(1)>', whyHere: '因為', pattern: 'sb + V',
+    examples: [{ en: 'E1', zh: '例一' }], alternatives: [{ en: 'A1', noteZh: '較正式' }],
+  } }, { close: () => closed++ });
+  assert.deepEqual(texts(body), ['在這裡的意思', '<img src=x onerror=alert(1)>', '為什麼這樣說', '因為', '可套用的句型', 'sb + V',
+    '其他例句', 'E1', '例一', '類似說法', 'A1', '較正式']);
+  find(head, 'ph-x')[0].listeners.click();
+  assert.equal(closed, 1);
+});
+
+test('cardNodes: budget offers 這次仍要問, busy/error 再試一次, phrase mismatch nothing', () => {
+  const calls = [];
+  const on = { override: () => calls.push('override'), retry: () => calls.push('retry') };
+  const budget = cardNodes(fakeDoc(), { kind: 'budget', phrase: 'p', error: '本月 API 費用已達上限' }, on)[1];
+  assert.deepEqual(texts(budget), ['本月 API 費用已達上限', '這次仍要問']);
+  find(budget, 'ph-go')[0].listeners.click();
+  const busy = cardNodes(fakeDoc(), { kind: 'busy', phrase: 'p', error: 'AI 正忙，稍後再試' }, on)[1];
+  assert.deepEqual(texts(busy), ['AI 正忙，稍後再試', '再試一次']);
+  find(busy, 'ph-go')[0].listeners.click();
+  assert.deepEqual(calls, ['override', 'retry']);
+  const phrase = cardNodes(fakeDoc(), { kind: 'phrase', phrase: 'p', error: '選取的文字和課程不一致' }, on)[1];
+  assert.deepEqual(texts(phrase), ['選取的文字和課程不一致']);
+  assert.equal(find(phrase, 'ph-go').length, 0);
+});
+
+test('noteRowNodes: sorted rows with phrase + meaning; a click hands back the note', () => {
+  const picked = [];
+  const notes = { '20-21': note(2, 20, 21, 'later'), '10-11': note(1, 10, 11, 'first') };
+  const rows = noteRowNodes(fakeDoc(), notes, (n) => picked.push(n.phrase));
+  assert.deepEqual(rows.map(texts), [['first', 'm10'], ['later', 'm20']]);
+  rows[1].listeners.click({});
+  assert.deepEqual(picked, ['later']);
+});
+
+test('phrase.js never touches an HTML sink', () => {
+  const src = readFileSync(new URL('../../web/phrase.js', import.meta.url), 'utf8');
+  assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write/.test(src));
 });

@@ -1,7 +1,10 @@
 // Drag across subtitle words → ask the local server to explain that phrase (POST /explain, poll
-// GET /explain/<key>), keep the answer as a per-video note (GET /notes/<videoId>). Pure helpers and the
-// polling loop only, no DOM: web/app.js and extension/overlay.js build the UI. web/phrase.js and
-// extension/phrase.js must stay byte-identical (tests/web/extension-copies.test.js).
+// GET /explain/<key>), keep the answer as a per-video note (GET /notes/<videoId>). Pure helpers, the
+// polling loop, and the card / note-row builders. Those take the document as an argument and only use
+// createElement / textContent / append / addEventListener: the answer is model output and youtube.com
+// enforces Trusted Types, so no HTML sink is ever used. web/app.js and extension/overlay.js own the
+// events and the placement. web/phrase.js and extension/phrase.js must stay byte-identical
+// (tests/web/extension-copies.test.js).
 
 export const MAX_WORDS = 30; // the server refuses a longer selection
 export const POLL_MS = 1500;
@@ -152,4 +155,106 @@ export async function runExplain(io, body) {
     if (cancelled()) return { kind: 'cancelled' };
     r = explainOutcome(await io.poll(key), true);
   }
+}
+
+/* ---------- placement ---------- */
+
+// The smallest rect around rects ({left, top, right, bottom}); null when none has a size.
+export function unionRect(rects) {
+  let u = null;
+  for (const r of rects || []) {
+    if (!r || !(r.right > r.left || r.bottom > r.top)) continue;
+    u = u ? { left: Math.min(u.left, r.left), top: Math.min(u.top, r.top), right: Math.max(u.right, r.right), bottom: Math.max(u.bottom, r.bottom) }
+      : { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  }
+  return u;
+}
+
+// Where a box `width` px wide goes above `anchor` inside `frame` (both viewport rects): {left, bottom,
+// maxHeight} in px relative to the frame (left: the box's left edge, clamped inside; bottom: distance from
+// the frame's bottom edge; maxHeight: the room above the anchor) and cx, the anchor's centre.
+export function placeAbove(anchor, frame, width, gap = 8) {
+  const fw = frame.right - frame.left;
+  const cx = (anchor.left + anchor.right) / 2 - frame.left;
+  const left = Math.max(gap, Math.min(cx - width / 2, fw - width - gap));
+  return {
+    cx: Math.round(cx),
+    left: Math.round(left),
+    bottom: Math.round(frame.bottom - anchor.top + gap),
+    maxHeight: Math.round(Math.max(80, anchor.top - frame.top - 2 * gap)),
+  };
+}
+
+/* ---------- DOM builders (document injected; text only) ---------- */
+
+function mk(doc, tag, text, cls) {
+  const e = doc.createElement(tag);
+  if (text != null) e.textContent = text;
+  if (cls) e.className = cls;
+  return e;
+}
+
+function button(doc, text, cls, onClick) {
+  const b = mk(doc, 'button', text, cls);
+  b.type = 'button';
+  if (onClick) b.addEventListener('click', onClick);
+  return b;
+}
+
+export const LOADING_TEXT = 'AI 正在解釋這段字幕…（可能要 10–60 秒，關掉卡片也會在背景存進我的片語）';
+
+// The card's children for a view: {kind:'loading', phrase, warning?} | {kind:'done', phrase, result}
+// | {kind:'budget'|'busy'|'phrase'|'error', phrase, error}. on: {close, retry, override} click handlers.
+export function cardNodes(doc, view, on = {}) {
+  const v = view || {};
+  const head = mk(doc, 'div', null, 'ph-head');
+  head.append(mk(doc, 'span', typeof v.phrase === 'string' ? v.phrase : '', 'ph-phrase'));
+  const x = button(doc, '×', 'ph-x', on.close);
+  x.title = '關閉（Esc）';
+  head.append(x);
+  const body = mk(doc, 'div', null, 'ph-body');
+  if (v.kind === 'loading') {
+    body.append(mk(doc, 'p', LOADING_TEXT, 'ph-status'));
+    if (v.warning) body.append(mk(doc, 'p', v.warning, 'ph-warn'));
+  } else if (v.kind === 'done') {
+    const secs = cardSections(v.result);
+    if (!secs.length) body.append(mk(doc, 'p', 'AI 這次沒有給出內容', 'ph-status'));
+    for (const s of secs) {
+      const sec = mk(doc, 'section', null, 'ph-sec');
+      sec.append(mk(doc, 'div', s.label, 'ph-label'));
+      if (s.items) {
+        const ul = mk(doc, 'ul', null, 'ph-list');
+        for (const it of s.items) {
+          const li = mk(doc, 'li');
+          li.append(mk(doc, 'div', it.en, 'ph-en'));
+          if (it.zh) li.append(mk(doc, 'div', it.zh, 'ph-zh'));
+          ul.append(li);
+        }
+        sec.append(ul);
+      } else {
+        sec.append(mk(doc, 'p', s.text, 'ph-text'));
+      }
+      body.append(sec);
+    }
+  } else {
+    body.append(mk(doc, 'p', typeof v.error === 'string' && v.error ? v.error : '發生錯誤', 'ph-status ph-err'));
+    const acts = mk(doc, 'div', null, 'ph-actions');
+    if (v.kind === 'budget') acts.append(button(doc, '這次仍要問', 'ph-go', on.override));
+    else if (v.kind !== 'phrase') acts.append(button(doc, '再試一次', 'ph-go', on.retry));
+    if (acts.children.length) body.append(acts);
+  }
+  return [head, body];
+}
+
+// One row per note for the 我的片語 list: the phrase and its meaning; a click calls onPick(note, event).
+export function noteRowNodes(doc, notes, onPick) {
+  return noteList(notes).map((n) => {
+    const row = mk(doc, 'div', null, 'nrow');
+    row.append(mk(doc, 'div', n.phrase, 'nphrase'));
+    const zh = n.result && typeof n.result.meaningZh === 'string' ? n.result.meaningZh : '';
+    row.append(mk(doc, 'div', zh, 'nzh'));
+    row.title = n.phrase;
+    if (onPick) row.addEventListener('click', (e) => onPick(n, e));
+    return row;
+  });
 }
