@@ -152,8 +152,10 @@ button { font: inherit; }
 .sub-en.long { font-size: clamp(12px, 2.66cqw, 46px); }
 .sub-en .kw { color: var(--orange); }
 /* every word is clickable (→ Cambridge dictionary); only the word spans take the pointer, the layer stays pointer-events: none */
-.sub-en .w, .sub-en .kw { pointer-events: auto; cursor: pointer; }
-.sub-en .w:hover, .sub-en .kw:hover { text-decoration: underline dotted; text-underline-offset: .12em; }
+/* a .kw wrapper takes no pointer itself: a press on the gap between its words falls through like a gap between plain words */
+.sub-en .kw { pointer-events: none; }
+.sub-en .w { pointer-events: auto; cursor: pointer; }
+.sub-en .w:hover, .sub-en .kw:hover .w { text-decoration: underline dotted; text-underline-offset: .12em; }
 .sub-zh {
   font: 700 clamp(11px, 2.34cqw, 42px)/1.35 var(--serif);
   color: var(--gold);
@@ -365,3 +367,45 @@ button { font: inherit; }
 .site-note a { color: inherit; text-underline-offset: 3px; }
 .site-hint { margin-left: 16px; color: var(--faint); font-weight: 400; font-size: 13px; opacity: 0; transition: opacity .2s; }
 .site-hint.show { opacity: 1; }
+
+/* ------------------------------------------------ phrase: drag across subtitle words → 問 AI → card (app.js, phrase.js) */
+.sub-en .w { -webkit-user-select: none; user-select: none; touch-action: none; }
+.sub-en .w.noted, .sub-en .w.noted:hover, .sub-en .kw:hover .w.noted { text-decoration: underline; text-decoration-color: rgba(232, 200, 122, .75); text-decoration-thickness: .06em; text-underline-offset: .18em; }
+.sub-en .w.sel { background: rgba(232, 200, 122, .34); border-radius: .12em; box-shadow: 0 0 0 .1em rgba(232, 200, 122, .34); } /* taste-skill-ignore: stage overlay imitates the reference video */
+.ph-ask { position: absolute; z-index: 6; transform: translateX(-50%); pointer-events: auto; cursor: pointer;
+  padding: .45em 1.1em; border: 1px solid var(--gold); border-radius: 999px; background: rgba(14, 16, 22, .94); color: #fff;
+  font: 600 clamp(12px, 1.25cqw, 18px)/1 var(--tc); letter-spacing: .08em; white-space: nowrap; }
+.ph-ask:hover { background: rgba(40, 34, 20, .96); }
+.ph-card { position: absolute; z-index: 6; width: min(46cqw, 560px); max-width: calc(100% - 16px); overflow-y: auto; overscroll-behavior: contain;
+  pointer-events: auto; padding: 12px 16px 14px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, .14);
+  background: rgba(14, 16, 22, .96); color: #e8eaee; text-align: left; -webkit-user-select: text; user-select: text;
+  font: 400 clamp(12px, 1.2cqw, 16px)/1.55 var(--tc); box-shadow: 0 10px 30px rgba(0, 0, 0, .5); } /* taste-skill-ignore: stage overlay imitates the reference video */
+.ph-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 6px; }
+.ph-phrase { flex: 1; min-width: 0; font: 700 clamp(14px, 1.5cqw, 20px)/1.3 var(--sans); color: var(--orange); overflow-wrap: anywhere; }
+.ph-x { flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; background: rgba(255, 255, 255, .08); color: #e8eaee; font: 400 16px/26px var(--sans); cursor: pointer; }
+.ph-x:hover { background: rgba(255, 255, 255, .18); }
+.ph-sec { margin-top: 8px; }
+.ph-label { font: 500 .78em/1.2 var(--tc); letter-spacing: .2em; color: var(--gold); margin-bottom: 2px; }
+.ph-text, .ph-status { margin: 0; overflow-wrap: anywhere; }
+.ph-status { color: #c9ced6; }
+.ph-err { color: #ffb4c0; }
+.ph-warn { margin: 6px 0 0; color: var(--gold); }
+.ph-list { margin: 0; padding: 0; list-style: none; }
+.ph-list li { padding: 3px 0; }
+.ph-list li + li { border-top: 1px solid rgba(255, 255, 255, .06); }
+.ph-en { color: #fff; font-family: var(--sans); overflow-wrap: anywhere; }
+.ph-zh { color: #b9bfc8; font-size: .92em; }
+.ph-actions { margin-top: 10px; display: flex; gap: 8px; }
+.ph-go { padding: 6px 14px; border: 0; border-radius: 999px; background: #fff; color: #000; font: 600 13px/1 var(--tc); cursor: pointer; }
+/* 我的片語 in the stage panel: a tab in the head swaps the vocab track for the notes list */
+.ptab { margin-left: auto; pointer-events: auto; cursor: pointer; padding: .3cqw .8cqw; border: 1px solid rgba(232, 200, 122, .5); border-radius: 999px;
+  background: transparent; color: var(--gold); font: 500 clamp(11px, 1.05cqw, 18px)/1 var(--tc); letter-spacing: .1em; white-space: nowrap; }
+.panel-count:not([hidden]) + .ptab { margin-left: .8cqw; }
+.ptab[aria-pressed="true"] { background: rgba(232, 200, 122, .18); }
+.ptab:disabled { cursor: default; }
+.pnotes { margin-top: .5cqw; height: calc(5 * (5.85cqw + .95cqw + 1px)); overflow-y: auto; overscroll-behavior: contain; pointer-events: auto; }
+.nrow { cursor: pointer; padding: .55cqw .3cqw .5cqw 0; border-bottom: 1px solid rgba(255, 255, 255, .08); text-shadow: 0 1px 3px rgba(0, 0, 0, .8); } /* taste-skill-ignore: stage overlay imitates the reference video */
+.nrow .nphrase { font: 600 clamp(11px, 1.55cqw, 28px)/1.25 var(--sans); color: var(--mint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nrow .nzh { font: 500 clamp(11px, 1.2cqw, 21px)/1.35 var(--tc); color: #e3e6eb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nrow:hover .nphrase { color: var(--orange); }
+.panel-title[hidden] ~ .ptab { margin-left: 0; }

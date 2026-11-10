@@ -1,7 +1,9 @@
 import json
 import os
 import subprocess
+import threading
 import types
+from pathlib import Path
 
 import pytest
 
@@ -140,7 +142,7 @@ def test_timeout_is_failure(monkeypatch):
 
 def test_missing_cli_raises_provider_error(monkeypatch):
     calls = install(monkeypatch, [FileNotFoundError("claude")])
-    with pytest.raises(ProviderError):
+    with pytest.raises(llm.ProviderMissing):
         ClaudeCliProvider().complete_json("s", "u")
     assert len(calls) == 1
 
@@ -243,7 +245,7 @@ def test_codex_retries_then_fails(monkeypatch):
     with pytest.raises(ProviderError):
         CodexCliProvider().complete_json("s", "u")
     codex_run(monkeypatch, [FileNotFoundError()])
-    with pytest.raises(ProviderError, match="codex"):
+    with pytest.raises(llm.ProviderMissing, match="codex"):
         CodexCliProvider().complete_json("s", "u")
 
 
@@ -666,3 +668,25 @@ def test_openai_quota_message_names_where_to_check():
     with pytest.raises(ProviderFatal) as ei:
         OpenAiApiProvider(OKEY, transport=t).complete_json("s", "u")
     assert str(ei.value) == "OpenAI 額度或花費上限已到，請到 OpenAI 後台檢查"
+
+
+def test_cache_put_temp_names_are_unique_per_writer(tmp_path, monkeypatch):
+    """Two writers of the same entry (build workers, /explain jobs) never share a temp file."""
+    seen = []
+    real = os.replace
+
+    def spy(src, dst):
+        seen.append(Path(src).name)
+        return real(src, dst)
+    monkeypatch.setattr(llm.os, "replace", spy)
+    p = ClaudeCliProvider(cache_dir=tmp_path)
+    path = p._cache_path("s", "u", None)
+    threads = [threading.Thread(target=p._cache_put, args=(path, {"n": i})) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(seen) == 4 and len(set(seen)) == 4
+    assert all(n.startswith(path.name + f".{os.getpid()}.") for n in seen)
+    assert json.loads(path.read_text("utf-8"))["response"]["n"] in range(4)
+    assert list(tmp_path.glob("*.tmp")) == []

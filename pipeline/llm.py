@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import tomllib
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -30,6 +31,11 @@ CODEX_EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high
 
 class ProviderError(Exception):
     pass
+
+
+class ProviderMissing(ProviderError):
+    """The provider's CLI is not installed (not on PATH). A plain ProviderError to the build (it degrades
+    as before); /explain names the CLI to install or suggests an API key."""
 
 
 class ProviderFatal(ProviderError):
@@ -155,7 +161,8 @@ class _CachedProvider(_UsageMixin):
         tmp = None
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            # unique per writer: build workers and /explain jobs may write the same entry concurrently
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
             tmp.write_text(json.dumps({"model": self.model or "default", "effort": self.effort or "default",
                                        "promptVersion": self.prompt_version, "response": resp},
                                       ensure_ascii=False), encoding="utf-8")
@@ -164,6 +171,14 @@ class _CachedProvider(_UsageMixin):
             try:
                 if tmp is not None:
                     tmp.unlink()
+            except OSError:
+                pass
+
+    def forget(self, system: str, user: str, schema: dict | None = None) -> None:
+        """Drop the cached answer of this request (the caller found it unusable)."""
+        if self.cache_dir:
+            try:
+                self._cache_path(system, user, schema).unlink(missing_ok=True)
             except OSError:
                 pass
 
@@ -211,7 +226,7 @@ class ClaudeCliProvider(_CachedProvider):
         try:
             proc = subprocess.run(argv, input=user, capture_output=True, text=True, timeout=self.timeout)
         except FileNotFoundError:
-            raise ProviderError("claude CLI not found on PATH") from None
+            raise ProviderMissing("claude CLI not found on PATH") from None
         except subprocess.TimeoutExpired:
             raise _Failure(f"claude CLI timed out after {self.timeout}s") from None
         if proc.returncode != 0:
@@ -282,7 +297,7 @@ class CodexCliProvider(_CachedProvider):
             proc = subprocess.run(argv, input=prompt, capture_output=True, text=True, encoding="utf-8",
                                   timeout=self.timeout)
         except FileNotFoundError:
-            raise ProviderError("codex CLI not found on PATH") from None
+            raise ProviderMissing("codex CLI not found on PATH") from None
         except subprocess.TimeoutExpired:
             raise _Failure(f"codex CLI timed out after {self.timeout}s") from None
         if proc.returncode != 0:

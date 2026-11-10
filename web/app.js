@@ -7,6 +7,8 @@ import { waitForAck, shouldApplyLiveStatus } from './handshake.js';
 import { introRows } from './intro.js';
 import { dictWord, dictUrl, clickWord } from './dict.js';
 import { barState, costText } from './progress.js';
+import { spanRange, phraseText, noteKey, dragKind, noteList, noteAtWord, notedWords, noteFor, runExplain, unionRect, placeAbove,
+  cardNodes, noteRowNodes } from './phrase.js';
 import { DEFAULTS, EFFORTS, PRESETS, PROVIDERS, normalize, presetOf, summary, shortModel, modelsFor, fmtUsd, budgetText, parseBudget } from './settings.js';
 
 // ---------------------------------------------------------------- util
@@ -37,6 +39,11 @@ const S = {
   review: false,
   page: 0,
   keys: { sub: null, panel: null, cue: null, count: null },
+  id: null, // the lesson id from ?v (also the notes' videoId)
+  notes: {}, // {"a-b": NOTE} from GET /notes/<id>, plus the ones answered while watching
+  notesRev: 0, // bumped on every change: part of the subtitle render key (the noted underline)
+  notesView: false, // the panel shows 我的片語 instead of the vocab track
+  noteCount: 0,
 };
 
 // ---------------------------------------------------------------- home (no ?v)
@@ -780,6 +787,7 @@ function setupLesson(lesson, id) {
   markNav(false);
   lesson.vocab = lesson.vocab || [];
   S.lesson = lesson;
+  S.id = id;
   S.flat = flattenHits(lesson.vocab, lesson.words);
   S.vocabById = new Map(lesson.vocab.map((v) => [v.id, v]));
   document.title = (lesson.title || id) + ' · yt-learn';
@@ -794,6 +802,7 @@ function setupLesson(lesson, id) {
   buildTranscript();
   buildVocabTable();
   render(0);
+  loadNotes(id);
   const site = externalSite(id);
   if (site) { setupExternalLesson(lesson, id, site); return; } // never initPlayer() for these
   initPlayer(lesson.videoId || id);
@@ -896,7 +905,11 @@ function hideYouTubeCaptions() {
 
 function onStateChange(ev) {
   const st = ev.data;
-  if (st === YT.PlayerState.PLAYING) hideYouTubeCaptions();
+  if (st === YT.PlayerState.PLAYING) {
+    hideYouTubeCaptions();
+    if (performance.now() < PH.holdPauseUntil) S.player.pauseVideo(); // seekTo from ENDED restarted playback: keep the card
+    else closePhrase();
+  }
   if (st === YT.PlayerState.PLAYING && !S.started) { S.started = true; $('stage').classList.add('started'); showIntro(); }
   if (st === YT.PlayerState.ENDED) enterReview();
   else if (st === YT.PlayerState.PLAYING && S.review) leaveReview();
@@ -945,6 +958,7 @@ function render(t) {
 
 // ---------------------------------------------------------------- render subtitle
 function renderSubtitle(t) {
+  if (PH.frozen) return; // a selection, the 問 AI button or the card holds the line still
   const { cues, words } = S.lesson;
   const ci = cueIndexAt(cues, words, t);
   const hit = activeHitAt(S.flat, cues, words, t);
@@ -955,26 +969,31 @@ function renderSubtitle(t) {
     const h = v.hits[hit.hitIdx];
     if (h.cue === ci) { lit = [h.a, h.b]; term = v.term; }
   }
-  const key = ci + '|' + (lit ? lit.join('-') : '');
+  const key = ci + '|' + (lit ? lit.join('-') : '') + '|' + S.notesRev;
   if (key === S.keys.sub) return;
   S.keys.sub = key;
   const en = $('sub-en'), zh = $('sub-zh');
   if (ci < 0) { en.replaceChildren(); zh.replaceChildren(); en.dataset.cue = ''; return; }
   const cue = cues[ci];
+  const noted = notedWords(S.notes, ci);
   const parts = [];
-  // Every token is its own clickable .w span; a vocab hit spanning several tokens is one .kw span
-  // (data-term = the vocab term), so a click on it looks up the whole term.
+  // Every token is its own .w span carrying its global word index (data-i: what a drag selects); a
+  // vocab hit is a .kw wrapper around its tokens' .w spans (data-term = the vocab term, which a click
+  // on any of them looks up). Words inside a saved phrase note get .noted (a faint underline).
   let kw = null;
   cue.tokens.forEach((tok, k) => {
     const w = cue.a + k;
+    const span = el('span', tok, noted.has(w) ? 'w noted' : 'w');
+    span.dataset.i = String(w);
     const inHit = lit && w >= lit[0] && w <= lit[1];
-    if (inHit && kw) { kw.textContent += ' ' + tok; return; }
-    if (k) parts.push(document.createTextNode(' '));
+    if (inHit && kw) { kw.append(' ', span); return; }
+    if (k) parts.push(' ');
     if (inHit) {
-      kw = el('span', tok, 'kw');
+      kw = el('span', null, 'kw');
       if (term) kw.dataset.term = term;
+      kw.append(span);
       parts.push(kw);
-    } else parts.push(el('span', tok, 'w'));
+    } else parts.push(span);
   });
   const enChanged = en.dataset.cue !== String(ci);
   en.replaceChildren(...parts);
@@ -985,17 +1004,318 @@ function renderSubtitle(t) {
   }
 }
 
-// Click a subtitle word → pause and look it up in the Cambridge dictionary, in one small popup
-// window that later lookups reuse (named target).
-function onWordClick(e) {
-  const raw = clickWord(e.target);
+// A plain click on a subtitle word → pause and look it up in the Cambridge dictionary, in one small popup
+// window that later lookups reuse (named target). Runs on pointerup: the pointerdown that started it
+// already gave the page the user activation window.open needs.
+function lookUpWord(target) { lookUpText(clickWord(target)); }
+
+function lookUpText(raw) {
   if (!raw) return;
-  e.preventDefault();
   const word = dictWord(raw);
   if (!word) return; // a number or punctuation only
   if (S.ready) S.player.pauseVideo();
   const win = window.open(dictUrl(word), 'ytlearn-dict', 'popup,width=520,height=760');
   if (win) win.focus();
+}
+
+// ---------------------------------------------------------------- phrase: drag across words → 問 AI → card
+// Press a word: the video pauses and the line freezes (no re-render, so the spans under the pointer stay).
+// Drag over other words of the same cue: they get .sel. Release on the same word without leaving it: the
+// dictionary (or the card of a saved note covering that word). Two or more words: a 問 AI button above
+// them; its click POSTs /explain and polls (phrase.js runExplain) while the card shows 載入中. Esc, a press
+// outside the card, or playing closes it; closing only stops the polling (the server still saves the note).
+const PH = {
+  frozen: false, // the subtitle line is held still
+  sel: null, // the drag in progress: { pointerId, ci, down, cur, moved, target }
+  open: null, // the selection the button / card is about: { ci, a, b, phrase }
+  gen: 0, // bumped on close: a running explain loop sees it and stops
+  holdPauseUntil: 0, // a note opened from the ended screen: a PLAYING caused by its seek is paused again
+  swallowUntil: 0, // the click / dblclick that follow a pointerup are ours
+  ask: null, card: null, // lazily created, inside the stage frame
+};
+
+const frameEl = () => document.querySelector('#stage .frame');
+const subWords = () => [...$('sub-en').querySelectorAll('.w[data-i]')];
+
+function wordAt(x, y) {
+  const hit = document.elementFromPoint(x, y);
+  const w = hit && hit.closest ? hit.closest('#sub-en .w[data-i]') : null;
+  return w ? Number(w.dataset.i) : null;
+}
+
+function paintSel(a, b) {
+  for (const w of subWords()) {
+    const i = Number(w.dataset.i);
+    w.classList.toggle('sel', a != null && i >= a && i <= b);
+  }
+}
+
+function onSubsDown(e) {
+  if (e.button !== 0 || !S.lesson) return;
+  const w = e.target.closest ? e.target.closest('#sub-en .w[data-i]') : null;
+  if (!w) return;
+  e.preventDefault(); // no text selection, no focus change, no compat mousedown
+  const ci = Number($('sub-en').dataset.cue);
+  const i = Number(w.dataset.i);
+  if (!Number.isInteger(ci) || !S.lesson.cues[ci] || !Number.isInteger(i)) return;
+  closePhrase(false); // a new press ends any card / button; the line on screen stays as it is
+  if (S.ready) S.player.pauseVideo();
+  PH.frozen = true;
+  PH.sel = { pointerId: e.pointerId, ci, down: i, cur: i, moved: false, target: w };
+  try { w.setPointerCapture(e.pointerId); } catch (err) {
+    // the drag still works while over the words; but a release elsewhere must still end it
+    const pid = e.pointerId;
+    const done = (ev) => {
+      if (ev.pointerId !== pid) return;
+      window.removeEventListener('pointerup', done, true);
+      window.removeEventListener('pointercancel', done, true);
+      setTimeout(() => { if (PH.sel && PH.sel.pointerId === pid) closePhrase(); }, 0); // after onSubsUp had its say
+    };
+    window.addEventListener('pointerup', done, true);
+    window.addEventListener('pointercancel', done, true);
+  }
+  paintSel(i, i);
+}
+
+function onSubsMove(e) {
+  const sel = PH.sel;
+  if (!sel || e.pointerId !== sel.pointerId) return;
+  const i = wordAt(e.clientX, e.clientY);
+  if (i === null) return; // between words or off the line: keep the last range
+  const r = spanRange(S.lesson.cues[sel.ci], sel.down, i);
+  if (!r) return;
+  if (r.a !== r.b) sel.moved = true;
+  sel.cur = r.a === sel.down ? r.b : r.a;
+  paintSel(r.a, r.b);
+}
+
+function onSubsUp(e) {
+  const sel = PH.sel;
+  if (!sel || e.pointerId !== sel.pointerId) return;
+  PH.sel = null;
+  PH.swallowUntil = performance.now() + 500;
+  try { sel.target.releasePointerCapture(e.pointerId); } catch (err) { /* already released */ }
+  const kind = dragKind(sel.down, sel.cur, sel.moved);
+  if (kind === 'phrase') {
+    const r = spanRange(S.lesson.cues[sel.ci], sel.down, sel.cur);
+    showAsk(sel.ci, r.a, r.b);
+    return;
+  }
+  if (kind === 'dict') {
+    const note = noteAtWord(S.notes, sel.ci, sel.down);
+    if (note) { openNoteCard(note); return; }
+    closePhrase();
+    lookUpWord(sel.target);
+    return;
+  }
+  closePhrase();
+}
+
+function onSubsCancel(e) {
+  if (!PH.sel || e.pointerId !== PH.sel.pointerId) return;
+  closePhrase();
+}
+
+// The click / dblclick after a press on a word must do nothing else (and never reach the player).
+function swallowClick(e) {
+  const onWord = e.target.closest && e.target.closest('#sub-en .w[data-i]');
+  if (!onWord && performance.now() > PH.swallowUntil) return;
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+// A press anywhere outside the card, the button and the subtitle words closes them.
+function onOutsideDown(e) {
+  if (!PH.frozen || PH.sel) return;
+  const t = e.target;
+  if (PH.card && PH.card.contains(t)) return;
+  if (PH.ask && PH.ask.contains(t)) return;
+  if (t && t.closest && t.closest('#sub-en .w[data-i]')) return; // onSubsDown handles it
+  closePhrase();
+}
+
+// Ends the selection, hides the button and the card, stops any explain polling and lets the subtitle
+// follow the video again (rerender=false: the caller keeps the line on screen, e.g. a new press on it).
+function closePhrase(rerender = true) {
+  PH.gen++;
+  PH.sel = null;
+  PH.open = null;
+  if (PH.ask) PH.ask.hidden = true;
+  if (PH.card) { PH.card.hidden = true; PH.card.replaceChildren(); }
+  paintSel(null, null);
+  if (!PH.frozen) return;
+  PH.frozen = false;
+  if (rerender && S.lesson) { S.keys.sub = null; if (S.ready) refresh(); else render(S.t || 0); }
+}
+
+// The selection's on-screen rect (the .w spans a..b), else the subtitle block, else the lower frame.
+function anchorRect(a, b) {
+  const spans = subWords().filter((w) => { const i = Number(w.dataset.i); return i >= a && i <= b; });
+  const fr = frameEl().getBoundingClientRect();
+  return unionRect(spans.map((w) => w.getBoundingClientRect()))
+    || unionRect([$('subs').getBoundingClientRect()])
+    || { left: fr.left, right: fr.right, top: fr.top + fr.height * 0.8, bottom: fr.bottom };
+}
+
+function showAsk(ci, a, b) {
+  const phrase = phraseText(S.lesson.cues[ci], a, b);
+  if (!phrase) { closePhrase(); return; }
+  PH.open = { ci, a, b, phrase };
+  if (!PH.ask) {
+    PH.ask = el('button', '問 AI', 'ph-ask');
+    PH.ask.type = 'button';
+    PH.ask.addEventListener('mousedown', (e) => e.preventDefault()); // keep focus off it (Space)
+    PH.ask.addEventListener('click', () => askAI(false));
+    frameEl().append(PH.ask);
+  }
+  const fr = frameEl().getBoundingClientRect();
+  const p = placeAbove(anchorRect(a, b), fr, 0, 6);
+  PH.ask.style.left = p.cx + 'px';
+  PH.ask.style.bottom = p.bottom + 'px';
+  PH.ask.hidden = false;
+}
+
+// view: see phrase.js cardNodes. The card sits above the selection, inside the frame.
+function showCard(view) {
+  if (!PH.card) {
+    PH.card = el('div', null, 'ph-card');
+    PH.card.setAttribute('role', 'dialog');
+    // keep focus off its buttons (Space would click them as well as toggle play)
+    PH.card.addEventListener('mousedown', (e) => { if (e.target.closest && e.target.closest('button')) e.preventDefault(); });
+    frameEl().append(PH.card);
+  }
+  const o = PH.open;
+  if (PH.ask) PH.ask.hidden = true;
+  PH.card.replaceChildren(...cardNodes(document, { ...view, phrase: o ? o.phrase : '' }, {
+    dict: () => { if (PH.open) lookUpText(PH.open.phrase); },
+    close: () => closePhrase(),
+    retry: () => askAI(false),
+    override: () => askAI(true),
+  }));
+  PH.card.hidden = false;
+  const fr = frameEl().getBoundingClientRect();
+  const p = placeAbove(o ? anchorRect(o.a, o.b) : anchorRect(-1, -1), fr, PH.card.offsetWidth);
+  PH.card.style.left = p.left + 'px';
+  PH.card.style.bottom = p.bottom + 'px';
+  PH.card.style.maxHeight = p.maxHeight + 'px';
+}
+
+// A saved note: its card at once, no AI call. The line must already show the note's cue.
+function openNoteCard(note) {
+  PH.frozen = true;
+  PH.open = { ci: note.cue, a: note.a, b: note.b, phrase: note.phrase };
+  paintSel(note.a, note.b);
+  showCard({ kind: 'done', result: note.result });
+}
+
+async function httpJson(method, url, body) {
+  const init = { method };
+  if (body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(body); }
+  try {
+    const res = await fetch(url, init);
+    let json = null;
+    try { json = await res.json(); } catch (e) { json = null; }
+    return { status: res.status, json };
+  } catch (e) {
+    return { error: UNREACHABLE };
+  }
+}
+
+async function askAI(override) {
+  const o = PH.open;
+  if (!o) return;
+  const saved = noteFor(S.notes, o.ci, o.a, o.b, o.phrase);
+  if (saved) { showCard({ kind: 'done', result: saved.result }); return; }
+  const gen = ++PH.gen;
+  const live = () => gen === PH.gen && PH.open === o;
+  showCard({ kind: 'loading' });
+  const r = await runExplain({
+    post: (body) => httpJson('POST', '/explain', body),
+    poll: (key) => httpJson('GET', '/explain/' + key),
+    sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
+    cancelled: () => !live(),
+    onPending: (p) => { if (p.warning && live()) showCard({ kind: 'loading', warning: p.warning }); },
+  }, { videoId: S.id, cue: o.ci, a: o.a, b: o.b, phrase: o.phrase, override: override === true });
+  if (r.kind === 'done') addNote(r.note);
+  if (!live() || r.kind === 'cancelled') return;
+  if (r.kind === 'done') showCard({ kind: 'done', result: r.note.result });
+  else showCard({ kind: r.kind, error: r.error });
+}
+
+// ---------------------------------------------------------------- phrase notes (我的片語)
+async function loadNotes(id) {
+  const r = await httpJson('GET', '/notes/' + encodeURIComponent(id));
+  if (S.id !== id || r.status !== 200 || !r.json || !r.json.notes || typeof r.json.notes !== 'object') return;
+  S.notes = { ...r.json.notes, ...S.notes };
+  notesChanged();
+}
+
+function addNote(note) {
+  if (!note || typeof note !== 'object' || !Number.isInteger(note.a) || !Number.isInteger(note.b)) return;
+  S.notes[noteKey(note.a, note.b)] = note;
+  notesChanged();
+  // the line may be frozen: underline the new note's words now
+  if (Number($('sub-en').dataset.cue) !== note.cue) return;
+  for (const w of subWords()) {
+    const i = Number(w.dataset.i);
+    if (i >= note.a && i <= note.b) w.classList.add('noted');
+  }
+}
+
+function notesChanged() {
+  S.notesRev++;
+  S.noteCount = noteList(S.notes).length;
+  buildNotes();
+  if (!PH.frozen && S.lesson) render(S.t || 0);
+}
+
+function buildNotes() {
+  $('panel-notes').replaceChildren(...noteRowNodes(document, S.notes, (n) => openNoteFromPanel(n)));
+  applyPanelView();
+}
+
+// The panel shows the vocab track or 我的片語: notes alone keep the panel up even with no vocab.
+function applyPanelView() {
+  if (!S.lesson) return;
+  const nv = S.lesson.vocab.length;
+  const nn = noteList(S.notes).length;
+  const notesView = nn > 0 && (S.notesView || nv === 0);
+  const panel = $('panel');
+  panel.hidden = nv === 0 && nn === 0;
+  panel.classList.toggle('notes-view', notesView);
+  $('panel-rows').hidden = notesView;
+  $('panel-notes').hidden = !notesView;
+  $('panel-title').hidden = nv === 0;
+  $('panel-count').hidden = nv === 0 || notesView;
+  const tab = $('panel-notes-tab');
+  tab.hidden = nn === 0;
+  tab.disabled = nv === 0; // nothing to switch back to
+  $('panel-notes-n').textContent = String(nn);
+  tab.setAttribute('aria-pressed', String(notesView));
+  if (!notesView && nv) { S.keys.panel = null; renderPanel(S.t || 0); } // the track measured 0 rows while hidden
+}
+
+function toggleNotesView() {
+  S.notesView = !S.notesView;
+  applyPanelView();
+}
+
+// Click a note: jump to its cue without playing, then its card (no AI call).
+function openNoteFromPanel(note) {
+  if (!S.lesson || !S.lesson.cues[note.cue]) return;
+  closePhrase(false);
+  PH.frozen = false;
+  if (S.ready) {
+    const ended = S.review || S.player.getPlayerState() === YT.PlayerState.ENDED;
+    S.player.pauseVideo();
+    if (ended) PH.holdPauseUntil = performance.now() + 1500; // seekTo from ENDED may auto-play
+    seek(cueStart(note.cue) + 0.05, false); // draws the target cue at once (see seek)
+    if (ended) S.player.pauseVideo();
+  } else {
+    S.keys.sub = null;
+    render(cueStart(note.cue) + 0.05);
+  }
+  openNoteCard(note);
 }
 
 // Shrink English when it needs more than two lines, Chinese when it overflows one line.
@@ -1015,7 +1335,6 @@ function fitSubtitle() {
 // ---------------------------------------------------------------- render panel
 function buildPanel() {
   const n = S.lesson.vocab.length;
-  $('panel').hidden = n === 0;
   $('panel-total').textContent = n;
   const rows = $('panel-rows');
   rows.replaceChildren();
@@ -1041,6 +1360,7 @@ function buildPanel() {
   rows.append(track);
   S.keys.panel = null;
   S.panelCurrent = -1;
+  applyPanelView();
 }
 
 function renderPanel(t) {
@@ -1049,7 +1369,8 @@ function renderPanel(t) {
   const countKey = k + '/' + S.lesson.vocab.length;
   if (countKey !== S.keys.count) { S.keys.count = countKey; $('panel-count').textContent = k + ' / ' + S.lesson.vocab.length; }
   // The panel stays hidden until just before the first vocab word is spoken, then fades in.
-  const live = S.flat.length > 0 && t >= S.flat[0].start - PANEL_LEAD;
+  // Saved phrase notes keep it visible from the start.
+  const live = (S.flat.length > 0 && t >= S.flat[0].start - PANEL_LEAD) || S.noteCount > 0;
   $('panel').classList.toggle('live', live);
   const ps = panelState(S.flat, words, t);
   if (ps.current === S.keys.panel) return;
@@ -1222,14 +1543,31 @@ function initControls() {
   $('btn-vocab').onclick = toggleVocab;
   $('btn-shade').onclick = toggleShade;
   $('btn-fs').onclick = toggleFullscreen;
-  $('sub-en').addEventListener('click', onWordClick); // delegated: the word spans are rebuilt per cue
+  // Delegated on the stable subtitle block (the word spans are rebuilt per cue); capture phase so a press
+  // on a word is ours first. pointermove / up arrive here through the pressed word's pointer capture.
+  const subs = $('subs');
+  subs.addEventListener('pointerdown', onSubsDown, true);
+  subs.addEventListener('pointermove', onSubsMove, true);
+  subs.addEventListener('pointerup', onSubsUp, true);
+  subs.addEventListener('pointercancel', onSubsCancel, true);
+  subs.addEventListener('lostpointercapture', onSubsCancel, true);
+  subs.addEventListener('click', swallowClick, true);
+  subs.addEventListener('dblclick', swallowClick, true);
+  document.addEventListener('pointerdown', onOutsideDown, true);
+  $('panel-notes-tab').addEventListener('mousedown', (e) => e.preventDefault());
+  $('panel-notes-tab').onclick = toggleNotesView;
   // Keep focus off the buttons so Space never double-fires (button click + our handler).
   document.querySelectorAll('#controls button').forEach((b) => b.addEventListener('mousedown', (e) => e.preventDefault()));
   $('review-prev').onclick = () => turnPage(-1);
   $('review-next').onclick = () => turnPage(1);
   $('review-again').onclick = () => seek(0);
-  window.addEventListener('resize', () => { if (S.lesson) { fitSubtitle(); S.keys.panel = null; renderPanel(S.t || 0); } });
+  window.addEventListener('resize', () => {
+    if (!S.lesson) return;
+    closePhrase(); // the button / card were placed for the old size
+    fitSubtitle(); S.keys.panel = null; renderPanel(S.t || 0);
+  });
   document.addEventListener('fullscreenchange', () => {
+    closePhrase();
     $('btn-fs').textContent = document.fullscreenElement ? '離開全螢幕' : '全螢幕';
     if (S.lesson) fitSubtitle();
   });
@@ -1246,6 +1584,7 @@ function initControls() {
 
 function onKey(e) {
   if (!S.lesson || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+  if ((e.code === 'Escape' || e.key === 'Escape') && PH.frozen) { closePhrase(); e.preventDefault(); return; }
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   // Match on the physical key (e.code): with a Chinese IME active, letter keys arrive with
@@ -1280,4 +1619,4 @@ if (vid) {
   initHome(true);
 }
 // debug/verification hooks
-window.__yt = { S, enterReview, leaveReview, turnPage, seek };
+window.__yt = { S, PH, render, enterReview, leaveReview, turnPage, seek, closePhrase };

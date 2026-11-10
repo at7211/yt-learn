@@ -120,6 +120,7 @@ python3 -m pipeline.build <videoId> --model claude-opus-5-5 --effort high   # �
 - 疊層（YouTube、Udemy、Netflix、HelloInterview 相同）：Z 中文・E 英文・V 單字面板・B 黑底（字幕與單字欄後面的暗色漸層）・R 重播本句・[ ] 上一句／下一句。網站自己的快捷鍵不受影響（YouTube 的 Space、← →、F、C、K、J、L、M；Netflix 的 Space、← →、F、M、S、數字鍵）。
 - 本機播放器：Space 播放／暫停・← → 上一句／下一句・R 重播本句・Z 中文・E 英文・V 單字面板・B 黑底・F 全螢幕。中文輸入法開著也能用。
 - 滑鼠（兩種播放器都一樣）：點字幕裡的任何一個字，影片暫停並在旁邊的小視窗開劍橋英漢字典；當前單字（橘色）會查整個詞。右側單字面板照舊是點一下跳到那一句。
+- 問 AI（兩種播放器都一樣）：在字幕上按住一個字，拖曳到同一句的另一個字放開（選幾個字），影片暫停，選取上方出現「問 AI」；按下去會在字幕上方開一張卡片，說明這段在這裡的意思、為什麼這樣說、可套用的句型、其他例句與類似說法（CLI 可能要 10–60 秒）。結果同時存成這部影片的筆記（`data/notes/<id>.json`）：單字面板標題列的「我的片語」切換到筆記清單，點一筆就跳回那一句（不播放）並打開卡片，不再呼叫 AI；字幕裡已有筆記的字有淡金色底線，點一下直接開卡片。Esc、點卡片外面或繼續播放就關掉。只能選同一句、最多 30 個字；花費照設定頁的來源與每月上限計算，到上限時卡片會問「這次仍要問」。
 
 ## 專案結構
 
@@ -128,7 +129,7 @@ extension/   Chrome MV3 擴充：在 YouTube、Udemy、Netflix（選擇性開啟
 server.py    標準庫 HTTP server：靜態網頁、/ingest、/add、/jobs、/settings、/keys、/usage、產課佇列
 pipeline/    words（字詞正規化）→ chunk → segment（切句翻譯）→ vocab（挑字）→ intro（前情提要）→ build
              settings（來源、模型、上限）、keys（API key）、cost 與 prices.json（牌價換算）、usage（用量帳本）
-web/         播放器：index.html、app.js、style.css、timing.js（純函式）、dict.js（查字典）、intro.js（前情提要）、settings.js（設定）、progress.js（進度）、handshake.js（與擴充功能握手）、lesson-source.js（課程來源）、ytid.js（網址解析）
+web/         播放器：index.html、app.js、style.css、timing.js（純函式）、dict.js（查字典）、phrase.js（選字問 AI、筆記）、intro.js（前情提要）、settings.js（設定）、progress.js（進度）、handshake.js（與擴充功能握手）、lesson-source.js（課程來源）、ytid.js（網址解析）
 data/        raw/（字幕）、lessons/（課程 JSON）、cache/（LLM 回覆）、jobs/（build log）、keys.json（API key，0600）、usage.jsonl（用量帳本）、models.json（模型清單快取）
 tests/       pytest（pipeline、server）與 node --test（web 純函式、擴充功能的純函式與 worker 訊息）
 docs/        設計與計畫（superpowers/plans）、參考版面觀察、截圖

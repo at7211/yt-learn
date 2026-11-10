@@ -22,16 +22,18 @@ export function dictUrl(word) {
   return DICT_BASE + encodeURIComponent(String(word).trim().replace(/\s+/g, '-'));
 }
 
-// The text a click on the English subtitle line should look up: the vocab term of a .kw span
-// (data-term, else its text), or the token of a .w span. '' when the click was not on a word.
+// The text a click on the English subtitle line should look up: the vocab term of the nearest .kw
+// span (data-term, else its text) — a .kw wraps one .w span per token, so a click on any of them looks
+// up the whole term — else the token of the .w span. '' when the click was not on a word.
 // `target` is the event target; only classList / dataset / textContent / parentElement are used.
 export function clickWord(target) {
-  for (let n = target, depth = 0; n && depth < 4; n = n.parentElement, depth++) {
+  let word = null;
+  for (let n = target, depth = 0; n && depth < 5; n = n.parentElement, depth++) {
     const cl = n.classList;
     if (!cl || typeof cl.contains !== 'function') continue;
     if (cl.contains('kw')) return (n.dataset && n.dataset.term) || n.textContent || '';
-    if (cl.contains('w')) return n.textContent || '';
-    if (cl.contains('sub-en')) return '';
+    if (cl.contains('w') && word === null) word = n.textContent || '';
+    if (cl.contains('sub-en')) break;
   }
-  return '';
+  return word || '';
 }
