@@ -23,3 +23,4 @@ import './netflix-capture.test.js';
 import './ttml.test.js';
 import './overlay-engine.test.js';
 import './extension-add-error.test.js';
+import './phrase.test.js';
