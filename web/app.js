@@ -1163,7 +1163,8 @@ function showCard(view) {
   if (!PH.card) {
     PH.card = el('div', null, 'ph-card');
     PH.card.setAttribute('role', 'dialog');
-    PH.card.addEventListener('mousedown', (e) => e.stopPropagation());
+    // keep focus off its buttons (Space would click them as well as toggle play)
+    PH.card.addEventListener('mousedown', (e) => { if (e.target.closest && e.target.closest('button')) e.preventDefault(); });
     frameEl().append(PH.card);
   }
   const o = PH.open;

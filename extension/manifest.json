@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "yt-learn 擷取",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "minimum_chrome_version": "120",
   "permissions": [
     "scripting",
@@ -50,6 +50,7 @@
         "intro.js",
         "overlay-state.js",
         "dict.js",
+        "phrase.js",
         "site.js",
         "overlay.css",
         "netflix-manifest.js"

@@ -63,14 +63,19 @@ function fakeEl(tag = 'div') {
     replaceChildren: (...kids) => { e.children = []; e.append(...kids); },
     remove: () => { if (e.parentNode) e.parentNode.children = e.parentNode.children.filter((k) => k !== e); e.parentNode = null; },
     addEventListener: (n, f) => { (e.listeners[n] = e.listeners[n] || []).push(f); },
-    attachShadow: () => fakeEl('#shadow'),
+    attachShadow: () => { e.shadow = fakeEl('#shadow'); return e.shadow; },
     querySelector: () => null,
+    // only what the phrase code asks for: the subtitle's word spans
+    querySelectorAll: (q) => (q === '.w[data-i]' ? descendants(e).filter((k) => k.classList && k.classList.contains('w') && k.dataset.i != null) : []),
+    contains: (k) => descendants(e).includes(k),
     getClientRects: () => [],
     getBoundingClientRect: () => ({ height: 0 }),
     getAttribute: () => null,
   };
   return e;
 }
+
+function descendants(n) { return (n.children || []).flatMap((k) => [k, ...descendants(k)]); }
 
 function fakeVideo() {
   const v = fakeEl('video');
@@ -81,7 +86,8 @@ function fakeVideo() {
   let t = 3;
   Object.defineProperty(v, 'currentTime', { get: () => t, set: (x) => { v.sets.push(x); t = x; } });
   v.play = () => { v.plays++; return Promise.resolve(); };
-  v.pause = () => { };
+  v.pauses = 0;
+  v.pause = () => { v.pauses++; };
   return v;
 }
 
@@ -99,6 +105,7 @@ async function boot(href, { replies = {}, hold = [], position = 'absolute', adap
   const docListeners = {};
   const posted = [];
   const sentMsgs = [];
+  const notesMsgs = []; // ytlearn:notes (sent once per mount) kept apart so sentMsgs stays the lesson/build flow
   const held = [];
   const logs = [];
   const video = fakeVideo();
@@ -137,7 +144,7 @@ async function boot(href, { replies = {}, hold = [], position = 'absolute', adap
       getURL: (p) => 'chrome-extension://x/' + p,
       onMessage: { addListener: (f) => { onMessage = f; } },
       sendMessage: (msg, cb) => {
-        sentMsgs.push(plain(msg));
+        (msg.type === 'ytlearn:notes' ? notesMsgs : sentMsgs).push(plain(msg));
         const r = typeof replies[msg.type] === 'function' ? replies[msg.type](msg) : replies[msg.type];
         if (hold.includes(msg.type)) held.push(() => cb(r));
         else setImmediate(() => cb(r));
@@ -190,7 +197,7 @@ async function boot(href, { replies = {}, hold = [], position = 'absolute', adap
     player = hello(r, v);
     return player;
   };
-  return { setReply, clock, tick, location, cleanup, video, root, swapPlayer, posted, sentMsgs, held, logs, toggle, message, key, winListeners, docListeners, win };
+  return { setReply, clock, tick, location, cleanup, video, root, swapPlayer, posted, sentMsgs, notesMsgs, held, logs, toggle, message, key, winListeners, docListeners, win };
 }
 
 const lessonOf = (href) => { const m = /\/watch\/([0-9]+)/.exec(href); return m ? 'netflix.' + m[1] : new URL(href).searchParams.get('v'); };
@@ -516,4 +523,78 @@ test('engine: ytlearn:mount for another episode (the tab moved on) -> {handled:t
   assert.deepEqual(await b.toggle('ytlearn:mount', { videoId: 'netflix.81234568' }), { handled: true });
   await flush();
   assert.deepEqual(b.sentMsgs.map((m) => m.type), ['ytlearn:lesson', 'ytlearn:build']);
+});
+
+/* ---------- phrase notes (我的片語): loaded on mount, a note row seeks without playing and opens its card ---------- */
+
+const findCls = (n, cls) => descendants(n).filter((k) => k.classList && k.classList.contains(cls));
+const shadowOf = (b) => overlayHost(b).shadow;
+const NOTE1 = { phrase: 'world', cueEn: 'world', cue: 1, a: 1, b: 1, result: { meaningZh: '世界', whyHere: 'w', pattern: 'p', examples: [{ en: 'e', zh: 'z' }], alternatives: [] }, ts: 't' };
+const notesReply = { status: 200, json: { ok: true, notes: { '1-1': NOTE1 } } };
+const evt = () => ({ stopPropagation() { }, preventDefault() { } });
+
+test('engine: mount asks ytlearn:notes for the lesson; a note fills the 我的片語 list and opens the panel tab', async () => {
+  const b = await boot(YURL, { replies: { 'ytlearn:lesson': { lesson: LESSON('puh91fohvTA') }, 'ytlearn:notes': notesReply } });
+  await b.toggle();
+  await flush();
+  assert.deepEqual(b.notesMsgs, [{ type: 'ytlearn:notes', videoId: 'puh91fohvTA' }]);
+  const root = shadowOf(b);
+  const rows = findCls(root, 'nrow');
+  assert.equal(rows.length, 1);
+  assert.deepEqual(descendants(rows[0]).map((k) => k.textContent), ['world', '世界']);
+  const tab = findCls(root, 'ptab')[0];
+  assert.equal(tab.hidden, false);
+  assert.equal(findCls(root, 'panel')[0].hidden, false, 'notes keep the panel up even with no vocab');
+  assert.equal(findCls(root, 'pnotes')[0].hidden, false, 'no vocab: the notes list is the panel');
+  // the subtitle: one .w per token with its global index
+  const words = findCls(root, 'w');
+  assert.deepEqual(words.map((w) => [w.textContent, w.dataset.i]), [['hello', '0']]);
+});
+
+test('engine on Netflix: a note row pauses and seeks through the hook with play:false (never currentTime), draws the cue, opens the card; Esc closes it', async () => {
+  const b = await boot(NURL, { replies: { 'ytlearn:lesson': { lesson: LESSON('netflix.81234567') }, 'ytlearn:notes': notesReply } });
+  await b.toggle();
+  await flush();
+  const root = shadowOf(b);
+  b.video.sets.length = 0;
+  const pauses = b.video.pauses;
+  findCls(root, 'nrow')[0].listeners.click[0](evt());
+  const seeks = b.posted.filter((p) => p.data.type === 'ytlearn:nf-seek');
+  assert.equal(seeks.length, 1);
+  assert.equal(seeks[0].data.play, false);
+  assert.equal(seeks[0].data.ms, 10050);
+  assert.deepEqual(b.video.sets, [], 'video.currentTime is never written on Netflix');
+  assert.equal(b.video.plays, 0);
+  assert.ok(b.video.pauses > pauses);
+  const w = findCls(root, 'w');
+  assert.deepEqual(w.map((x) => [x.textContent, x.dataset.i, x.classList.contains('noted'), x.classList.contains('sel')]), [['world', '1', true, true]]);
+  const card = findCls(root, 'ph-card')[0];
+  assert.equal(card.hidden, false);
+  assert.ok(descendants(card).some((k) => k.textContent === '世界'));
+  assert.equal(b.sentMsgs.filter((m) => m.type === 'ytlearn:explain').length, 0, 'a saved note never asks the AI');
+  b.key('Escape');
+  assert.equal(card.hidden, true);
+  assert.equal(findCls(root, 'w')[0].classList.contains('sel'), false);
+});
+
+test('engine on YouTube: a note row seeks with video.currentTime and does not play; playing closes the card', async () => {
+  const b = await boot(YURL, { replies: { 'ytlearn:lesson': { lesson: LESSON('puh91fohvTA') }, 'ytlearn:notes': notesReply } });
+  await b.toggle();
+  await flush();
+  const root = shadowOf(b);
+  b.video.sets.length = 0;
+  findCls(root, 'nrow')[0].listeners.click[0](evt());
+  assert.deepEqual(b.video.sets, [10.05]);
+  assert.equal(b.video.plays, 0);
+  const card = findCls(root, 'ph-card')[0];
+  assert.equal(card.hidden, false);
+  for (const f of b.video.listeners.play || []) f({});
+  assert.equal(card.hidden, true);
+});
+
+test('overlay source: phrase.js imported, explain messages, no HTML sinks', () => {
+  assert.ok(SRC.includes("import(url('phrase.js'))"));
+  for (const t of ["type: 'ytlearn:explain'", "type: 'ytlearn:explain-poll'", "type: 'ytlearn:notes'"]) assert.ok(SRC.includes(t), t);
+  assert.ok(!/\.(innerHTML|outerHTML|insertAdjacentHTML)\b|document\.write\(/.test(SRC), 'only the header comment names the sinks');
+  assert.ok(SRC.includes('elementFromPoint'), 'hit testing through the shadow root');
 });
