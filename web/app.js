@@ -1598,4 +1598,4 @@ if (vid) {
   initHome(true);
 }
 // debug/verification hooks
-window.__yt = { S, PH, enterReview, leaveReview, turnPage, seek, closePhrase };
+window.__yt = { S, PH, render, enterReview, leaveReview, turnPage, seek, closePhrase };
