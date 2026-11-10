@@ -15,6 +15,10 @@
 - POST /add                    : new build attempts pass the monthly API budget gate (402 code "budget";
                                  "override": true skips it once); a re-/ingest that starts an attempt
                                  without /add passes the same gate.
+- POST /explain                : explain a phrase inside one cue (pipeline/explain.py): 200 with the saved
+                                 note, or 202 with a job key to poll; same budget gate as /add.
+- GET  /explain/<key>          : that job's state (pending / done with the note / error).
+- GET  /notes/<videoId>        : the video's saved phrase notes that still fit its lesson.
 
 Request hardening (every route): the Host header must name this server (127.0.0.1 / localhost /
 [::1] on our port) so DNS-rebinding pages are refused; a POST must be Content-Type: application/json
@@ -32,8 +36,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from pipeline import keys, llm, settings, usage
-from pipeline.ids import parse_lesson_id
+from pipeline import explain, keys, llm, settings, usage
+from pipeline.ids import LESSON_ID_RE, parse_lesson_id
 from pipeline.jobs import BudgetBlocked, BuildQueue, IllegalTransition, JobStore
 from pipeline.schema import validate_lesson, validate_raw
 
@@ -50,7 +54,9 @@ class Handler(SimpleHTTPRequestHandler):
     root: Path = ROOT
     jobs: JobStore = None
     queue: BuildQueue = None
+    explains: explain.Jobs = None
     transport = staticmethod(llm.urllib_transport)
+    provider_factory = staticmethod(explain.make_provider)
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(self.root / "web"), **kw)
@@ -139,6 +145,10 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/usage":
             return self._usage()
         parts = path.strip("/").split("/")
+        if parts[0] == "explain" and len(parts) > 1:
+            return self._explain_status(parts)
+        if parts[0] == "notes" and len(parts) > 1:
+            return self._notes(parts)
         if len(parts) == 2 and parts[0] == "jobs":
             job = self.jobs.get(parts[1])
             if job is None:
@@ -201,6 +211,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._ingest(parse_qs(sp.query))
         if sp.path == "/add":
             return self._add()
+        if sp.path == "/explain":
+            return self._explain()
         if sp.path == "/settings":
             return self._post_settings()
         if sp.path == "/keys":
@@ -458,6 +470,111 @@ class Handler(SimpleHTTPRequestHandler):
             out["job"] = JobStore.to_public(job)
         self._json(out)
 
+    # ------------------------------------------------------------ phrase explain
+
+    def _err(self, status, msg, **extra):
+        return self._json({"ok": False, "error": msg, **extra}, status)
+
+    def _scrub(self, text):
+        return keys.scrub(str(text), keys.all_keys(self.root, os.environ))
+
+    def _load_lesson(self, vid):
+        """``(lesson, None)`` or ``(None, sent)``: the id is checked, the path kept inside data/lessons."""
+        if not (isinstance(vid, str) and LESSON_ID_RE.fullmatch(vid)):
+            self._err(400, "videoId 格式不對")
+            return None, True
+        base = self.root / "data" / "lessons"
+        try:
+            path = explain.contained(base / f"{vid}.json", base)
+            lesson = json.loads(path.read_text("utf-8"))
+        except (OSError, ValueError):
+            self._err(404, "找不到這部影片的課程")
+            return None, True
+        if validate_lesson(lesson):
+            self._err(404, "這部影片的課程檔損壞")
+            return None, True
+        return lesson, None
+
+    def _explain(self):
+        obj, err = self._read_json()
+        if err:
+            return
+        if not isinstance(obj, dict):
+            return self._err(400, "body must be a JSON object")
+        vid = obj.get("videoId")
+        lesson, sent = self._load_lesson(vid)
+        if sent:
+            return
+        cue, a, b = obj.get("cue"), obj.get("a"), obj.get("b")
+        try:
+            phrase = explain.phrase_of(lesson, cue, a, b)
+        except ValueError as e:
+            return self._err(400, str(e))
+        if not isinstance(obj.get("phrase"), str):
+            return self._err(400, "phrase 必須是字串")
+        if obj["phrase"] != phrase:
+            return self._err(409, "選取的文字和課程不一致，請重新載入課程", code="phrase", phrase=phrase)
+        hit = explain.find_note(explain.load_notes(self.root, vid), lesson, cue, a, b)
+        if hit is not None:
+            return self._json({"ok": True, "state": "done", "key": explain.job_key(
+                vid, cue, a, b, phrase, explain.cue_en(lesson, cue)), "note": hit})
+        key = explain.job_key(vid, cue, a, b, phrase, explain.cue_en(lesson, cue))
+        job = self.explains.get(key)
+        if job is not None and job["state"] in ("pending", "done"):  # same question in flight: share it
+            return self._json({"ok": True, **job}, 202 if job["state"] == "pending" else 200)
+        resolved, load_warning, _ = self._resolved_and_load_warning()
+        if resolved.get("warning"):
+            return self._err(400, resolved["warning"] + "，請到設定頁重新儲存")
+        blocked, warning = self._gate(obj.get("override") is True, resolved)
+        if blocked is not None:
+            return self._json({"ok": False, **blocked}, 402)
+        if self.explains.running() >= self.explains.max_running:  # before building a provider; start() rechecks
+            return self._err(429, "AI 正忙，稍後再試", code="busy")
+        cache_base = self.root / "data" / "cache"
+        try:
+            cache_dir = explain.contained(cache_base / vid / "explain", cache_base)
+            provider = self.provider_factory(resolved, self.root, cache_dir)
+        except explain.SetupError as e:
+            return self._err(400, self._scrub(e))
+        except ValueError:
+            return self._err(400, "videoId 格式不對")
+        name = settings.PROVIDER_ALIASES.get(resolved["provider"], resolved["provider"])
+        model_id = explain.pricing_model(resolved, provider)
+        root = self.root
+
+        def scrub(text):  # the job outlives this request: no handler state in the thread
+            return keys.scrub(text, keys.all_keys(root, os.environ))
+
+        def target():
+            return explain.run(provider, lesson, cue, a, b, root=root, vid=vid, provider_name=name,
+                               model_id=model_id, scrub=scrub)
+        job = self.explains.start(key, target)
+        if job is None:
+            return self._err(429, "AI 正忙，稍後再試", code="busy")
+        out = {"ok": True, **job}
+        warning = _join(load_warning, warning)
+        if warning:
+            out["warning"] = warning
+        return self._json(out, 202 if job["state"] == "pending" else 200)
+
+    def _explain_status(self, parts):
+        key = parts[1] if len(parts) == 2 else ""
+        if not (len(key) == explain.KEY_LEN and all(ch in "0123456789abcdef" for ch in key)):
+            return self._err(400, "bad explain key")
+        job = self.explains.get(key)
+        if job is None:
+            return self._err(404, "no such explain job")
+        return self._json({"ok": True, **job})
+
+    def _notes(self, parts):
+        if len(parts) != 2:
+            return self._err(400, "videoId 格式不對")
+        lesson, sent = self._load_lesson(parts[1])
+        if sent:
+            return
+        notes = explain.current_notes(explain.load_notes(self.root, parts[1]), lesson)
+        return self._json({"ok": True, "videoId": parts[1], "notes": notes})
+
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
@@ -483,13 +600,17 @@ class _Server(ThreadingHTTPServer):
         super().server_close()
 
 
-def make_server(root, port=8765, transport=None) -> ThreadingHTTPServer:
-    """``transport`` replaces the HTTP transport of /keys/test (tests inject a fake)."""
+def make_server(root, port=8765, transport=None, provider_factory=None) -> ThreadingHTTPServer:
+    """``transport`` replaces the HTTP transport of /keys/test and ``provider_factory(resolved, root,
+    cache_dir)`` the provider of /explain (tests inject fakes)."""
     root = Path(root).resolve()
     store = JobStore()
-    attrs = {"root": root, "jobs": store, "queue": BuildQueue(store, root)}  # BuildQueue sweeps orphans
+    attrs = {"root": root, "jobs": store, "queue": BuildQueue(store, root),  # BuildQueue sweeps orphans
+             "explains": explain.Jobs()}
     if transport is not None:
         attrs["transport"] = staticmethod(transport)
+    if provider_factory is not None:
+        attrs["provider_factory"] = staticmethod(provider_factory)
     handler = type("BoundHandler", (Handler,), attrs)
     srv = _Server(("127.0.0.1", port), handler)
     srv.handler_class = handler
