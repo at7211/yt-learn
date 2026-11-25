@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseVideoId, canonicalUrl, parseLessonId, lessonSource, parseUdemyUrl, parseNetflixUrl, netflixWatchUrl, parseHelloUrl, helloLearnUrl } from '../../web/ytid.js';
+import { parseVideoId, canonicalUrl, parseLessonId, lessonSource, parseUdemyUrl, parseNetflixUrl, netflixWatchUrl, parseHelloUrl, helloLearnUrl, parseCourseraUrl } from '../../web/ytid.js';
 
 const table = JSON.parse(readFileSync(new URL('../fixtures/urls.json', import.meta.url), 'utf8'));
 const ids = JSON.parse(readFileSync(new URL('../fixtures/lesson_ids.json', import.meta.url), 'utf8'));
@@ -65,6 +65,14 @@ test('parseHelloUrl and helloLearnUrl agree with lesson_ids.json (helloUrl and h
     assert.equal(helloLearnUrl(bad), null, bad);
   }
   assert.equal(parseVideoId('hello.a.b'), null);
+});
+test('parseCourseraUrl agrees with lesson_ids.json', () => {
+  assert.ok(ids.courseraUrl.length >= 8);
+  for (const [input, want] of ids.courseraUrl) {
+    assert.deepEqual(parseCourseraUrl(input), want ? { slug: want[0], itemId: want[1] } : null, JSON.stringify(input));
+  }
+  for (const bad of [null, undefined, 42]) assert.equal(parseCourseraUrl(bad), null);
+  assert.equal(parseVideoId('coursera.machine-learning.iYR2y'), null);
 });
 test('lessonSource agrees with lesson_ids.json', () => {
   for (const [input, want] of ids.source) assert.equal(lessonSource(input), want, JSON.stringify(input));

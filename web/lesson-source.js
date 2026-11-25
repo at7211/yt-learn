@@ -1,7 +1,7 @@
 // Pure helpers for lessons that come from different sources. YouTube lessons are built and played
-// here; external-site lessons (Udemy, Netflix, HelloInterview) are captured and played on their own site, through
-// the extension, and only reviewed here.
-import { lessonSource, parseUdemyUrl, netflixWatchUrl, helloLearnUrl } from './ytid.js';
+// here; external-site lessons (Udemy, Netflix, HelloInterview, Coursera) are captured and played on their own site,
+// through the extension, and only reviewed here.
+import { lessonSource, parseUdemyUrl, netflixWatchUrl, helloLearnUrl, parseCourseraUrl } from './ytid.js';
 
 export const UDEMY_BUILD_MSG = 'Udemy 課程請在講座頁按擴充圖示產生';
 export const UDEMY_PLAY_HINT = '在 Udemy 頁面上播放';
@@ -9,6 +9,8 @@ export const NETFLIX_BUILD_MSG = 'Netflix 課程要在 Netflix 播放頁按擴�
 export const NETFLIX_PLAY_HINT = '這是 Netflix 課程，請到 Netflix 播放頁按擴充圖示觀看';
 export const HELLO_BUILD_MSG = 'HelloInterview 課程請在課程頁按擴充圖示產生';
 export const HELLO_PLAY_HINT = '在 HelloInterview 頁面上播放';
+export const COURSERA_BUILD_MSG = 'Coursera 課程請在影片頁按擴充圖示產生';
+export const COURSERA_PLAY_HINT = '在 Coursera 頁面上播放';
 
 // A lesson's sourceUrl, only if it is a valid Udemy lecture URL whose lecture id
 // matches the lesson id (udemy.<digits>). Returns the URL string or null.
@@ -35,6 +37,17 @@ export function helloLessonLink(lesson, id) {
   return helloLearnUrl(lid);
 }
 
+// A lesson's sourceUrl, only if it is a valid Coursera lecture URL of that very lecture
+// (coursera.<slug>.<itemId>). Returns the URL string or null.
+export function courseraLessonLink(lesson, id) {
+  if (!lesson || typeof lesson !== 'object') return null;
+  const lid = typeof id === 'string' ? id : lesson.videoId;
+  if (lessonSource(lid) !== 'coursera') return null;
+  const u = parseCourseraUrl(lesson.sourceUrl);
+  if (!u || 'coursera.' + u.slug + '.' + u.itemId !== lid) return null;
+  return lesson.sourceUrl;
+}
+
 const SITES = Object.freeze({
   udemy: Object.freeze({
     name: 'Udemy', buildMsg: UDEMY_BUILD_MSG, playHint: UDEMY_PLAY_HINT,
@@ -47,6 +60,10 @@ const SITES = Object.freeze({
   hellointerview: Object.freeze({
     name: 'HelloInterview', buildMsg: HELLO_BUILD_MSG, playHint: HELLO_PLAY_HINT,
     note: '這堂課只能在 HelloInterview 頁面上疊字幕', linkText: '回到課程頁', link: helloLessonLink,
+  }),
+  coursera: Object.freeze({
+    name: 'Coursera', buildMsg: COURSERA_BUILD_MSG, playHint: COURSERA_PLAY_HINT,
+    note: '這堂課只能在 Coursera 頁面上疊字幕', linkText: '回到影片頁', link: courseraLessonLink,
   }),
 });
 

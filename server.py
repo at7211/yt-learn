@@ -373,7 +373,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         vid = parse_lesson_id(obj.get("url") if isinstance(obj, dict) else None)
         if vid is None:
-            return self._json({"ok": False, "errors": ["無法辨識的 YouTube、Udemy、Netflix 或 HelloInterview 網址"]}, 400)
+            return self._json({"ok": False, "errors": ["無法辨識的 YouTube、Udemy、Netflix、HelloInterview 或 Coursera 網址"]}, 400)
         resolved, load_warning, saved = self._resolved_and_load_warning()
         lesson_ok = self._lesson_ok(vid)
         if resolved.get("warning") and not lesson_ok:  # a finished lesson still opens: nothing builds

@@ -49,6 +49,17 @@ test('ytLearnParseUdemyUrl and ytLearnLessonSource agree with lesson_ids.json', 
   assert.equal(ctx.ytLearnParseUdemyUrl(null), null);
 });
 
+test('ytLearnParseCourseraUrl agrees with lesson_ids.json; lecture URLs parse to coursera.<slug>.<itemId>', () => {
+  for (const [input, want] of IDS.courseraUrl) {
+    const got = ctx.ytLearnParseCourseraUrl(input);
+    assert.deepEqual(got && [got.slug, got.itemId], want, JSON.stringify(input));
+  }
+  assert.equal(ctx.ytLearnParseCourseraUrl(undefined), null);
+  assert.equal(ctx.ytLearnParseLessonId('https://www.coursera.org/learn/machine-learning/lecture/iYR2y/title?t=1'), 'coursera.machine-learning.iYR2y');
+  assert.equal(ctx.ytLearnLessonSource('coursera.machine-learning.iYR2y'), 'coursera');
+  assert.equal(ctx.ytLearnParseVideoId('https://www.coursera.org/learn/machine-learning/lecture/iYR2y'), null);
+});
+
 test('ytLearnParseNetflixUrl agrees with lesson_ids.json; netflix watch URLs parse to netflix.<id>', () => {
   for (const [input, want] of IDS.netflixUrl) assert.equal(ctx.ytLearnParseNetflixUrl(input), want, JSON.stringify(input));
   assert.equal(ctx.ytLearnParseNetflixUrl(undefined), null);

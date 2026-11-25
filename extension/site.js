@@ -1,9 +1,12 @@
 // Site adapters for the overlay engine (extension/overlay.js dynamic-imports this file).
 // siteFor(hostname) -> { name, lessonId(url, doc), findPlayer(doc) -> {root, video}|null, isAd(root),
 //                        nativeCaptionCss, navEvents: [{target:'document'|'window', name}],
-//                        seek?(video, t, {play, lessonId, gen}) -> boolean, cancelSeek?() } | null
-// seek is optional: missing or false -> the engine sets video.currentTime itself (YouTube, Udemy, HelloInterview);
+//                        seek?(video, t, {play, lessonId, gen}) -> boolean, cancelSeek?(),
+//                        arrowsStepCues? } | null
+// seek is optional: missing or false -> the engine sets video.currentTime itself (YouTube, Udemy, HelloInterview, Coursera);
 // true -> the adapter did the seek (Netflix: through the MAIN-world hook, never video.currentTime).
+// arrowsStepCues is optional: true -> ← → step by sentence like [ ] while the overlay is on (Coursera);
+// otherwise they stay the site's own.
 // Everything here only reads the document / window it is handed, so it runs under node --test with fakes
 // (tests/web/site.test.js).
 import { lessonIdFromUrl, adShowing } from './overlay-state.js';
@@ -18,7 +21,7 @@ export function youtubeLessonId(url, doc) {
   const flexy = doc && doc.querySelector('ytd-watch-flexy');
   const attr = flexy ? flexy.getAttribute('video-id') : null;
   const id = lessonIdFromUrl(url, attr);
-  return id && YT_ID_RE.test(id) ? id : null; // YouTube ids only (udemy. / netflix. / hello. ids are other sites)
+  return id && YT_ID_RE.test(id) ? id : null; // YouTube ids only (udemy. / netflix. / hello. / coursera. ids are other sites)
 }
 
 export function youtubeFindPlayer(doc) {
@@ -60,6 +63,49 @@ export const udemy = Object.freeze({
   // Udemy draws its own cues in div._caption-container_<hash>; the hash changes, the prefix does not.
   nativeCaptionCss: SHAKA + '.' + ON_CLASS + ' [class*="caption-container"]{opacity:0}',
   navEvents: Object.freeze([]),
+});
+
+/* ---------- Coursera (lecture pages, video.js player) ---------- */
+
+export function courseraLessonId(url) {
+  const id = lessonIdFromUrl(url);
+  return id && id.startsWith('coursera.') ? id : null;
+}
+
+const boxes = new WeakMap(); // video -> its box: the engine remounts when root changes, so a layout change must not change it
+
+// The video.js root; on a page without one, the outermost ancestor that is exactly the video's size.
+function videoBox(doc, video) {
+  const vjs = video.closest('.video-js');
+  if (vjs) return vjs;
+  if (boxes.has(video)) return boxes.get(video);
+  const r = video.getBoundingClientRect();
+  let box = video.parentElement;
+  for (let p = box && box.parentElement; p && p !== doc.body; p = p.parentElement) {
+    const q = p.getBoundingClientRect();
+    if (Math.abs(q.width - r.width) > 2 || Math.abs(q.height - r.height) > 2) break;
+    box = p;
+  }
+  if (r.width > 0) boxes.set(video, box);
+  return box;
+}
+
+export function courseraFindPlayer(doc) {
+  const video = doc && (doc.querySelector('.video-js video') || doc.querySelector('video'));
+  const root = video && videoBox(doc, video);
+  return root && video ? { root, video } : null;
+}
+
+export const coursera = Object.freeze({
+  name: 'coursera',
+  lessonId: (url) => courseraLessonId(url),
+  findPlayer: courseraFindPlayer,
+  isAd: () => false,
+  nativeCaptionCss: '.' + ON_CLASS + ' .vjs-text-track-display{opacity:0 !important}'
+    + '.' + ON_CLASS + ' video::cue{color:transparent;background:transparent}'
+    + '.' + ON_CLASS + ' .vjs-control-bar{z-index:31}', // video.js sets no z-index: keep its controls above the overlay
+  navEvents: Object.freeze([]), // SPA with no event of its own: the engine's 1 s route poll is its router
+  arrowsStepCues: true,
 });
 
 /* ---------- Netflix (watch pages; MAIN-world hook netflix-hook.js does the seeking) ---------- */
@@ -180,6 +226,7 @@ export const hellointerview = Object.freeze({
 export function siteFor(hostname) {
   if (hostname === 'www.youtube.com') return youtube;
   if (hostname === 'www.udemy.com') return udemy;
+  if (hostname === 'www.coursera.org') return coursera;
   if (hostname === 'www.netflix.com') return netflix;
   if (hostname === 'www.hellointerview.com') return hellointerview;
   return null;

@@ -233,6 +233,46 @@ def test_hello_source_url_must_be_canonical():
     assert schema.validate_raw(mod(**dict(UDEMY, sourceUrl=HELLO_URL)))
 
 
+COURSERA_URL = "https://www.coursera.org/learn/machine-learning/lecture/iYR2y/supervised-learning"
+COURSERA = {"videoId": "coursera.machine-learning.iYR2y", "source": "coursera", "sourceUrl": COURSERA_URL}
+
+
+def test_raw_accepts_coursera_id_with_and_without_source_fields():
+    assert schema.validate_raw(mod(**COURSERA)) == []
+    assert schema.validate_raw(mod(**dict(COURSERA, sourceUrl="https://www.coursera.org/learn/machine-learning/lecture/iYR2y"))) == []
+    assert schema.validate_raw(mod(videoId="coursera.machine-learning.iYR2y")) == []
+
+
+def test_raw_rejects_bad_coursera_ids_and_sources():
+    for bad in ("coursera.abc", "coursera.", "coursera..x", "Coursera.a.b", "coursera.a.b.c", "coursera.a/../b.c"):
+        assert schema.validate_raw(mod(videoId=bad)), bad
+    assert schema.validate_raw(mod(source="coursera"))  # YouTube id
+    assert schema.validate_raw(mod(videoId="udemy.5800738", source="coursera"))
+    for bad in ("udemy", "youtube", "COURSERA", "", None):
+        assert schema.validate_raw(mod(videoId="coursera.machine-learning.iYR2y", source=bad)), bad
+
+
+def test_coursera_source_url_must_name_this_lecture():
+    for bad in (
+        "http://www.coursera.org/learn/machine-learning/lecture/iYR2y",
+        "https://coursera.org/learn/machine-learning/lecture/iYR2y",
+        "https://www.coursera.org/learn/machine-learning/lecture/other",  # other lecture
+        "https://www.coursera.org/learn/other-course/lecture/iYR2y",  # same item id, other course
+        "https://www.coursera.org/learn/machine-learning/",
+        UDEMY_URL, NETFLIX_URL, "javascript:alert(1)", "", None, 42,
+    ):
+        assert schema.validate_raw(mod(**dict(COURSERA, sourceUrl=bad))), bad
+    assert schema.validate_raw(mod(sourceUrl=COURSERA_URL))  # YouTube id
+    assert schema.validate_raw(mod(**dict(UDEMY, sourceUrl=COURSERA_URL)))
+
+
+def test_lesson_coursera_source_fields():
+    les = dict(_lesson(), **COURSERA)
+    assert schema.validate_lesson(les) == []
+    assert schema.validate_lesson(dict(les, source="udemy"))
+    assert schema.validate_lesson(dict(les, sourceUrl=COURSERA_URL.replace("iYR2y", "other")))
+
+
 REF = {"lang": "zh-Hant", "kind": "official",
        "events": [{"t": 0, "d": 1200, "text": "我們出發吧"}, {"t": 1500, "d": 800, "text": "往北走"}]}
 
