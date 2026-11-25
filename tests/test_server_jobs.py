@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import server
+from pipeline import settings
 from tests.test_schema import GOOD
 
 FIX = Path(__file__).parent / "fixtures"
@@ -22,6 +23,8 @@ V2 = "abcdefghijk"
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("YTLEARN_BUILD_CMD", f"{sys.executable} {STUB}")
     monkeypatch.setenv("STUB_MODE", "ok")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     (tmp_path / "web").mkdir()
     (tmp_path / "pipeline").symlink_to(Path(server.__file__).parent / "pipeline")
     srv = server.make_server(tmp_path, 0)
@@ -423,3 +426,175 @@ def test_jobs_get_carries_progress_only_while_building(env, monkeypatch):
     job = wait_state(base, V, {"done", "error"})
     assert job["state"] == "done" and "progress" not in job
     assert not (root / "data" / "jobs" / f"{V}.progress.json").exists()
+
+
+ADD = {"url": "https://www.youtube.com/watch?v=" + V}
+
+
+def _api_budget(root, spent, budget=1.0, provider="anthropic-api", model="claude-sonnet-5-5"):
+    from pipeline import keys, usage
+    keys.save(root, {"anthropic": "sk-ant-00001234", "openai": "sk-openai-xyz7890"})
+    if provider == "openai-api":
+        settings.save_models(root, "openai", [model])
+    settings.save(root, dict(settings.DEFAULTS, provider=provider, model=model, budgetUsd=budget))
+    usage.append(root, {"videoId": "z", "provider": provider, "model": model, "usage": {}, "costUsd": spent, "state": "done"})
+
+
+def test_add_402_when_over_budget_and_override(env):
+    base, root = env
+    _api_budget(root, 1.2)
+    code, body = req(base + "/add", ADD)
+    assert code == 402 and body["code"] == "budget" and req(base + "/jobs/" + V)[0] == 404
+    code, body = req(base + "/add", dict(ADD, override=True))
+    assert code == 200 and body["job"]["state"] == "queued" and body["job"]["settings"] == {"provider": "anthropic-api", "model": "claude-sonnet-5-5"}
+
+
+def test_override_then_extension_readd_is_not_blocked(env):
+    base, root = env
+    _api_budget(root, 1.2)
+    req(base + "/add", dict(ADD, override=True))
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and body["job"]["state"] == "queued" and body["job"]["attempt"] == 1
+
+
+def test_done_lesson_is_not_gated(env):
+    base, root = env
+    _api_budget(root, 1.2)
+    (root / "data" / "lessons").mkdir(parents=True)
+    lesson = json.loads(STUB.with_name("lesson_min.json").read_text("utf-8")); lesson["videoId"] = V
+    (root / "data" / "lessons" / f"{V}.json").write_text(json.dumps(lesson), "utf-8")
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and body["job"]["state"] == "done"
+
+
+def test_add_warning_at_80_percent(env):
+    base, root = env
+    _api_budget(root, 0.8, provider="openai-api", model="gpt-6-astra")
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and "80%" in body["warning"] and body["job"]["warning"] == body["warning"]
+
+
+def test_add_ignores_budget_for_cli_provider(env):
+    base, root = env
+    from pipeline import usage
+    settings.save(root, dict(settings.DEFAULTS, budgetUsd=1.0))
+    usage.append(root, {"videoId": "z", "provider": "anthropic-api", "model": "m", "usage": {}, "costUsd": 5, "state": "done"})
+    assert req(base + "/add", ADD)[0] == 200
+
+
+def test_reingest_after_error_passes_the_gate(env):
+    base, root = env
+    _api_budget(root, 0.0)
+    req(base + "/add", ADD)
+    req(base + "/jobs/" + V + "/claim", {})
+    req(base + "/jobs/" + V + "/fail", {"attempt": 1, "message": "x"})
+    _api_budget(root, 1.2)  # spent since
+    code, body = req(base + "/ingest", GOOD)  # error -> captured without /add
+    assert code == 402 and body["code"] == "budget" and body["job"]["state"] == "error"
+    assert (root / "data" / "raw" / f"{V}.json").exists()
+    code, body = req(base + "/jobs/" + V)
+    assert body["job"]["state"] == "error" and body["job"]["failedIn"] == "captured"
+
+
+def test_settings_file_warning_reaches_build_log_and_add_response(env):
+    base, root = env
+    (root / "data").mkdir(exist_ok=True)
+    (root / "data" / "settings.json").write_text(json.dumps({"workers": 99}), "utf-8")
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and "settings.json" in body["warning"] and body["job"]["warning"] == body["warning"]
+    req(base + "/jobs/" + V + "/claim", {})
+    assert req(base + "/ingest?attempt=1", GOOD)[0] == 200
+    assert wait_state(base, V, ("done", "error"))["state"] == "done"
+    assert "warning: settings.json" in (root / "data" / "jobs" / f"{V}.log").read_text("utf-8")
+
+
+def test_settings_warning_joins_budget_warning(env):
+    base, root = env
+    _api_budget(root, 0.85)
+    s = json.loads((root / "data" / "settings.json").read_text("utf-8"))
+    (root / "data" / "settings.json").write_text(json.dumps(dict(s, workers=99)), "utf-8")
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and "settings.json" in body["warning"] and "85%" in body["warning"]
+
+
+def test_done_lesson_opens_despite_inconsistent_settings(env, monkeypatch):
+    base, root = env
+    monkeypatch.setenv("YTLEARN_PROVIDER", "openai-api")
+    full_lesson(root)
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and body["job"]["state"] == "done"
+
+
+def test_add_400_inconsistent_settings_when_build_would_start(env, monkeypatch):
+    base, root = env
+    monkeypatch.setenv("YTLEARN_PROVIDER", "openai-api")
+    code, body = req(base + "/add", ADD)
+    assert code == 400 and "請到設定頁重新儲存" in body["errors"][0] and req(base + "/jobs/" + V)[0] == 404
+
+
+def _errored_job(base, root):
+    req(base + "/add", ADD)
+    req(base + "/jobs/" + V + "/claim", {})
+    req(base + "/jobs/" + V + "/fail", {"attempt": 1, "message": "x"})
+
+
+def test_reingest_after_error_under_warn_builds(env):
+    base, root = env
+    _api_budget(root, 0.0)
+    _errored_job(base, root)
+    _api_budget(root, 0.85)
+    code, body = req(base + "/ingest", GOOD)
+    assert code == 200 and "85%" in body["job"]["warning"]
+    assert wait_state(base, V, ("done", "error"))["state"] == "done"
+
+
+def test_reingest_400_when_settings_inconsistent(env, monkeypatch):
+    base, root = env
+    _errored_job(base, root)
+    monkeypatch.setenv("YTLEARN_PROVIDER", "openai-api")
+    code, body = req(base + "/ingest", GOOD)
+    assert code == 400 and "請到設定頁重新儲存" in body["errors"][0]
+    assert body["job"]["state"] == "error" and body["job"]["failedIn"] == "captured"
+    assert (root / "data" / "raw" / f"{V}.json").exists()
+
+
+def _child_env_via_add(base, root, monkeypatch):
+    """/add -> claim -> ingest, built by the dump stub; returns the build child's environment."""
+    dump = root / "dump.json"
+    monkeypatch.setenv("STUB_MODE", "dump")
+    monkeypatch.setenv("STUB_DUMP", str(dump))
+    assert req(base + "/add", ADD)[0] == 200
+    req(base + "/jobs/" + V + "/claim", {})
+    assert req(base + "/ingest?attempt=1", GOOD)[0] == 200
+    wait_state(base, V, ("error",))
+    return json.loads(dump.read_text("utf-8"))["env"]
+
+
+def test_cli_build_from_add_keeps_env_only_settings(env, monkeypatch):
+    """No settings file: env values the settings page cannot express still reach a CLI build (R11)."""
+    base, root = env
+    monkeypatch.setenv("YTLEARN_MODEL", "opus")
+    monkeypatch.setenv("YTLEARN_WORKERS", "12")
+    e = _child_env_via_add(base, root, monkeypatch)
+    assert e["YTLEARN_MODEL"] == "opus" and e["YTLEARN_WORKERS"] == "12" and e["YTLEARN_PROVIDER"] == "claude-cli"
+
+
+def test_api_build_from_add_gets_the_resolved_snapshot(env, monkeypatch):
+    base, root = env
+    _api_budget(root, 0.0, provider="openai-api", model="gpt-6-astra")
+    monkeypatch.setenv("YTLEARN_MODEL", "opus")
+    monkeypatch.setenv("YTLEARN_WORKERS", "12")
+    e = _child_env_via_add(base, root, monkeypatch)
+    assert e["YTLEARN_PROVIDER"] == "openai-api" and e["YTLEARN_MODEL"] == "gpt-6-astra" and e["YTLEARN_WORKERS"] == "4"
+    assert "saved" not in e and "YTLEARN_SAVED" not in e
+
+
+def test_add_warns_about_unpriced_api_rows_without_blocking(env):
+    base, root = env
+    from pipeline import usage
+    _api_budget(root, 0.1, provider="openai-api", model="gpt-6-astra")
+    usage.append(root, {"videoId": "y", "provider": "openai-api", "model": "gpt-new", "usage": {"input": 5, "output": 1},
+                        "costUsd": None, "state": "done"})
+    code, body = req(base + "/add", ADD)
+    assert code == 200 and "本月有 1 次產課牌價未知，未計入上限" in body["warning"]
+    assert body["job"]["warning"] == body["warning"]

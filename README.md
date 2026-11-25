@@ -1,8 +1,8 @@
 ![tests](https://github.com/at7211/yt-learn/actions/workflows/test.yml/badge.svg)
 
-**yt-learn** turns a YouTube video into an English lesson: bilingual EN/繁中 subtitles, a key-vocabulary panel and a recap card, overlaid on the YouTube player by a Chrome extension (the same overlay also works on Udemy, Netflix, HelloInterview and Coursera). Translation and vocabulary picking go through your already logged-in `claude` or `codex` CLI, so no API key is needed. Everything runs locally on 127.0.0.1:8765.
+**yt-learn** turns a YouTube video into an English lesson: bilingual EN/繁中 subtitles, a key-vocabulary panel and a recap card, overlaid on the YouTube player by a Chrome extension (the same overlay also works on Udemy, Netflix, HelloInterview and Coursera). Translation and vocabulary picking go through either your already logged-in `claude` or `codex` CLI (no API key needed) or, if you prefer, your own Anthropic or OpenAI API key; with a key the app shows an estimated cost per lesson and can enforce a monthly budget. Everything runs locally on 127.0.0.1:8765.
 
-Requirements: Python >= 3.11, Node 22, Chrome, and a logged-in `claude` or `codex` CLI.
+Requirements: Python >= 3.11, Node 22, Chrome, and either a logged-in `claude` or `codex` CLI or an Anthropic/OpenAI API key.
 
 Personal, local-only tool; see [Terms-of-service & scope](#terms-of-service--scope) below.
 
@@ -19,7 +19,7 @@ Personal, local-only tool; see [Terms-of-service & scope](#terms-of-service--sco
 ## 它會做什麼
 
 1. **擷取字幕**：在 YouTube 分頁按一下擴充功能圖示（或在首頁貼網址），擴充會抓 YouTube 自帶的逐字時間戳字幕。
-2. **產生課程**：本機 pipeline 切句、翻成繁體中文、挑出值得記的單字片語、寫一張背景卡。語言模型透過你已登入的 CLI 呼叫（預設 Claude，也可用 Codex），不需要 API key。
+2. **產生課程**：本機 pipeline 切句、翻成繁體中文、挑出值得記的單字片語、寫一張背景卡。語言模型可以透過你已登入的 CLI 呼叫（預設 Claude，也可用 Codex，不需要 API key），也可以改用你自己的 Anthropic 或 OpenAI API key。
 3. **播放學習**：字幕逐句顯示並標出當前單字；單字面板隨影片推進平滑捲動；開播十秒內左上角浮出前情提要。在 YouTube 頁面上是擴充功能把這些疊在播放器裡（全螢幕、劇院模式都在）；本機播放器多一個片尾總複習格與逐字稿。
 
 | 首頁：貼網址、看進度、挑一堂課 | 產課中的進度卡 |
@@ -34,7 +34,7 @@ Personal, local-only tool; see [Terms-of-service & scope](#terms-of-service--sco
 
 - macOS 或 Linux，Python 3.11 以上（只用標準庫）。
 - Chrome，並以「載入未封裝項目」安裝 `extension/`（見 `extension/README.md`）。沒有擴充時可用 `bookmarklet.js` 加首頁的手動匯入。
-- 一個已登入的 LLM CLI：`claude`（預設）或 `codex`。
+- 語言模型來源擇一：已登入的 LLM CLI（`claude`〔預設〕或 `codex`），或一把 Anthropic／OpenAI 的 API key（見「設定」與「費用」）。
 - 影片本身要有字幕軌（YouTube 的自動字幕或上傳字幕都可以；Udemy、Netflix、HelloInterview 與 Coursera 要有英文字幕）。
 - Node 22 與 `uv` 只有跑測試才需要。
 
@@ -79,11 +79,23 @@ python3 -m pipeline.build <videoId> --model claude-opus-5-5 --effort high   # �
 
 ### 設定
 
-首頁課程列表下方的「設定」可以選產課用的模型、effort（思考強度）與切句併行數（1–8），也有三個一鍵預設：**快**（Haiku、low、8 併行）最快也最省，中譯與挑字會粗一點；**標準**（Sonnet、不指定 effort、4 併行）就是原本的預設；**細緻**（Opus、high、4 併行）最慢也最貴，翻譯與挑字最好。套用預設後三個欄位仍可個別改，按「儲存」才生效。設定存在 `data/settings.json`（不進 git）；檔案裡有的值優先，沒有的才看環境變數 `YTLEARN_MODEL`、`YTLEARN_EFFORT`、`YTLEARN_WORKERS`，所以原本用環境變數的做法照樣能用，指令列參數又優先於兩者。模型與 effort 只對 Claude 有效：用 Codex 時模型照 Codex 自己的設定，effort 以 `model_reasoning_effort` 傳、最高到 high；併行數兩者都適用。設定套用在之後開始的產課，正在跑的那支不受影響。effort 不同的回覆分開快取，換回原本的 effort 會重用舊快取。在工具列的擴充功能圖示上按右鍵，有「打開 yt-learn 首頁」與「設定」兩個入口。
+首頁課程列表下方的「設定」可以選產課用的語言模型來源、模型、effort（思考強度）與切句併行數（1–8），也有三個一鍵預設：**快**（Haiku、low、8 併行）最快也最省，中譯與挑字會粗一點；**標準**（Sonnet、不指定 effort、4 併行）就是原本的預設；**細緻**（Opus、high、4 併行）最慢也最貴，翻譯與挑字最好。套用預設後三個欄位仍可個別改，按「儲存」才生效。設定存在 `data/settings.json`（不進 git）；檔案裡有的值優先，沒有的才看環境變數 `YTLEARN_MODEL`、`YTLEARN_EFFORT`、`YTLEARN_WORKERS`，指令列參數又優先於兩者。用 CLI 來源時，server 啟動的產課只套用檔案裡有的值、其餘照原樣繼承環境變數，所以原本用環境變數的做法照樣能用，連設定頁選不到的值（例如 `YTLEARN_MODEL=opus`、`YTLEARN_WORKERS=12`）也一樣；用 API 來源時，產課用的是設定頁顯示的那一組值，設定頁表達不了的環境變數值會被忽略、改用預設。模型與 effort 對 Claude CLI 與兩個 API 來源都有效，只有 Codex CLI 不同：模型照 Codex 自己的設定，effort 以 `model_reasoning_effort` 傳、最高到 high；併行數所有來源都適用。設定套用在之後開始的產課，正在跑的那支不受影響。effort 不同的回覆分開快取，換回原本的 effort 會重用舊快取。在工具列的擴充功能圖示上按右鍵，有「打開 yt-learn 首頁」與「設定」兩個入口。
+
+**語言模型來源。** 設定裡的「語言模型來源」有四個選項：「Claude CLI（本機登入）」（預設）、「Codex CLI（本機登入）」、「Anthropic API key」、「OpenAI API key」。選到 API 來源時會出現 key 欄位：貼上 key 後按「測試連線」，成功就立刻存進本機 `data/keys.json`（權限 0600，不進 git），不必另外按「儲存」；之後頁面只看得到最後四碼，可以「更換」或「移除」。也可以不貼，改設環境變數 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`；兩邊都有時 `data/keys.json` 優先，來自環境變數的 key 要移除得改環境變數。測試連線成功時會順便抓回這把 key 能用的模型清單，存在 `data/models.json`：Anthropic 只列 `claude-` 開頭的模型；OpenAI 只列帳號可用的推理模型（`gpt-5`／`gpt-6`、`o3`／`o4` 系列，濾掉 realtime、audio、image、embedding 等），這只是篩出「可能能用」的清單，實際相容與否以產課結果為準。環境變數 `YTLEARN_PROVIDER` 也接受 `anthropic-api`、`openai-api`（`claude`、`codex` 仍是 `claude-cli`、`codex-cli` 的別名）。
+
+**設定在你按下產課的那一刻綁定該次產課。** 之後再改設定，不影響已經開始或排隊中的那一次。
+
+**key 的去向。** key 不會出現在網頁回應、log、指令列參數、進度檔、課程檔與帳本，錯誤訊息裡也會遮掉。API 來源的產課子程序只拿到你選定的那一家的 key（另一家的環境變數會被移除）；CLI 來源則原樣繼承目前的環境變數，不做任何處理。用 API 時，字幕文字會直接送到 Anthropic 或 OpenAI，這是 CLI 之外多出來的一條資料出口。
+
+**每月上限。** 設定的「每月上限（美元）」留空代表不限。上限只算 API 來源，CLI 走訂閱額度、不計入。帳本合計到 80% 時，新增產課會顯示提醒；到 100% 時，首頁新增會回 HTTP 402，進度卡位置出現「這次仍要跑」按鈕，按了才會開始（只跑這一次，不會記住）。在 YouTube 頁按擴充功能圖示被擋時，播放器左下角的 pill 會提示到首頁選擇仍要跑；Udemy、Netflix、HelloInterview 則要先到首頁調高或關閉上限再重試，擴充功能本身不能繞過。上限只看帳本裡**已結束**的產課，**不含進行中與排隊中的**，所以同時排很多支可能超出一點；正在跑的產課不會被中斷。
 
 ## 費用
 
-產課用的是 Claude Sonnet 5.5（`pipeline/build.py` 的 `DEFAULT_MODEL`），透過已登入的 `claude` CLI 呼叫，吃的是 Claude 訂閱的用量額度，不是 API 帳單。下面是以 API 牌價（輸入 $2、輸出 $10 每百萬 token）換算的單次產課估計。輸入用真實 prompt 估算；輸出用課程檔還原一次產課的回覆估算（快取裡可能有多次產課的回覆，不直接加總）。另外每次 `claude -p` 呼叫都有約 3.6k token 的 CLI 固定開銷（多半是寫入 prompt cache，以 1.25 倍、每百萬 $2.5 計）：
+費用有兩種算法，取決於「設定」選的語言模型來源。
+
+### CLI 來源（訂閱額度）
+
+預設的 Claude Sonnet 5.5（`pipeline/build.py` 的 `DEFAULT_MODEL`）透過已登入的 `claude` CLI 呼叫，吃的是 Claude 訂閱的用量額度，不是 API 帳單。下面是以 API 牌價（輸入 $2、輸出 $10 每百萬 token）換算的單次產課估計。輸入用真實 prompt 估算；輸出用課程檔還原一次產課的回覆估算（快取裡可能有多次產課的回覆，不直接加總）。另外每次 `claude -p` 呼叫都有約 3.6k token 的 CLI 固定開銷（多半是寫入 prompt cache，以 1.25 倍、每百萬 $2.5 計）：
 
 | 影片長度 | 呼叫次數 | 輸入（prompt） | CLI 固定開銷 | 輸出 | 約略費用 |
 | --- | --- | --- | --- | --- | --- |
@@ -95,21 +107,32 @@ python3 -m pipeline.build <videoId> --model claude-opus-5-5 --effort high   # �
 
 還沒做的省錢空間：每個切句 chunk 都是獨立的 `claude -p` 程序，上面的固定開銷與系統提示每次重送，是輸入的大宗，chunk 切大一點、呼叫少一點就省；輸出裡一半是把英文原句抄回來，schema 改成只回切點與中譯可砍近半。
 
+### API 來源（按 token 計費，本機估算）
+
+選 Anthropic 或 OpenAI 的 API key 時，是照 token 向帳戶計費，yt-learn 在本機把每次回應回報的用量累加並換算成美元：
+
+- **進度卡**：產課中顯示目前累計的「約 $x・y tokens」；完成卡與課程列表的每一堂課也顯示費用。課程檔裡有 `usage`（input、cacheRead、cacheWrite、output 的 token 數）與 `costUsd`。模型不在牌價表裡時顯示「牌價未知」，帳本記 token、金額為 `null`，不會擋產課。
+- **帳本**：每支產課結束後在 `data/usage.jsonl`（不進 git）追加一行，記時間、影片、來源、模型、token、`costUsd` 與狀態。失敗或中途停止的產課那一行標 `partial: true`；server 當掉時留下的孤兒產課，會在下次啟動時以 `state: "orphan"` 補記。首頁會顯示本月 API 合計與上限的使用率，CLI 的等值金額另列、不計入上限。
+- **牌價表**：`pipeline/prices.json`，每個模型一列：`input`、`output`、`cacheRead`、`cacheWrite`（每百萬 token 美元）、`source`（牌價網址）與 `asOf`（抄錄日期）。牌價會變，所以這是**估算，不是帳單**，實際金額以 Anthropic／OpenAI 後台為準。新模型或牌價更新時自己改這個檔（`cacheRead`／`cacheWrite` 填 `null` 代表照 `input` 計），不用動程式。OpenAI 的快取寫入 token 怎麼計入 input 沒有官方文件證實，程式假設它包含在 input 內，屬估算。逾時而放棄、再重試的請求，廠商那邊可能已經處理完並計費，但本機拿不到它的用量，不會記進帳本，所以實際帳單可能比本機估算多一點。
+- 回覆都快取在 `data/cache/`。Anthropic API 與 Claude CLI 對同一個模型、prompt 與 effort 共用快取，所以用 API 產過的影片切回 `claude-cli` 重產，不會再呼叫（`llm_calls=0`）；OpenAI 與 Codex 各有自己的快取。
+
 ## 快捷鍵
 
-- 疊層（YouTube、Udemy、Netflix、HelloInterview、Coursera 相同）：Z 中文・E 英文・V 單字面板・R 重播本句・[ ] 上一句／下一句。網站自己的快捷鍵不受影響（YouTube 的 Space、← →、F、C、K、J、L、M；Netflix 的 Space、← →、F、M、S、數字鍵）。
+- 疊層（YouTube、Udemy、Netflix、HelloInterview、Coursera 相同）：Z 中文・E 英文・V 單字面板・B 黑底（字幕與單字欄後面的暗色漸層）・R 重播本句・[ ] 上一句／下一句。網站自己的快捷鍵不受影響（YouTube 的 Space、← →、F、C、K、J、L、M；Netflix 的 Space、← →、F、M、S、數字鍵）。
 - Coursera 疊層另外把 ← → 當成上一句／下一句（開著疊層時取代 Coursera 播放器自己的左右鍵，關掉疊層就恢復）。
-- 本機播放器：Space 播放／暫停・← → 上一句／下一句・R 重播本句・Z 中文・E 英文・V 單字面板・F 全螢幕。中文輸入法開著也能用。
+- 本機播放器：Space 播放／暫停・← → 上一句／下一句・R 重播本句・Z 中文・E 英文・V 單字面板・B 黑底・F 全螢幕。中文輸入法開著也能用。
 - 滑鼠（兩種播放器都一樣）：點字幕裡的任何一個字，影片暫停並在旁邊的小視窗開劍橋英漢字典；當前單字（橘色）會查整個詞。右側單字面板照舊是點一下跳到那一句。
+- 問 AI（兩種播放器都一樣）：在字幕上按住一個字，拖曳到同一句的另一個字放開（選幾個字），影片暫停，選取上方出現「問 AI」；按下去會在字幕上方開一張卡片，說明這段在這裡的意思、為什麼這樣說、可套用的句型、其他例句與類似說法（CLI 可能要 10–60 秒）。結果同時存成這部影片的筆記（`data/notes/<id>.json`）：單字面板標題列的「我的片語」切換到筆記清單，點一筆就跳回那一句（不播放）並打開卡片，不再呼叫 AI；字幕裡已有筆記的字有淡金色底線，點一下直接開卡片。Esc、點卡片外面或繼續播放就關掉。只能選同一句、最多 30 個字；花費照設定頁的來源與每月上限計算，到上限時卡片會問「這次仍要問」。
 
 ## 專案結構
 
 ```
 extension/   Chrome MV3 擴充：在 YouTube、Udemy、Netflix（選擇性開啟）、HelloInterview 與 Coursera 分頁擷取字幕送到本機 server，並把課程疊在播放器上
-server.py    標準庫 HTTP server：靜態網頁、/ingest、/add、/jobs、/settings、產課佇列
+server.py    標準庫 HTTP server：靜態網頁、/ingest、/add、/jobs、/settings、/keys、/usage、產課佇列
 pipeline/    words（字詞正規化）→ chunk → segment（切句翻譯）→ vocab（挑字）→ intro（前情提要）→ build
-web/         播放器：index.html、app.js、style.css、timing.js（純函式）、dict.js（查字典）、intro.js（前情提要）、settings.js（設定）、progress.js（進度）、handshake.js（與擴充功能握手）、lesson-source.js（課程來源）、ytid.js（網址解析）
-data/        raw/（字幕）、lessons/（課程 JSON）、cache/（LLM 回覆）、jobs/（build log）
+             settings（來源、模型、上限）、keys（API key）、cost 與 prices.json（牌價換算）、usage（用量帳本）
+web/         播放器：index.html、app.js、style.css、timing.js（純函式）、dict.js（查字典）、phrase.js（選字問 AI、筆記）、intro.js（前情提要）、settings.js（設定）、progress.js（進度）、handshake.js（與擴充功能握手）、lesson-source.js（課程來源）、ytid.js（網址解析）
+data/        raw/（字幕）、lessons/（課程 JSON）、cache/（LLM 回覆）、jobs/（build log）、keys.json（API key，0600）、usage.jsonl（用量帳本）、models.json（模型清單快取）
 tests/       pytest（pipeline、server）與 node --test（web 純函式、擴充功能的純函式與 worker 訊息）
 docs/        設計與計畫（superpowers/plans）、參考版面觀察、截圖
 ```
@@ -122,7 +145,7 @@ node --test tests/web/                           # 播放器與擴充功能的�
 ## 已知限制
 
 - 自動字幕的品質決定切句與單字的品質；沒有字幕軌的影片做不了。
-- 兩個 LLM 都只透過本機 CLI 呼叫，速度取決於你的帳號與模型；回覆會快取在 `data/cache/`，重跑同一支影片很快。
+- CLI 來源的速度取決於你的帳號與模型；API 來源的金額只是本機估算，不是帳單；回覆會快取在 `data/cache/`，重跑同一支影片很快。
 - 兩種疊層都蓋在 YouTube 播放器上（擴充功能蓋在 youtube.com 的播放器，本機播放器蓋在嵌入播放器），只適合個人本機使用，不要公開部署。
 - YouTube 條款風險：字幕是重用播放器自己發出的 timedtext 請求取得的，疊層也直接畫在播放器上，這兩件事都可能不符合 YouTube 的服務條款與嵌入規範。請只在自己的電腦上、為自己學習使用，不要拿來散布字幕或課程內容。
 - YouTube 疊層與「沉浸式翻譯」這類也在播放器上畫字幕的擴充會重疊，看課時先把它們在 YouTube 關掉。

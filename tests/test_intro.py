@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from pipeline import schema
 from pipeline.intro import INTRO_SCHEMA, INTRO_SYSTEM, RETRY_NOTE, intro_user_prompt, make_intro, validate_intro
 from pipeline.llm import FakeProvider, ProviderError
@@ -106,3 +108,10 @@ def test_line_limits_count_latin_at_half_width():
     assert any("longer" in e for e in validate_intro({"title": "x", "lines": ["一二三四五六七八九十一二三四五六七八九十一二三"]}))
     assert any("title line longer" in e for e in validate_intro({"title": "一二三四五六七八九十一二三四五六七", "lines": ["x"]}))
     assert validate_intro({"title": "Kimmy K 3.1 發布\n神祕模型之謎", "lines": ["2026 年 10 月 26 日 Code Report", "Moonshot 新模型與蒸餾爭議"]}) == []
+
+
+def test_fatal_provider_error_propagates_through_make_intro():
+    from pipeline.llm import FakeProvider, ProviderFatal
+    from pipeline.intro import make_intro
+    with pytest.raises(ProviderFatal):
+        make_intro({"title": "t", "channel": "c", "duration": 10}, [{"a": 0, "b": 1, "en": "hi there", "zh": "嗨"}], FakeProvider([ProviderFatal("API key 無效或沒有權限", 401)]))

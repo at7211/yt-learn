@@ -61,3 +61,15 @@ test('clickWord: a child inside a .kw span resolves to the span', () => {
   const kw = node('kw', 'machine learning', { term: 'machine learning' });
   assert.equal(clickWord(node('', 'learning', { parent: kw })), 'machine learning');
 });
+
+test('clickWord: a .w token inside a .kw wrapper looks up the wrapper term (nearest .kw wins)', () => {
+  const en = node('sub-en', 'we built proof of concepts.');
+  const kw = node('kw', 'proof of concepts.', { term: 'proof of concept', parent: en });
+  assert.equal(clickWord(node('w', 'concepts.', { parent: kw })), 'proof of concept');
+  const bare = node('kw', 'proof of', { parent: en });
+  assert.equal(clickWord(node('w', 'of', { parent: bare })), 'proof of', 'no data-term: the wrapper text');
+  // a .w outside any .kw keeps its own token; the walk stops at the line
+  const outer = node('kw', 'outside', { term: 'outside' });
+  const line = node('sub-en', 'x', { parent: outer });
+  assert.equal(clickWord(node('w', 'built', { parent: line })), 'built');
+});

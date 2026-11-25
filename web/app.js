@@ -6,8 +6,10 @@ import { externalSite, listRowSite, listRowSourceLink, canBuildHere } from './le
 import { waitForAck, shouldApplyLiveStatus } from './handshake.js';
 import { introRows } from './intro.js';
 import { dictWord, dictUrl, clickWord } from './dict.js';
-import { barState } from './progress.js';
-import { DEFAULTS, MODELS, EFFORTS, PRESETS, normalize, presetOf, summary, shortModel } from './settings.js';
+import { barState, costText } from './progress.js';
+import { spanRange, phraseText, noteKey, dragKind, noteList, noteAtWord, notedWords, noteFor, runExplain, unionRect, placeAbove,
+  cardNodes, noteRowNodes } from './phrase.js';
+import { DEFAULTS, EFFORTS, PRESETS, PROVIDERS, normalize, presetOf, summary, shortModel, modelsFor, fmtUsd, budgetText, parseBudget } from './settings.js';
 
 // ---------------------------------------------------------------- util
 const $ = (id) => document.getElementById(id);
@@ -32,10 +34,16 @@ const S = {
   showZh: true,
   showEn: true,
   showVocab: true,
+  showShade: true,
   started: false, // true after the first PLAYING; subtitles and the panel stay hidden until then
   review: false,
   page: 0,
   keys: { sub: null, panel: null, cue: null, count: null },
+  id: null, // the lesson id from ?v (also the notes' videoId)
+  notes: {}, // {"a-b": NOTE} from GET /notes/<id>, plus the ones answered while watching
+  notesRev: 0, // bumped on every change: part of the subtitle render key (the noted underline)
+  notesView: false, // the panel shows 我的片語 instead of the vocab track
+  noteCount: 0,
 };
 
 // ---------------------------------------------------------------- home (no ?v)
@@ -84,58 +92,270 @@ function initHome(showList) {
 
 // ---------------------------------------------------------------- settings (home only)
 const EFFORT_TEXT = { default: '預設（不指定）' };
+const KEY_ENV = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' };
+const VENDOR_NAME = { anthropic: 'Anthropic', openai: 'OpenAI' };
+const PRESET_PROVIDERS = ['claude-cli', 'anthropic-api']; // the presets name Claude models
+const SOURCE_NOTE = {
+  'claude-cli': '用本機已登入的 claude 指令產課，走訂閱額度。',
+  'codex-cli': '用本機已登入的 codex 指令產課，走訂閱額度：模型照 Codex 自己的設定，effort 最高到 high。',
+  'anthropic-api': '直接呼叫 Anthropic API，依 token 計費。測試連線後模型清單會多出帳號可用的其他 Claude 模型。',
+  'openai-api': '直接呼叫 OpenAI API，依 token 計費。要先測試連線取得模型清單，才能選模型。',
+};
+// What the page knows besides the form: masked keys and cached model lists from GET /settings, and
+// the last settings the server accepted (null until it answers).
+const SET = { keys: {}, models: {}, saved: null, changingKey: false };
+
+// A 「無法儲存：…」 from an earlier save no longer applies once the source or the key changed;
+// a settings-file warning from GET /settings stays.
+function clearSaveError() {
+  const w = $('set-warning');
+  if (w.textContent.startsWith('無法儲存')) { w.textContent = ''; w.hidden = true; }
+}
+
+function currentProvider() {
+  const r = document.querySelector('#set-providers input[name="provider"]:checked');
+  return r ? r.value : DEFAULTS.provider;
+}
+
+function readBudget() {
+  const input = $('set-budget');
+  return parseBudget(input.value, Boolean(input.validity && input.validity.badInput));
+}
 
 function readSettingsForm() {
-  return { model: $('set-model').value, effort: $('set-effort').value, workers: Number($('set-workers').value) };
+  const budget = readBudget();
+  return { provider: currentProvider(), model: $('set-model').value, effort: $('set-effort').value,
+           workers: Number($('set-workers').value), budgetUsd: budget.error ? NaN : budget.value };
+}
+
+// The model <select> for `provider`, selecting `model`. codex-cli keeps the stored model as the one
+// (disabled) option so it round-trips unchanged; an API source with no list says to test first.
+function fillModelOptions(provider, model) {
+  const sel = $('set-model');
+  const opt = (value, text) => { const o = el('option', text); o.value = value; return o; };
+  const list = modelsFor(provider, SET.models);
+  if (provider === 'codex-cli') {
+    sel.replaceChildren(opt(model || DEFAULTS.model, '照 Codex 自己的設定'));
+  } else if (!list.length) {
+    sel.replaceChildren(opt('', '請先測試連線取得模型清單'));
+  } else {
+    sel.replaceChildren(...list.map((m) => opt(m, shortModel(m))));
+  }
+  sel.value = sel.options[0].value;
+  if ([...sel.options].some((o) => o.value === model)) sel.value = model;
+  sel.disabled = provider === 'codex-cli' || !list.length;
 }
 
 function fillSettingsForm(s) {
-  $('set-model').value = s.model;
+  for (const r of document.querySelectorAll('#set-providers input[name="provider"]')) r.checked = r.value === s.provider;
+  fillModelOptions(s.provider, s.model);
   $('set-effort').value = s.effort;
   $('set-workers').value = String(s.workers);
-  markPreset();
+  $('set-budget').value = s.budgetUsd == null ? '' : String(s.budgetUsd);
+  renderSource();
+}
+
+// Switching source: Claude sources keep a model they accept (else the default), OpenAI takes the
+// first listed model, Codex leaves it alone.
+function switchProvider(next) {
+  const prev = $('set-model').value || DEFAULTS.model;
+  let model = prev;
+  if (next === 'openai-api') model = modelsFor(next, SET.models)[0] || '';
+  else if (next !== 'codex-cli' && !modelsFor(next, SET.models).includes(prev)) model = DEFAULTS.model;
+  SET.changingKey = false;
+  $('key-input').value = '';
+  $('key-result').textContent = '';
+  clearSaveError();
+  fillModelOptions(next, model);
+  renderSource();
 }
 
 function markPreset() {
-  const p = presetOf(readSettingsForm());
+  const usable = PRESET_PROVIDERS.includes(currentProvider());
+  const p = usable ? presetOf(readSettingsForm()) : null;
   for (const b of document.querySelectorAll('#settings [data-preset]')) {
+    b.disabled = !usable;
     b.setAttribute('aria-pressed', String(b.dataset.preset === p));
   }
-  $('preset-note').textContent = p ? PRESETS[p].note : '自訂組合';
+  $('preset-note').textContent = !usable ? '預設組合指定 Claude 模型，只在 Claude CLI／Anthropic API 下可用'
+    : p ? PRESETS[p].note : '自訂組合';
+}
+
+function renderSource() {
+  const provider = currentProvider();
+  $('source-note').textContent = SOURCE_NOTE[provider] + ' 併行數越大切句越快，同時送出的請求也越多。';
+  const vendor = PROVIDERS[provider].key;
+  $('keybox').hidden = !vendor;
+  if (vendor) renderKeybox(vendor);
+  markPreset();
+}
+
+// The key box only ever sees { set, tail, source }: the full key never comes back from the server.
+function renderKeybox(vendor) {
+  const k = SET.keys[vendor] || { set: false, tail: null, source: null };
+  const env = KEY_ENV[vendor];
+  const status = $('key-status');
+  if (k.set) {
+    status.textContent = '已設定 ••••' + k.tail + '（' + (k.source === 'env' ? '環境變數 ' + env : '檔案') + '）';
+    status.className = 'key-status';
+  } else {
+    status.textContent = '尚未設定 ' + VENDOR_NAME[vendor] + ' API key';
+    status.className = 'key-status unset';
+  }
+  const editing = !k.set || SET.changingKey;
+  $('key-row').hidden = !editing;
+  $('key-input').placeholder = k.set ? '貼上新的 ' + VENDOR_NAME[vendor] + ' API key' : '貼上 ' + VENDOR_NAME[vendor] + ' API key';
+  $('key-change').hidden = !k.set || SET.changingKey;
+  $('key-remove').hidden = !(k.set && k.source === 'file');
+  let hint;
+  if (!k.set) hint = '貼上 key 後按「測試連線」：成功會立刻存到本機 data/keys.json，不用另外按儲存。也可以改用環境變數 ' + env + '。';
+  else if (k.source === 'env') hint = '這把 key 來自環境變數 ' + env + '，要移除請改環境變數。按「更換」貼上新的 key 測試成功後，會存進 data/keys.json 並優先使用。';
+  else hint = 'key 只存在本機 data/keys.json，頁面只拿得到最後四碼。';
+  $('key-hint').textContent = hint;
+}
+
+function keyResult(text, kind) {
+  const r = $('key-result');
+  r.textContent = text;
+  r.className = 'meta' + (kind ? ' ' + kind : '');
+}
+
+async function postJson(url, body) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let out;
+  try { out = await res.json(); } catch (e) { throw new BadResponse(); }
+  return { res, out };
+}
+
+function keyButtons(disabled) {
+  for (const id of ['key-test', 'key-change', 'key-remove']) $(id).disabled = disabled;
+}
+
+async function testKey() {
+  const vendor = PROVIDERS[currentProvider()].key;
+  if (!vendor) return;
+  const pasted = $('key-input').value.trim();
+  keyResult('測試中…');
+  keyButtons(true);
+  try {
+    const { res, out } = await postJson('/keys/test', pasted ? { provider: vendor, key: pasted } : { provider: vendor });
+    if (!res.ok || !out.ok) { keyResult(out.error || '測試失敗', 'bad'); return; }
+    $('key-input').value = '';
+    SET.changingKey = false;
+    if (out.keys) SET.keys = out.keys;
+    SET.models = { ...SET.models, [vendor]: out.models || [] };
+    const model = $('set-model').value;
+    const list = modelsFor(currentProvider(), SET.models);
+    fillModelOptions(currentProvider(), list.includes(model) ? model : (currentProvider() === 'openai-api' ? list[0] : DEFAULTS.model));
+    renderSource();
+    clearSaveError();
+    keyResult('連線成功' + (pasted ? '，key 已存到本機' : '') + '；取得 ' + (out.models || []).length + ' 個模型。', 'ok');
+  } catch (e) {
+    keyResult(e instanceof BadResponse ? BAD_RESPONSE : UNREACHABLE, 'bad');
+  } finally {
+    keyButtons(false);
+  }
+}
+
+async function removeKey() {
+  const vendor = PROVIDERS[currentProvider()].key;
+  if (!vendor || !window.confirm('移除本機儲存的 ' + VENDOR_NAME[vendor] + ' API key？')) return;
+  keyButtons(true);
+  try {
+    const { res, out } = await postJson('/keys', { [vendor]: '' });
+    if (!res.ok || !out.ok) { keyResult((out.errors && out.errors.join('；')) || '無法移除', 'bad'); return; }
+    SET.keys = out.keys || SET.keys;
+    SET.changingKey = false;
+    renderSource();
+    const still = SET.keys[vendor] && SET.keys[vendor].set;
+    const inUse = SET.saved && PROVIDERS[SET.saved.provider] && PROVIDERS[SET.saved.provider].key === vendor;
+    keyResult('已移除' + (still ? '，現在改用環境變數 ' + KEY_ENV[vendor] + ' 的 key。'
+      : inUse ? '。目前儲存的來源仍是 ' + PROVIDERS[SET.saved.provider].short + '，產課前請貼上新的 key 或換來源。' : '。'), still || !inUse ? 'ok' : 'bad');
+  } catch (e) {
+    keyResult(e instanceof BadResponse ? BAD_RESPONSE : UNREACHABLE, 'bad');
+  } finally {
+    keyButtons(false);
+  }
+}
+
+// #usage-line: this month's API spend against the budget (GET /usage). Shown on the real home page only.
+async function loadUsage() {
+  const box = $('usage');
+  if ($('settings').hidden) { box.hidden = true; return; }
+  try {
+    const u = await (await fetch('/usage')).json();
+    if (typeof u.apiUsd !== 'number') throw new BadResponse();
+    const line = $('usage-line');
+    line.textContent = budgetText(u);
+    if (u.budgetState === 'warn' || u.budgetState === 'over') {
+      line.append(el('span', '・已用 ' + u.pct + '%' + (u.budgetState === 'over' ? '，新的產課要按「這次仍要跑」' : ''), 'usage-pct'));
+    }
+    line.className = 'usage-line' + (u.budgetState === 'warn' || u.budgetState === 'over' ? ' ' + u.budgetState : '');
+    let cli = $('usage-cli');
+    if (typeof u.cliUsd === 'number' && u.cliUsd > 0) {
+      if (!cli) { cli = el('p', null, 'meta usage-cli'); cli.id = 'usage-cli'; line.after(cli); }
+      cli.textContent = 'CLI 等值' + fmtUsd(u.cliUsd) + '（訂閱額度，不計入上限）';
+    } else if (cli) cli.remove();
+    box.hidden = false;
+  } catch (e) {
+    box.hidden = true; // the usage line is informative; the settings form reports connection problems
+  }
 }
 
 function initSettings(listed) {
   const box = $('settings');
   const result = $('set-result');
   const warn = (text) => { $('set-warning').textContent = text || ''; $('set-warning').hidden = !text; };
-  if (!$('set-model').options.length) {
-    $('set-model').append(...MODELS.map((m) => { const o = el('option', shortModel(m)); o.value = m; return o; }));
+  const dirty = () => { result.textContent = '尚未儲存'; };
+  if (!$('set-effort').options.length) {
     $('set-effort').append(...EFFORTS.map((x) => { const o = el('option', EFFORT_TEXT[x] || x); o.value = x; return o; }));
+    $('set-providers').append(...Object.entries(PROVIDERS).map(([value, p]) => {
+      const label = el('label');
+      const r = el('input');
+      r.type = 'radio';
+      r.name = 'provider';
+      r.value = value;
+      r.onchange = () => { switchProvider(value); dirty(); };
+      label.append(r, el('span', p.label));
+      return label;
+    }));
   }
   for (const b of box.querySelectorAll('[data-preset]')) {
-    b.onclick = () => { fillSettingsForm(PRESETS[b.dataset.preset].settings); result.textContent = '尚未儲存'; };
+    b.onclick = () => {
+      const p = PRESETS[b.dataset.preset].settings;
+      fillModelOptions(currentProvider(), p.model);
+      $('set-effort').value = p.effort;
+      $('set-workers').value = String(p.workers);
+      markPreset();
+      dirty();
+    };
   }
-  for (const id of ['set-model', 'set-effort', 'set-workers']) {
-    $(id).oninput = () => { markPreset(); result.textContent = '尚未儲存'; };
+  for (const id of ['set-model', 'set-effort', 'set-workers', 'set-budget']) {
+    $(id).oninput = () => { markPreset(); dirty(); };
   }
+  $('key-test').onclick = testKey;
+  $('key-remove').onclick = removeKey;
+  $('key-change').onclick = () => { SET.changingKey = true; renderSource(); $('key-input').focus(); };
+  $('key-input').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); testKey(); } };
   $('set-save').onclick = async () => {
-    const { settings, errors } = normalize(readSettingsForm());
+    const budget = readBudget();
+    if (budget.error) { result.textContent = ''; warn('無法儲存：' + budget.error); return; }
+    const { settings, errors } = normalize(readSettingsForm(), SET.models);
     if (errors.length) { result.textContent = ''; warn('無法儲存：' + errors.join('；')); return; }
     result.textContent = '儲存中…';
     try {
-      const res = await fetch('/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings) });
-      let out;
-      try { out = await res.json(); } catch (e) { throw new BadResponse(); }
+      const { res, out } = await postJson('/settings', settings);
       if (!res.ok || !out.ok) {
         result.textContent = '';
         warn('無法儲存：' + ((out.errors && out.errors.join('；')) || '未知錯誤'));
         return;
       }
       warn('');
+      SET.saved = out.settings;
       fillSettingsForm(out.settings);
       $('settings-summary').textContent = summary(out.settings);
       result.textContent = '已儲存，之後開始的產課會用這組設定。';
+      loadUsage();
     } catch (e) {
       result.textContent = '';
       warn(e instanceof BadResponse ? BAD_RESPONSE : UNREACHABLE);
@@ -145,10 +365,14 @@ function initSettings(listed) {
   fetch('/settings').then(async (res) => {
     const out = await res.json();
     if (!out.settings) throw new BadResponse();
+    SET.keys = out.keys || {};
+    SET.models = out.models || {};
+    SET.saved = out.settings;
     fillSettingsForm(out.settings);
     $('settings-summary').textContent = summary(out.settings);
     warn(out.warning ? '設定檔有問題，暫用預設值：' + out.warning : '');
   }).catch(() => warn('讀不到目前的設定（' + UNREACHABLE + '）'));
+  loadUsage();
   openSettingsFromHash(listed);
   window.addEventListener('hashchange', () => openSettingsFromHash());
 }
@@ -194,19 +418,22 @@ function mountCard(container, id, opts = {}) {
   if (CARD && CARD.container !== container) CARD.container.replaceChildren();
   CARD = { gen: ++genCounter, container, id, job: null, live: null, title: null, ext: 'unknown',
            netText: null, lastStep: 0, lastPct: 0, startedAt: Date.now(), timer: null, polling: false,
-           onDone: opts.onDone || null, doneFired: false };
+           onDone: opts.onDone || null, doneFired: false, endFired: false, budget: null };
   return CARD;
 }
 
 class BadResponse extends Error {}
+class BudgetBlocked extends Error {} // POST /add said 402 code "budget": the monthly API cap is reached
 
-async function postAdd(id) {
+// `extra` is { override: true } after 「這次仍要跑」 (skips the budget check for this one attempt).
+async function postAdd(id, extra = {}) {
   const res = await fetch('/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: 'https://www.youtube.com/watch?v=' + id }) });
+    body: JSON.stringify({ url: 'https://www.youtube.com/watch?v=' + id, ...extra }) });
   let out;
   try { out = await res.json(); } catch (e) { throw new BadResponse(); }
+  if (res.status === 402 && out.code === 'budget') throw new BudgetBlocked(out.error || '本月 API 費用已達上限（本機估算）');
   if (!res.ok || !out.job) throw new Error((out.errors && out.errors.join('；')) || '無法建立工作');
-  return out.job;
+  return out.warning && !out.job.warning ? { ...out.job, warning: out.warning } : out.job;
 }
 
 // Create (or re-attach to) the job for `id`, show its card, poll, and ask the extension if queued.
@@ -223,11 +450,12 @@ async function startJob(id, container, opts) {
   renderCard();
   let job;
   try {
-    job = await postAdd(id);
+    job = await postAdd(id, opts && opts.override ? { override: true } : {});
   } catch (e) {
     if (card !== CARD) return;
     if (e instanceof TypeError) card.netText = UNREACHABLE;
     else if (e instanceof BadResponse) card.netText = BAD_RESPONSE;
+    else if (e instanceof BudgetBlocked) card.budget = e.message;
     else card.job = { videoId: id, state: 'error', message: e.message };
     renderCard();
     return;
@@ -254,6 +482,10 @@ function applyJob(card, job) {
   const st = stepOf(job.state);
   if (st != null) card.lastStep = st;
   if (job.progress) card.lastPct = barState(job, 0).pct; // kept so an error bar freezes where the build stopped
+  if ((job.state === 'done' || job.state === 'error') && !card.endFired) {
+    card.endFired = true;
+    loadUsage(); // the ledger has this build's line now
+  }
   if (job.state === 'done') {
     if (card.title == null) fetchTitle(card);
     if (card.doneFired === false) {
@@ -318,10 +550,23 @@ async function requestCapture(card) {
   renderCard();
 }
 
-function retry() {
+function retry(override = false) {
   if (!CARD) return;
   const { id, container, onDone } = CARD;
-  startJob(id, container, { onDone });
+  startJob(id, container, override ? { onDone, override: true } : { onDone });
+}
+
+// The card in place of a job POST /add refused over the monthly budget: no job exists yet.
+function budgetCard(card, box) {
+  box.append(el('p', card.budget, 'cstate bad'));
+  box.append(el('p', '「這次仍要跑」只跳過這一次，不會改上限；要調整上限請到下方設定。', 'meta'));
+  const b = el('button', '這次仍要跑', 'primary');
+  b.type = 'button';
+  b.onclick = () => retry(true);
+  const actions = el('p', null, 'actions');
+  actions.append(b);
+  box.append(actions);
+  card.container.replaceChildren(box);
 }
 
 function renderCard() {
@@ -333,6 +578,7 @@ function renderCard() {
   if (card.title) head.append(el('span', card.title, 'ctitle'));
   head.append(el('code', card.id));
   box.append(head);
+  if (card.budget) { budgetCard(card, box); return; }
 
   const isErr = job && job.state === 'error';
   const cur = job && !isErr ? stepOf(job.state) : (isErr && stepOf(job.failedIn) != null ? stepOf(job.failedIn) : card.lastStep);
@@ -365,6 +611,11 @@ function renderCard() {
   else if (card.live && card.live.message) text = card.live.message;
   else text = STATE_TEXT[job.state] || job.state;
   box.append(el('p', text, 'cstate' + (bad ? ' bad' : '')));
+  if (job && !card.netText) {
+    const cost = job.state === 'building' ? costText(job.progress) : (job.state === 'done' || isErr) ? costText(job) : '';
+    if (cost) box.append(el('p', cost, 'ccost'));
+    if (job.warning && job.state !== 'done') box.append(el('p', job.warning, 'cwarn'));
+  }
 
   if (job && job.state === 'done') {
     const actions = el('p', null, 'actions');
@@ -375,7 +626,7 @@ function renderCard() {
   } else if ((isErr || (card.netText && !job)) && !card.noRetry && canBuildHere(card.id)) {
     const b = el('button', '重試');
     b.type = 'button';
-    b.onclick = retry;
+    b.onclick = () => retry();
     const actions = el('p', null, 'actions');
     actions.append(b);
     box.append(actions);
@@ -439,9 +690,15 @@ async function loadLessonList() {
         text.append(subEl);
       }
       a.append(text);
-      if (l.vocabCount != null) {
+      const hasCost = Object.hasOwn(l, 'costUsd');
+      if (l.vocabCount != null || hasCost) {
         const n = el('div', null, 'lrow-num num');
-        n.append(el('b', String(l.vocabCount)), el('span', ' 個單字'));
+        if (l.vocabCount != null) n.append(el('b', String(l.vocabCount)), el('span', ' 個單字'));
+        if (hasCost) {
+          const c = el('span', fmtUsd(l.costUsd), 'lrow-cost');
+          if (PROVIDERS[l.provider]) c.title = PROVIDERS[l.provider].short;
+          n.append(c);
+        }
         a.append(n);
       }
       li.append(a);
@@ -530,6 +787,7 @@ function setupLesson(lesson, id) {
   markNav(false);
   lesson.vocab = lesson.vocab || [];
   S.lesson = lesson;
+  S.id = id;
   S.flat = flattenHits(lesson.vocab, lesson.words);
   S.vocabById = new Map(lesson.vocab.map((v) => [v.id, v]));
   document.title = (lesson.title || id) + ' · yt-learn';
@@ -544,6 +802,7 @@ function setupLesson(lesson, id) {
   buildTranscript();
   buildVocabTable();
   render(0);
+  loadNotes(id);
   const site = externalSite(id);
   if (site) { setupExternalLesson(lesson, id, site); return; } // never initPlayer() for these
   initPlayer(lesson.videoId || id);
@@ -646,7 +905,11 @@ function hideYouTubeCaptions() {
 
 function onStateChange(ev) {
   const st = ev.data;
-  if (st === YT.PlayerState.PLAYING) hideYouTubeCaptions();
+  if (st === YT.PlayerState.PLAYING) {
+    hideYouTubeCaptions();
+    if (performance.now() < PH.holdPauseUntil) S.player.pauseVideo(); // seekTo from ENDED restarted playback: keep the card
+    else closePhrase();
+  }
   if (st === YT.PlayerState.PLAYING && !S.started) { S.started = true; $('stage').classList.add('started'); showIntro(); }
   if (st === YT.PlayerState.ENDED) enterReview();
   else if (st === YT.PlayerState.PLAYING && S.review) leaveReview();
@@ -695,6 +958,7 @@ function render(t) {
 
 // ---------------------------------------------------------------- render subtitle
 function renderSubtitle(t) {
+  if (PH.frozen) return; // a selection, the 問 AI button or the card holds the line still
   const { cues, words } = S.lesson;
   const ci = cueIndexAt(cues, words, t);
   const hit = activeHitAt(S.flat, cues, words, t);
@@ -705,26 +969,31 @@ function renderSubtitle(t) {
     const h = v.hits[hit.hitIdx];
     if (h.cue === ci) { lit = [h.a, h.b]; term = v.term; }
   }
-  const key = ci + '|' + (lit ? lit.join('-') : '');
+  const key = ci + '|' + (lit ? lit.join('-') : '') + '|' + S.notesRev;
   if (key === S.keys.sub) return;
   S.keys.sub = key;
   const en = $('sub-en'), zh = $('sub-zh');
   if (ci < 0) { en.replaceChildren(); zh.replaceChildren(); en.dataset.cue = ''; return; }
   const cue = cues[ci];
+  const noted = notedWords(S.notes, ci);
   const parts = [];
-  // Every token is its own clickable .w span; a vocab hit spanning several tokens is one .kw span
-  // (data-term = the vocab term), so a click on it looks up the whole term.
+  // Every token is its own .w span carrying its global word index (data-i: what a drag selects); a
+  // vocab hit is a .kw wrapper around its tokens' .w spans (data-term = the vocab term, which a click
+  // on any of them looks up). Words inside a saved phrase note get .noted (a faint underline).
   let kw = null;
   cue.tokens.forEach((tok, k) => {
     const w = cue.a + k;
+    const span = el('span', tok, noted.has(w) ? 'w noted' : 'w');
+    span.dataset.i = String(w);
     const inHit = lit && w >= lit[0] && w <= lit[1];
-    if (inHit && kw) { kw.textContent += ' ' + tok; return; }
-    if (k) parts.push(document.createTextNode(' '));
+    if (inHit && kw) { kw.append(' ', span); return; }
+    if (k) parts.push(' ');
     if (inHit) {
-      kw = el('span', tok, 'kw');
+      kw = el('span', null, 'kw');
       if (term) kw.dataset.term = term;
+      kw.append(span);
       parts.push(kw);
-    } else parts.push(el('span', tok, 'w'));
+    } else parts.push(span);
   });
   const enChanged = en.dataset.cue !== String(ci);
   en.replaceChildren(...parts);
@@ -735,17 +1004,318 @@ function renderSubtitle(t) {
   }
 }
 
-// Click a subtitle word → pause and look it up in the Cambridge dictionary, in one small popup
-// window that later lookups reuse (named target).
-function onWordClick(e) {
-  const raw = clickWord(e.target);
+// A plain click on a subtitle word → pause and look it up in the Cambridge dictionary, in one small popup
+// window that later lookups reuse (named target). Runs on pointerup: the pointerdown that started it
+// already gave the page the user activation window.open needs.
+function lookUpWord(target) { lookUpText(clickWord(target)); }
+
+function lookUpText(raw) {
   if (!raw) return;
-  e.preventDefault();
   const word = dictWord(raw);
   if (!word) return; // a number or punctuation only
   if (S.ready) S.player.pauseVideo();
   const win = window.open(dictUrl(word), 'ytlearn-dict', 'popup,width=520,height=760');
   if (win) win.focus();
+}
+
+// ---------------------------------------------------------------- phrase: drag across words → 問 AI → card
+// Press a word: the video pauses and the line freezes (no re-render, so the spans under the pointer stay).
+// Drag over other words of the same cue: they get .sel. Release on the same word without leaving it: the
+// dictionary (or the card of a saved note covering that word). Two or more words: a 問 AI button above
+// them; its click POSTs /explain and polls (phrase.js runExplain) while the card shows 載入中. Esc, a press
+// outside the card, or playing closes it; closing only stops the polling (the server still saves the note).
+const PH = {
+  frozen: false, // the subtitle line is held still
+  sel: null, // the drag in progress: { pointerId, ci, down, cur, moved, target }
+  open: null, // the selection the button / card is about: { ci, a, b, phrase }
+  gen: 0, // bumped on close: a running explain loop sees it and stops
+  holdPauseUntil: 0, // a note opened from the ended screen: a PLAYING caused by its seek is paused again
+  swallowUntil: 0, // the click / dblclick that follow a pointerup are ours
+  ask: null, card: null, // lazily created, inside the stage frame
+};
+
+const frameEl = () => document.querySelector('#stage .frame');
+const subWords = () => [...$('sub-en').querySelectorAll('.w[data-i]')];
+
+function wordAt(x, y) {
+  const hit = document.elementFromPoint(x, y);
+  const w = hit && hit.closest ? hit.closest('#sub-en .w[data-i]') : null;
+  return w ? Number(w.dataset.i) : null;
+}
+
+function paintSel(a, b) {
+  for (const w of subWords()) {
+    const i = Number(w.dataset.i);
+    w.classList.toggle('sel', a != null && i >= a && i <= b);
+  }
+}
+
+function onSubsDown(e) {
+  if (e.button !== 0 || !S.lesson) return;
+  const w = e.target.closest ? e.target.closest('#sub-en .w[data-i]') : null;
+  if (!w) return;
+  e.preventDefault(); // no text selection, no focus change, no compat mousedown
+  const ci = Number($('sub-en').dataset.cue);
+  const i = Number(w.dataset.i);
+  if (!Number.isInteger(ci) || !S.lesson.cues[ci] || !Number.isInteger(i)) return;
+  closePhrase(false); // a new press ends any card / button; the line on screen stays as it is
+  if (S.ready) S.player.pauseVideo();
+  PH.frozen = true;
+  PH.sel = { pointerId: e.pointerId, ci, down: i, cur: i, moved: false, target: w };
+  try { w.setPointerCapture(e.pointerId); } catch (err) {
+    // the drag still works while over the words; but a release elsewhere must still end it
+    const pid = e.pointerId;
+    const done = (ev) => {
+      if (ev.pointerId !== pid) return;
+      window.removeEventListener('pointerup', done, true);
+      window.removeEventListener('pointercancel', done, true);
+      setTimeout(() => { if (PH.sel && PH.sel.pointerId === pid) closePhrase(); }, 0); // after onSubsUp had its say
+    };
+    window.addEventListener('pointerup', done, true);
+    window.addEventListener('pointercancel', done, true);
+  }
+  paintSel(i, i);
+}
+
+function onSubsMove(e) {
+  const sel = PH.sel;
+  if (!sel || e.pointerId !== sel.pointerId) return;
+  const i = wordAt(e.clientX, e.clientY);
+  if (i === null) return; // between words or off the line: keep the last range
+  const r = spanRange(S.lesson.cues[sel.ci], sel.down, i);
+  if (!r) return;
+  if (r.a !== r.b) sel.moved = true;
+  sel.cur = r.a === sel.down ? r.b : r.a;
+  paintSel(r.a, r.b);
+}
+
+function onSubsUp(e) {
+  const sel = PH.sel;
+  if (!sel || e.pointerId !== sel.pointerId) return;
+  PH.sel = null;
+  PH.swallowUntil = performance.now() + 500;
+  try { sel.target.releasePointerCapture(e.pointerId); } catch (err) { /* already released */ }
+  const kind = dragKind(sel.down, sel.cur, sel.moved);
+  if (kind === 'phrase') {
+    const r = spanRange(S.lesson.cues[sel.ci], sel.down, sel.cur);
+    showAsk(sel.ci, r.a, r.b);
+    return;
+  }
+  if (kind === 'dict') {
+    const note = noteAtWord(S.notes, sel.ci, sel.down);
+    if (note) { openNoteCard(note); return; }
+    closePhrase();
+    lookUpWord(sel.target);
+    return;
+  }
+  closePhrase();
+}
+
+function onSubsCancel(e) {
+  if (!PH.sel || e.pointerId !== PH.sel.pointerId) return;
+  closePhrase();
+}
+
+// The click / dblclick after a press on a word must do nothing else (and never reach the player).
+function swallowClick(e) {
+  const onWord = e.target.closest && e.target.closest('#sub-en .w[data-i]');
+  if (!onWord && performance.now() > PH.swallowUntil) return;
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+// A press anywhere outside the card, the button and the subtitle words closes them.
+function onOutsideDown(e) {
+  if (!PH.frozen || PH.sel) return;
+  const t = e.target;
+  if (PH.card && PH.card.contains(t)) return;
+  if (PH.ask && PH.ask.contains(t)) return;
+  if (t && t.closest && t.closest('#sub-en .w[data-i]')) return; // onSubsDown handles it
+  closePhrase();
+}
+
+// Ends the selection, hides the button and the card, stops any explain polling and lets the subtitle
+// follow the video again (rerender=false: the caller keeps the line on screen, e.g. a new press on it).
+function closePhrase(rerender = true) {
+  PH.gen++;
+  PH.sel = null;
+  PH.open = null;
+  if (PH.ask) PH.ask.hidden = true;
+  if (PH.card) { PH.card.hidden = true; PH.card.replaceChildren(); }
+  paintSel(null, null);
+  if (!PH.frozen) return;
+  PH.frozen = false;
+  if (rerender && S.lesson) { S.keys.sub = null; if (S.ready) refresh(); else render(S.t || 0); }
+}
+
+// The selection's on-screen rect (the .w spans a..b), else the subtitle block, else the lower frame.
+function anchorRect(a, b) {
+  const spans = subWords().filter((w) => { const i = Number(w.dataset.i); return i >= a && i <= b; });
+  const fr = frameEl().getBoundingClientRect();
+  return unionRect(spans.map((w) => w.getBoundingClientRect()))
+    || unionRect([$('subs').getBoundingClientRect()])
+    || { left: fr.left, right: fr.right, top: fr.top + fr.height * 0.8, bottom: fr.bottom };
+}
+
+function showAsk(ci, a, b) {
+  const phrase = phraseText(S.lesson.cues[ci], a, b);
+  if (!phrase) { closePhrase(); return; }
+  PH.open = { ci, a, b, phrase };
+  if (!PH.ask) {
+    PH.ask = el('button', '問 AI', 'ph-ask');
+    PH.ask.type = 'button';
+    PH.ask.addEventListener('mousedown', (e) => e.preventDefault()); // keep focus off it (Space)
+    PH.ask.addEventListener('click', () => askAI(false));
+    frameEl().append(PH.ask);
+  }
+  const fr = frameEl().getBoundingClientRect();
+  const p = placeAbove(anchorRect(a, b), fr, 0, 6);
+  PH.ask.style.left = p.cx + 'px';
+  PH.ask.style.bottom = p.bottom + 'px';
+  PH.ask.hidden = false;
+}
+
+// view: see phrase.js cardNodes. The card sits above the selection, inside the frame.
+function showCard(view) {
+  if (!PH.card) {
+    PH.card = el('div', null, 'ph-card');
+    PH.card.setAttribute('role', 'dialog');
+    // keep focus off its buttons (Space would click them as well as toggle play)
+    PH.card.addEventListener('mousedown', (e) => { if (e.target.closest && e.target.closest('button')) e.preventDefault(); });
+    frameEl().append(PH.card);
+  }
+  const o = PH.open;
+  if (PH.ask) PH.ask.hidden = true;
+  PH.card.replaceChildren(...cardNodes(document, { ...view, phrase: o ? o.phrase : '' }, {
+    dict: () => { if (PH.open) lookUpText(PH.open.phrase); },
+    close: () => closePhrase(),
+    retry: () => askAI(false),
+    override: () => askAI(true),
+  }));
+  PH.card.hidden = false;
+  const fr = frameEl().getBoundingClientRect();
+  const p = placeAbove(o ? anchorRect(o.a, o.b) : anchorRect(-1, -1), fr, PH.card.offsetWidth);
+  PH.card.style.left = p.left + 'px';
+  PH.card.style.bottom = p.bottom + 'px';
+  PH.card.style.maxHeight = p.maxHeight + 'px';
+}
+
+// A saved note: its card at once, no AI call. The line must already show the note's cue.
+function openNoteCard(note) {
+  PH.frozen = true;
+  PH.open = { ci: note.cue, a: note.a, b: note.b, phrase: note.phrase };
+  paintSel(note.a, note.b);
+  showCard({ kind: 'done', result: note.result });
+}
+
+async function httpJson(method, url, body) {
+  const init = { method };
+  if (body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(body); }
+  try {
+    const res = await fetch(url, init);
+    let json = null;
+    try { json = await res.json(); } catch (e) { json = null; }
+    return { status: res.status, json };
+  } catch (e) {
+    return { error: UNREACHABLE };
+  }
+}
+
+async function askAI(override) {
+  const o = PH.open;
+  if (!o) return;
+  const saved = noteFor(S.notes, o.ci, o.a, o.b, o.phrase);
+  if (saved) { showCard({ kind: 'done', result: saved.result }); return; }
+  const gen = ++PH.gen;
+  const live = () => gen === PH.gen && PH.open === o;
+  showCard({ kind: 'loading' });
+  const r = await runExplain({
+    post: (body) => httpJson('POST', '/explain', body),
+    poll: (key) => httpJson('GET', '/explain/' + key),
+    sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
+    cancelled: () => !live(),
+    onPending: (p) => { if (p.warning && live()) showCard({ kind: 'loading', warning: p.warning }); },
+  }, { videoId: S.id, cue: o.ci, a: o.a, b: o.b, phrase: o.phrase, override: override === true });
+  if (r.kind === 'done') addNote(r.note);
+  if (!live() || r.kind === 'cancelled') return;
+  if (r.kind === 'done') showCard({ kind: 'done', result: r.note.result });
+  else showCard({ kind: r.kind, error: r.error });
+}
+
+// ---------------------------------------------------------------- phrase notes (我的片語)
+async function loadNotes(id) {
+  const r = await httpJson('GET', '/notes/' + encodeURIComponent(id));
+  if (S.id !== id || r.status !== 200 || !r.json || !r.json.notes || typeof r.json.notes !== 'object') return;
+  S.notes = { ...r.json.notes, ...S.notes };
+  notesChanged();
+}
+
+function addNote(note) {
+  if (!note || typeof note !== 'object' || !Number.isInteger(note.a) || !Number.isInteger(note.b)) return;
+  S.notes[noteKey(note.a, note.b)] = note;
+  notesChanged();
+  // the line may be frozen: underline the new note's words now
+  if (Number($('sub-en').dataset.cue) !== note.cue) return;
+  for (const w of subWords()) {
+    const i = Number(w.dataset.i);
+    if (i >= note.a && i <= note.b) w.classList.add('noted');
+  }
+}
+
+function notesChanged() {
+  S.notesRev++;
+  S.noteCount = noteList(S.notes).length;
+  buildNotes();
+  if (!PH.frozen && S.lesson) render(S.t || 0);
+}
+
+function buildNotes() {
+  $('panel-notes').replaceChildren(...noteRowNodes(document, S.notes, (n) => openNoteFromPanel(n)));
+  applyPanelView();
+}
+
+// The panel shows the vocab track or 我的片語: notes alone keep the panel up even with no vocab.
+function applyPanelView() {
+  if (!S.lesson) return;
+  const nv = S.lesson.vocab.length;
+  const nn = noteList(S.notes).length;
+  const notesView = nn > 0 && (S.notesView || nv === 0);
+  const panel = $('panel');
+  panel.hidden = nv === 0 && nn === 0;
+  panel.classList.toggle('notes-view', notesView);
+  $('panel-rows').hidden = notesView;
+  $('panel-notes').hidden = !notesView;
+  $('panel-title').hidden = nv === 0;
+  $('panel-count').hidden = nv === 0 || notesView;
+  const tab = $('panel-notes-tab');
+  tab.hidden = nn === 0;
+  tab.disabled = nv === 0; // nothing to switch back to
+  $('panel-notes-n').textContent = String(nn);
+  tab.setAttribute('aria-pressed', String(notesView));
+  if (!notesView && nv) { S.keys.panel = null; renderPanel(S.t || 0); } // the track measured 0 rows while hidden
+}
+
+function toggleNotesView() {
+  S.notesView = !S.notesView;
+  applyPanelView();
+}
+
+// Click a note: jump to its cue without playing, then its card (no AI call).
+function openNoteFromPanel(note) {
+  if (!S.lesson || !S.lesson.cues[note.cue]) return;
+  closePhrase(false);
+  PH.frozen = false;
+  if (S.ready) {
+    const ended = S.review || S.player.getPlayerState() === YT.PlayerState.ENDED;
+    S.player.pauseVideo();
+    if (ended) PH.holdPauseUntil = performance.now() + 1500; // seekTo from ENDED may auto-play
+    seek(cueStart(note.cue) + 0.05, false); // draws the target cue at once (see seek)
+    if (ended) S.player.pauseVideo();
+  } else {
+    S.keys.sub = null;
+    render(cueStart(note.cue) + 0.05);
+  }
+  openNoteCard(note);
 }
 
 // Shrink English when it needs more than two lines, Chinese when it overflows one line.
@@ -765,7 +1335,6 @@ function fitSubtitle() {
 // ---------------------------------------------------------------- render panel
 function buildPanel() {
   const n = S.lesson.vocab.length;
-  $('panel').hidden = n === 0;
   $('panel-total').textContent = n;
   const rows = $('panel-rows');
   rows.replaceChildren();
@@ -791,6 +1360,7 @@ function buildPanel() {
   rows.append(track);
   S.keys.panel = null;
   S.panelCurrent = -1;
+  applyPanelView();
 }
 
 function renderPanel(t) {
@@ -799,7 +1369,8 @@ function renderPanel(t) {
   const countKey = k + '/' + S.lesson.vocab.length;
   if (countKey !== S.keys.count) { S.keys.count = countKey; $('panel-count').textContent = k + ' / ' + S.lesson.vocab.length; }
   // The panel stays hidden until just before the first vocab word is spoken, then fades in.
-  const live = S.flat.length > 0 && t >= S.flat[0].start - PANEL_LEAD;
+  // Saved phrase notes keep it visible from the start.
+  const live = (S.flat.length > 0 && t >= S.flat[0].start - PANEL_LEAD) || S.noteCount > 0;
   $('panel').classList.toggle('live', live);
   const ps = panelState(S.flat, words, t);
   if (ps.current === S.keys.panel) return;
@@ -951,6 +1522,12 @@ function toggleVocab() {
   $('btn-vocab').setAttribute('aria-pressed', String(S.showVocab));
   if (S.showVocab && S.lesson) { S.keys.panel = null; renderPanel(S.t || 0); } // rows measured 0 height while hidden
 }
+function toggleShade() {
+  S.showShade = !S.showShade;
+  $('stage').classList.toggle('no-shade', !S.showShade);
+  $('btn-shade').textContent = '黑底 ' + (S.showShade ? 'on' : 'off');
+  $('btn-shade').setAttribute('aria-pressed', String(S.showShade));
+}
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen();
   else $('stage').requestFullscreen?.();
@@ -964,15 +1541,33 @@ function initControls() {
   $('btn-zh').onclick = toggleZh;
   $('btn-en').onclick = toggleEn;
   $('btn-vocab').onclick = toggleVocab;
+  $('btn-shade').onclick = toggleShade;
   $('btn-fs').onclick = toggleFullscreen;
-  $('sub-en').addEventListener('click', onWordClick); // delegated: the word spans are rebuilt per cue
+  // Delegated on the stable subtitle block (the word spans are rebuilt per cue); capture phase so a press
+  // on a word is ours first. pointermove / up arrive here through the pressed word's pointer capture.
+  const subs = $('subs');
+  subs.addEventListener('pointerdown', onSubsDown, true);
+  subs.addEventListener('pointermove', onSubsMove, true);
+  subs.addEventListener('pointerup', onSubsUp, true);
+  subs.addEventListener('pointercancel', onSubsCancel, true);
+  subs.addEventListener('lostpointercapture', onSubsCancel, true);
+  subs.addEventListener('click', swallowClick, true);
+  subs.addEventListener('dblclick', swallowClick, true);
+  document.addEventListener('pointerdown', onOutsideDown, true);
+  $('panel-notes-tab').addEventListener('mousedown', (e) => e.preventDefault());
+  $('panel-notes-tab').onclick = toggleNotesView;
   // Keep focus off the buttons so Space never double-fires (button click + our handler).
   document.querySelectorAll('#controls button').forEach((b) => b.addEventListener('mousedown', (e) => e.preventDefault()));
   $('review-prev').onclick = () => turnPage(-1);
   $('review-next').onclick = () => turnPage(1);
   $('review-again').onclick = () => seek(0);
-  window.addEventListener('resize', () => { if (S.lesson) { fitSubtitle(); S.keys.panel = null; renderPanel(S.t || 0); } });
+  window.addEventListener('resize', () => {
+    if (!S.lesson) return;
+    closePhrase(); // the button / card were placed for the old size
+    fitSubtitle(); S.keys.panel = null; renderPanel(S.t || 0);
+  });
   document.addEventListener('fullscreenchange', () => {
+    closePhrase();
     $('btn-fs').textContent = document.fullscreenElement ? '離開全螢幕' : '全螢幕';
     if (S.lesson) fitSubtitle();
   });
@@ -989,6 +1584,7 @@ function initControls() {
 
 function onKey(e) {
   if (!S.lesson || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+  if ((e.code === 'Escape' || e.key === 'Escape') && PH.frozen) { closePhrase(); e.preventDefault(); return; }
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   // Match on the physical key (e.code): with a Chinese IME active, letter keys arrive with
@@ -1007,6 +1603,7 @@ function onKey(e) {
     case 'KeyZ': toggleZh(); break;
     case 'KeyE': toggleEn(); break;
     case 'KeyV': toggleVocab(); break;
+    case 'KeyB': toggleShade(); break;
     case 'KeyF': toggleFullscreen(); break;
     default: return;
   }
@@ -1022,4 +1619,4 @@ if (vid) {
   initHome(true);
 }
 // debug/verification hooks
-window.__yt = { S, enterReview, leaveReview, turnPage, seek };
+window.__yt = { S, PH, render, enterReview, leaveReview, turnPage, seek, closePhrase };

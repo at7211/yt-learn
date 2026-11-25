@@ -44,6 +44,9 @@ def test_lesson_bytes_are_unchanged():
     raw = json.loads((FIX / "raw_small.json").read_text("utf-8"))
     lesson, _ = build_lesson(raw, fake_provider())
     lesson.pop("generatedAt")
+    # provider/usage fields (API providers) were added after the pin; they are checked in test_build
+    for k in ("effortSent", "provider", "modelId", "usage", "costUsd", "priceDate"):
+        lesson.pop(k)
     assert _sha(json.dumps(lesson, ensure_ascii=False, indent=1)) == RAW_SMALL_LESSON
 
 

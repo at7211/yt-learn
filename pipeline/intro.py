@@ -9,7 +9,7 @@ import re
 import sys
 import unicodedata
 
-from .llm import ProviderError
+from .llm import ProviderError, ProviderFatal
 
 INTRO_PROMPT_VERSION = 3
 TITLE_LINE_MAX = 16
@@ -111,6 +111,8 @@ def _ask(user: str, provider) -> tuple[dict | None, list[str]]:
     """One provider call: return (normalized response, errors)."""
     try:
         resp = provider.complete_json(INTRO_SYSTEM, user, INTRO_SCHEMA)
+    except ProviderFatal:
+        raise  # bad key / quota / retries exhausted: stop the build, do not degrade
     except ProviderError as e:
         return None, ["provider: " + str(e)]
     if isinstance(resp, dict) and isinstance(resp.get("title"), str):

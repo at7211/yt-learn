@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { barState } from '../../web/progress.js';
+import { barState, costText } from '../../web/progress.js';
 
 test('capture phases are indeterminate with elapsed seconds', () => {
   assert.deepEqual(barState(null, 3), { mode: 'indet', pct: 0, label: '正在建立工作…' });
@@ -30,4 +30,10 @@ test('done and error', () => {
   assert.deepEqual(barState({ state: 'done' }, 99), { mode: 'done', pct: 100, label: '完成' });
   assert.deepEqual(barState({ state: 'error' }, 5, 40), { mode: 'error', pct: 40, label: '' });
   assert.equal(barState({ state: 'error' }, 5).pct, 0);
+});
+
+test('costText', () => {
+  assert.equal(costText({ usage: { input: 12000, cacheRead: 0, cacheWrite: 0, output: 300 }, costUsd: 0.1234 }), '約 $0.12・12.3k tokens');
+  assert.equal(costText({ usage: { input: 500, cacheRead: 0, cacheWrite: 0, output: 0 }, costUsd: null }), '牌價未知・500 tokens');
+  assert.equal(costText({ phase: 'segment', done: 1, total: 3 }), '');
 });

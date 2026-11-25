@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 
-from pipeline.llm import ProviderError
+from pipeline.llm import ProviderError, ProviderFatal
 
 SEGMENT_SYSTEM = """你是英文影片字幕的編輯與翻譯。輸入是一段沒有標點的自動產生英文逐字稿，第一行說明索引範圍，之後每行格式為「索引: 單字」。行首的索引是整部影片的全域索引（含頭含尾），不是這段內的 0 起算位置。
 
@@ -150,6 +150,8 @@ def make_cues(words: list[dict], chunk: tuple[int, int], provider,
     system = SEGMENT_SYSTEM if ref is None else SEGMENT_SYSTEM + SEGMENT_REF_ADDENDUM
     try:
         resp = provider.complete_json(system, user, SEGMENT_SCHEMA)
+    except ProviderFatal:
+        raise  # bad key / quota / retries exhausted: stop the build, do not degrade
     except ProviderError as e:
         _warn(a, b, str(e))
         fell_back()

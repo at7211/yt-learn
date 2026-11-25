@@ -1,5 +1,7 @@
 // Pure helper for the job card's progress bar. Units come from pipeline/build.py:
 // one per segmentation chunk, VOCAB_UNITS (2) for the vocabulary call, INTRO_UNITS (1) for the intro card.
+import { fmtUsd } from './settings.js';
+
 const VOCAB_UNITS = 2;
 const INTRO_UNITS = 1;
 
@@ -38,4 +40,16 @@ export function barState(job, elapsedSec, lastPct = 0) {
     default:
       return { mode: 'indet', pct: 0, label: String(job.state) };
   }
+}
+
+const USAGE_FIELDS = ['input', 'cacheRead', 'cacheWrite', 'output'];
+
+// 「約 $0.12・12.3k tokens」 from a job (done / error) or its building progress; '' without `usage`.
+// costUsd null or missing (model not in the price table) reads 「牌價未知」.
+export function costText(x) {
+  const u = x && x.usage;
+  if (!u || typeof u !== 'object') return '';
+  const n = USAGE_FIELDS.reduce((sum, k) => sum + (typeof u[k] === 'number' ? u[k] : 0), 0);
+  const tokens = n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+  return fmtUsd(x.costUsd) + '・' + tokens + ' tokens';
 }

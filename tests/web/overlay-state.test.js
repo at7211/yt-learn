@@ -144,11 +144,12 @@ const key = (code, extra = {}) => ({ code, key: 'x', metaKey: false, ctrlKey: fa
 const el = (tagName, attrs = {}, isContentEditable = false) => ({ tagName, isContentEditable, getAttribute: (n) => (n in attrs ? attrs[n] : null) });
 
 test('keyAction: only our keys, only while active', () => {
-  assert.deepEqual(Object.keys(OWN_KEYS).sort(), ['BracketLeft', 'BracketRight', 'KeyE', 'KeyR', 'KeyV', 'KeyZ']);
+  assert.deepEqual(Object.keys(OWN_KEYS).sort(), ['BracketLeft', 'BracketRight', 'KeyB', 'KeyE', 'KeyR', 'KeyV', 'KeyZ']);
   const on = { active: true, path: [el('DIV'), el('BODY')] };
   assert.equal(keyAction(key('KeyZ'), on), 'zh');
   assert.equal(keyAction(key('KeyE'), on), 'en');
   assert.equal(keyAction(key('KeyV'), on), 'vocab');
+  assert.equal(keyAction(key('KeyB'), on), 'shade');
   assert.equal(keyAction(key('KeyR'), on), 'replay');
   assert.equal(keyAction(key('BracketLeft'), on), 'prev');
   assert.equal(keyAction(key('BracketRight'), on), 'next');

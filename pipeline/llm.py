@@ -1,15 +1,26 @@
-"""LLM providers: wrap the locally logged-in `claude` or `codex` CLI (no API key)."""
+"""LLM providers: the locally logged-in `claude` or `codex` CLI (no API key), or a provider HTTP API
+with the user key (stdlib urllib, no redirects, bounded retries, keys scrubbed from every message)."""
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
+import random
 import re
 import subprocess
 import tempfile
+import threading
+import time
 import tomllib
+import uuid
+import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
+
+from pipeline import keys
+from pipeline.cost import add_usage, zero_usage
 
 RETRY_SUFFIX = "\n\n(上一次輸出不是合法 JSON，請只輸出符合 schema 的 JSON。)"
 
@@ -22,14 +33,45 @@ class ProviderError(Exception):
     pass
 
 
+class ProviderMissing(ProviderError):
+    """The provider's CLI is not installed (not on PATH). A plain ProviderError to the build (it degrades
+    as before); /explain names the CLI to install or suggests an API key."""
+
+
+class ProviderFatal(ProviderError):
+    """An error no retry or fallback can fix (bad key, quota, refused redirect, retries exhausted):
+    callers that degrade on ProviderError re-raise this one so the build stops."""
+
+    def __init__(self, message, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+class _UsageMixin:
+    """Token usage totals with an optional sink. The sink runs inside the lock with a copy of the
+    total, so the snapshots it sees are monotonic even with concurrent calls."""
+
+    def _init_usage(self) -> None:
+        self.usage = zero_usage()
+        self._usage_lock = threading.Lock()
+        self.usage_sink: Callable[[dict], None] | None = None
+
+    def record_usage(self, u: dict) -> None:
+        with self._usage_lock:
+            self.usage = add_usage(self.usage, u)
+            if self.usage_sink is not None:
+                self.usage_sink(dict(self.usage))
+
+
 class Provider(Protocol):
     def complete_json(self, system: str, user: str, schema: dict | None = None) -> dict: ...
 
 
-class FakeProvider:
+class FakeProvider(_UsageMixin):
     def __init__(self, responses: list[dict | Exception]):
         self.responses = list(responses)
         self.calls: list[tuple[str, str, dict | None]] = []
+        self._init_usage()
 
     def complete_json(self, system: str, user: str, schema: dict | None = None) -> dict:
         self.calls.append((system, user, schema))
@@ -63,8 +105,19 @@ def _parse_object(text: str, what: str) -> dict:
     return val
 
 
-class _CliProvider:
-    """Shared cache + one retry around a CLI call; subclasses implement ``_call``."""
+def _anthropic_usage(u) -> dict:
+    """Anthropic-style usage (also the claude CLI's) -> our usage keys; missing or null counts as 0."""
+    u = u if isinstance(u, dict) else {}
+
+    def n(k):
+        v = u.get(k)
+        return v if isinstance(v, int) and not isinstance(v, bool) else 0
+    return {"input": n("input_tokens"), "cacheRead": n("cache_read_input_tokens"),
+            "cacheWrite": n("cache_creation_input_tokens"), "output": n("output_tokens")}
+
+
+class _CachedProvider(_UsageMixin):
+    """Shared cache + one retry + usage accounting around a call; subclasses implement ``_call``."""
     name = "claude"
     default_timeout = 180.0
 
@@ -77,6 +130,7 @@ class _CliProvider:
         self.timeout = self.default_timeout if timeout is None else timeout
         self.calls = 0
         self.cache_hits = 0
+        self._init_usage()  # cache hits never call record_usage
 
     def _cache_fields(self, system: str, user: str, schema: dict | None) -> dict:
         # Claude keeps the original key shape so caches built before CodexCliProvider existed still hit.
@@ -107,7 +161,8 @@ class _CliProvider:
         tmp = None
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            # unique per writer: build workers and /explain jobs may write the same entry concurrently
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
             tmp.write_text(json.dumps({"model": self.model or "default", "effort": self.effort or "default",
                                        "promptVersion": self.prompt_version, "response": resp},
                                       ensure_ascii=False), encoding="utf-8")
@@ -116,6 +171,14 @@ class _CliProvider:
             try:
                 if tmp is not None:
                     tmp.unlink()
+            except OSError:
+                pass
+
+    def forget(self, system: str, user: str, schema: dict | None = None) -> None:
+        """Drop the cached answer of this request (the caller found it unusable)."""
+        if self.cache_dir:
+            try:
+                self._cache_path(system, user, schema).unlink(missing_ok=True)
             except OSError:
                 pass
 
@@ -143,7 +206,10 @@ class _CliProvider:
         raise NotImplementedError
 
 
-class ClaudeCliProvider(_CliProvider):
+_CliProvider = _CachedProvider  # old name, kept for existing imports
+
+
+class ClaudeCliProvider(_CachedProvider):
     name = "claude"
 
     def _call(self, system: str, user: str, schema: dict | None) -> dict:
@@ -160,19 +226,21 @@ class ClaudeCliProvider(_CliProvider):
         try:
             proc = subprocess.run(argv, input=user, capture_output=True, text=True, timeout=self.timeout)
         except FileNotFoundError:
-            raise ProviderError("claude CLI not found on PATH") from None
+            raise ProviderMissing("claude CLI not found on PATH") from None
         except subprocess.TimeoutExpired:
             raise _Failure(f"claude CLI timed out after {self.timeout}s") from None
         if proc.returncode != 0:
-            raise _Failure(f"claude CLI exit {proc.returncode}: {(proc.stderr or '').strip()[:200]}")
+            raise _Failure(f"claude CLI exit {proc.returncode}: {keys.scrub((proc.stderr or '').strip(), [])[:200]}")
         try:
             outer = json.loads(proc.stdout)
         except ValueError:
             raise _Failure("claude CLI stdout is not JSON") from None
         if not isinstance(outer, dict):
             raise _Failure("claude CLI output is not an object")
+        if isinstance(outer.get("usage"), dict):
+            self.record_usage(_anthropic_usage(outer["usage"]))
         if outer.get("is_error"):
-            raise _Failure(f"claude CLI error: {str(outer.get('result'))[:200]}")
+            raise _Failure(f"claude CLI error: {keys.scrub(str(outer.get('result')), [])[:200]}")
         so = outer.get("structured_output")
         if isinstance(so, dict):
             return so
@@ -182,7 +250,7 @@ class ClaudeCliProvider(_CliProvider):
         return _parse_object(text, "result")
 
 
-class CodexCliProvider(_CliProvider):
+class CodexCliProvider(_CachedProvider):
     """`codex exec` in non-interactive mode. There is no system-prompt flag, so the system text leads
     the stdin prompt. The schema goes in via --output-schema; the final message is read from the -o
     file (stdout's last non-empty line is the fallback). The call runs read-only, ephemeral, inside an
@@ -229,7 +297,7 @@ class CodexCliProvider(_CliProvider):
             proc = subprocess.run(argv, input=prompt, capture_output=True, text=True, encoding="utf-8",
                                   timeout=self.timeout)
         except FileNotFoundError:
-            raise ProviderError("codex CLI not found on PATH") from None
+            raise ProviderMissing("codex CLI not found on PATH") from None
         except subprocess.TimeoutExpired:
             raise _Failure(f"codex CLI timed out after {self.timeout}s") from None
         if proc.returncode != 0:
@@ -256,7 +324,7 @@ class CodexCliProvider(_CliProvider):
 
 def strict_schema(schema):
     """A copy of ``schema`` that OpenAI strict structured outputs accept: every object carries
-    ``additionalProperties: false`` and lists all its properties as required. Claude gets the original."""
+    ``additionalProperties: false`` and lists all its properties as required. The claude CLI gets the original."""
     if isinstance(schema, list):
         return [strict_schema(x) for x in schema]
     if not isinstance(schema, dict):
@@ -268,6 +336,320 @@ def strict_schema(schema):
         out["required"] = list(props.keys())
         out["additionalProperties"] = False
     return out
+
+
+_ANTHROPIC_UNSUPPORTED = frozenset({"maxItems", "minLength", "maxLength", "minimum", "maximum", "multipleOf"})
+_SCHEMA_MAPS = frozenset({"properties", "$defs", "definitions"})  # name -> schema maps: names are not keywords
+_SCHEMA_LITERALS = frozenset({"enum", "const", "default"})  # values, not schemas
+
+
+def _strip_anthropic(schema):
+    if isinstance(schema, list):
+        return [_strip_anthropic(x) for x in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {}
+    for k, v in schema.items():
+        if k in _ANTHROPIC_UNSUPPORTED:
+            continue
+        if k in _SCHEMA_MAPS and isinstance(v, dict):
+            out[k] = {name: _strip_anthropic(sub) for name, sub in v.items()}
+        elif k in _SCHEMA_LITERALS:
+            out[k] = v
+        else:
+            out[k] = _strip_anthropic(v)
+    mi = out.get("minItems")
+    if isinstance(mi, int) and not isinstance(mi, bool) and mi > 1:
+        out["minItems"] = 1  # Anthropic accepts only 0 or 1
+    return out
+
+
+def anthropic_schema(schema):
+    """A copy of ``schema`` that Anthropic structured outputs accept: ``strict_schema`` plus the
+    unsupported numeric/length/array-size keywords removed and ``minItems`` capped at 1."""
+    return _strip_anthropic(strict_schema(schema))
+
+
+class TransportError(Exception):
+    """The request never produced an HTTP status (DNS, connect, TLS, timeout, dropped connection)."""
+
+
+# (method, url, headers, body, timeout) -> (status, lower-cased headers, body bytes)
+Transport = Callable[[str, str, dict, "bytes | None", float], "tuple[int, dict, bytes]"]
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # never follow: the 3xx comes back as an HTTPError and _request refuses it
+
+
+def urllib_transport(method: str, url: str, headers: dict, body: bytes | None, timeout: float):
+    opener = urllib.request.build_opener(_NoRedirect())  # built per call: no shared handler state
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
+    except urllib.error.HTTPError as e:
+        try:
+            data = e.read() or b""
+        except (OSError, http.client.HTTPException):
+            data = b""
+        return e.code, {k.lower(): v for k, v in (e.headers or {}).items()}, data
+    except urllib.error.URLError as e:
+        raise TransportError(str(e.reason)) from None
+    except (TimeoutError, OSError, http.client.HTTPException) as e:  # socket.timeout is TimeoutError
+        raise TransportError(str(e) or type(e).__name__) from None
+    except ValueError:  # (UnicodeError too) a header http.client refuses; its message would echo the key
+        raise TransportError(keys.BAD_CHARS) from None
+
+
+def _retry_after(headers: dict) -> float | None:
+    try:
+        v = float(headers.get("retry-after"))
+    except (TypeError, ValueError):
+        return None  # absent, or an HTTP date: the plain backoff applies
+    return v if v >= 0 else None  # NaN fails the comparison too
+
+
+def _server_message(raw: bytes) -> str:
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        return raw.decode("utf-8", "replace").strip()
+    err = d.get("error") if isinstance(d, dict) else None
+    if isinstance(err, dict) and isinstance(err.get("message"), str):
+        return err["message"]
+    if isinstance(err, str):
+        return err
+    return json.dumps(d, ensure_ascii=False)
+
+
+class _HttpProvider(_CachedProvider):
+    """An HTTP API behind the shared cache/retry layer. HTTP-level trouble is ProviderFatal (it stops
+    the build); only content problems (truncated, refused, text not JSON) are _Failure and get the
+    one suffix retry in ``complete_json``. Subclasses implement ``_headers`` and ``_call``."""
+    RETRY_STATUSES = (408, 429, 500, 502, 503, 504, 529)
+    MAX_ATTEMPTS = 4
+    RETRY_BUDGET_S = 120
+    CHECK_HINT = ""  # appended to auth (and quota) errors: where the user can check the key
+    _sleep = time.sleep  # a builtin, so it does not bind as a method; tests replace it per instance
+
+    def __init__(self, api_key, model=None, cache_dir=None, prompt_version=1, timeout=None, effort=None,
+                 transport=urllib_transport):
+        super().__init__(model, cache_dir, prompt_version, timeout, effort)
+        self.api_key = api_key
+        self.transport = transport
+
+    def _headers(self) -> dict:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def _fatal(self, msg: str, status: int | None) -> ProviderFatal:
+        return ProviderFatal(keys.scrub(msg, [self.api_key])[:300], status)
+
+    def _no_retry(self, status: int, raw: bytes) -> ProviderFatal | None:
+        """Hook: a ProviderFatal here stops a retryable status from being retried (default: none)."""
+        return None
+
+    def _request(self, method: str, url: str, body: dict | None, *, attempts: int | None = None,
+                 timeout: float | None = None) -> dict:
+        attempts = self.MAX_ATTEMPTS if attempts is None else attempts
+        data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        headers = self._headers()
+        t = self.timeout if timeout is None else timeout
+        waited = 0.0
+        status = None
+        detail = ""
+        for attempt in range(1, attempts + 1):
+            retry_after = None
+            try:
+                status, hdrs, raw = self.transport(method, url, headers, data, t)
+            except TransportError as e:
+                status = None
+                detail = "連線失敗：" + keys.scrub(str(e), [self.api_key])[:200]
+            else:
+                if 200 <= status < 300:
+                    try:
+                        out = json.loads(raw)
+                    except ValueError:
+                        out = None
+                    if not isinstance(out, dict):
+                        raise ProviderFatal("API 回應不是 JSON 物件", status)
+                    return out
+                if status in (401, 403):
+                    raise ProviderFatal("API key 無效或沒有權限" + self.CHECK_HINT, status)
+                if 300 <= status < 400:
+                    raise ProviderFatal("伺服器要求重新導向，已拒絕", status)
+                msg = keys.scrub(_server_message(raw or b""), [self.api_key])[:200]
+                if status in self.RETRY_STATUSES:
+                    stop = self._no_retry(status, raw or b"")
+                    if stop is not None:
+                        raise stop
+                if status not in self.RETRY_STATUSES:
+                    raise self._fatal(f"API 回 {status}：{msg}", status)
+                detail = f"API 回 {status}：{msg}"
+                retry_after = _retry_after(hdrs or {})
+            if attempt >= attempts:
+                break
+            wait = 2 ** (attempt - 1) + random.uniform(0, 0.5)
+            if retry_after is not None:
+                wait = max(wait, retry_after)
+            if waited + wait > self.RETRY_BUDGET_S:
+                raise self._fatal(f"重試等待會超過 {self.RETRY_BUDGET_S} 秒，已放棄（{detail}）", status)
+            self._sleep(wait)
+            waited += wait
+        raise self._fatal(f"重試 {attempts} 次仍失敗（{detail}）", status)
+
+
+class AnthropicApiProvider(_HttpProvider):
+    """Anthropic Messages API with the user key. ``_cache_fields`` is ClaudeCliProvider's unchanged,
+    so the CLI and the API share cached answers for the same model, prompt and effort setting."""
+    name = "anthropic-api"
+    default_timeout = 180.0
+    CHECK_HINT = "，請到 Anthropic Console 檢查"
+    BASE = "https://api.anthropic.com"
+    VERSION = "2026-10-21"
+    MAX_TOKENS = 16000
+
+    @property
+    def effortSent(self):
+        return self.effort
+
+    def _headers(self) -> dict:
+        return {"x-api-key": self.api_key, "anthropic-version": self.VERSION,
+                "content-type": "application/json", "user-agent": "yt-learn"}
+
+    def _call(self, system: str, user: str, schema: dict | None) -> dict:
+        # No temperature (400 under 2026-10-21) and no thinking field (the 5.5 models default to adaptive).
+        body = {"model": self.model, "max_tokens": self.MAX_TOKENS, "system": system,
+                "messages": [{"role": "user", "content": user}]}
+        oc = {}
+        if schema is not None:
+            oc["format"] = {"type": "json_schema", "schema": anthropic_schema(schema)}
+        if self.effort:
+            oc["effort"] = self.effort
+        if oc:
+            body["output_config"] = oc
+        resp = self._request("POST", self.BASE + "/v1/messages", body)
+        self.record_usage(_anthropic_usage(resp.get("usage")))  # billed even when the content is unusable
+        stop = resp.get("stop_reason")
+        if stop == "max_tokens":
+            raise _Failure("回覆被截斷")
+        if stop == "refusal":
+            raise _Failure("模型拒答")
+        for block in resp.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                return _parse_object(block["text"], "回覆文字")
+        raise _Failure("回覆沒有文字內容")
+
+    @staticmethod
+    def list_models(api_key, transport=urllib_transport) -> list[str]:
+        p = AnthropicApiProvider(api_key, transport=transport)
+        d = p._request("GET", AnthropicApiProvider.BASE + "/v1/models?limit=1000", None, attempts=1, timeout=20)
+        data = d.get("data")
+        if not isinstance(data, list):
+            return []
+        return [m["id"] for m in data
+                if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"].startswith("claude-")]
+
+
+class OpenAiApiProvider(_HttpProvider):
+    """OpenAI Responses API with the user key and strict JSON-schema output."""
+    name = "openai-api"
+    default_timeout = 300.0
+    CHECK_HINT = "，請到 OpenAI 後台檢查"
+    BASE = "https://api.openai.com"
+    MAX_OUTPUT_TOKENS = 16000
+    QUOTA_CODES = ("credit_balance_exhausted", "organization_spend_limit_exceeded",
+                   "project_spend_limit_exceeded", "organization_usage_limit_exceeded", "insufficient_quota")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.effortSent = self.effort  # drops to "high" after one effort-related 400
+
+    def _cache_fields(self, system, user, schema):
+        return {"provider": "openai", **super()._cache_fields(system, user, schema)}  # effort = the setting
+
+    def _headers(self) -> dict:
+        return {"authorization": "Bearer " + self.api_key, "content-type": "application/json",
+                "user-agent": "yt-learn"}
+
+    def _no_retry(self, status, raw):
+        if status != 429:
+            return None
+        try:
+            err = json.loads(raw).get("error")
+        except (ValueError, AttributeError):
+            return None
+        if isinstance(err, dict) and (err.get("code") in self.QUOTA_CODES or err.get("type") == "insufficient_quota"):
+            return ProviderFatal("OpenAI 額度或花費上限已到" + self.CHECK_HINT, 429)
+        return None
+
+    def _send(self, system: str, user: str, schema: dict | None) -> dict:
+        body = {"model": self.model, "instructions": system, "input": user,
+                "max_output_tokens": self.MAX_OUTPUT_TOKENS, "store": False}  # no temperature: reasoning models
+        if schema is not None:
+            body["text"] = {"format": {"type": "json_schema", "name": "ytlearn",
+                                       "schema": strict_schema(schema), "strict": True}}
+        if self.effortSent:
+            body["reasoning"] = {"effort": self.effortSent}
+        return self._request("POST", self.BASE + "/v1/responses", body)
+
+    def _call(self, system: str, user: str, schema: dict | None) -> dict:
+        try:
+            resp = self._send(system, user, schema)
+        except ProviderFatal as e:
+            if (e.status == 400 and self.effortSent in ("xhigh", "max")
+                    and any(w in str(e).lower() for w in ("effort", "reasoning"))):
+                self.effortSent = "high"
+                resp = self._send(system, user, schema)
+            else:
+                raise
+        self.record_usage(self._usage(resp.get("usage")))  # billed even when the content is unusable
+        if resp.get("status") == "incomplete":
+            d = resp.get("incomplete_details")
+            reason = d.get("reason") if isinstance(d, dict) else None
+            raise _Failure("回覆不完整：" + str(reason or "未知"))
+        texts = []
+        for item in resp.get("output") or []:
+            if not (isinstance(item, dict) and item.get("type") == "message"):
+                continue
+            for c in item.get("content") or []:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "refusal":
+                    raise _Failure("模型拒答")
+                if c.get("type") == "output_text" and isinstance(c.get("text"), str):
+                    texts.append(c["text"])
+        if not texts:
+            raise _Failure("回覆沒有文字內容")
+        return _parse_object("".join(texts), "回覆文字")
+
+    @staticmethod
+    def _usage(u) -> dict:
+        u = u if isinstance(u, dict) else {}
+        det = u.get("input_tokens_details") if isinstance(u.get("input_tokens_details"), dict) else {}
+
+        def n(d, k):
+            v = d.get(k)
+            return v if isinstance(v, int) and not isinstance(v, bool) else 0
+        cached, cw = n(det, "cached_tokens"), n(det, "cache_write_tokens")
+        # Assumes cache writes are counted inside input_tokens (the official docs do not confirm this).
+        return {"input": max(0, n(u, "input_tokens") - cached - cw), "cacheRead": cached,
+                "cacheWrite": cw, "output": n(u, "output_tokens")}
+
+    @staticmethod
+    def list_models(api_key, transport=urllib_transport) -> list[str]:
+        p = OpenAiApiProvider(api_key, transport=transport)
+        d = p._request("GET", OpenAiApiProvider.BASE + "/v1/models", None, attempts=1, timeout=20)
+        data = d.get("data")
+        if not isinstance(data, list):
+            return []
+        keep = re.compile(r"^(gpt-[56]|o[34])")
+        drop = re.compile(r"realtime|audio|image|tts|transcribe|embedding|moderation|search|instruct|codex|pro")
+        ms = [m for m in data if isinstance(m, dict) and isinstance(m.get("id"), str)
+              and keep.match(m["id"]) and not drop.search(m["id"])]
+        ms.sort(key=lambda m: m.get("created") if isinstance(m.get("created"), (int, float)) else 0, reverse=True)
+        return [m["id"] for m in ms]
 
 
 def configured_codex_model() -> str | None:

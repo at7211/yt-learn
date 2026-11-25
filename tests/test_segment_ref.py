@@ -227,5 +227,5 @@ def test_build_lesson_passes_ref_to_every_chunk_and_lesson_has_no_ref():
     assert seg_calls[1][1].split("\n")[-1] == f"{_clock(start_ms)}\u2013{_clock(start_ms + 400)} 第二段的參考句"
     assert "ref" not in lesson and "refStatus" not in lesson
     assert validate_lesson(lesson) == []
-    assert stats == {"chunks": 2, "fallback_chunks": 0, "vocab_failed": 0, "intro_failed": 0}
+    assert [stats[k] for k in ("chunks", "fallback_chunks", "vocab_failed", "intro_failed")] == [2, 0, 0, 0]
     assert all("ev" not in x for x in lesson["words"])
