@@ -2,6 +2,8 @@
    英文字幕網址依序找：(1) onDemandLectureVideos API（以 item id 查，不會拿到上一講的字幕）
    (2) 頁面上的 <track>（Coursera 開始播放才會掛上；換課當下可能還是上一講的）
    (3) 靜音播放幾秒讓 <track> 掛上，之後還原靜音、播放狀態與播放位置。需先載入 vtt.js。
+   只抓 https 的字幕網址；chapters／metadata 軌不算字幕；API 給的字幕檔抓不到時退回頁面上的 <track>。
+   中途換課時只還原靜音，不暫停、不改播放位置（<video> 可能已經是新一講）。
    expectLessonId 在起點、等待中與回傳前都核對網址（換課 → 「換課了，請回到原講座再試」）。
    所有等待都有期限；結束時清掉自己排的計時器。 */
 globalThis.ytLearnCourseraCapture = async function (opts) {
@@ -45,9 +47,16 @@ globalThis.ytLearnCourseraCapture = async function (opts) {
   };
 
   const isEnglish = (lang) => typeof lang === 'string' && /^en([_-]|$)/i.test(lang);
-  const absolute = (src) => new URL(src, location.href).href;
+  // https only: the URL comes from the page (API JSON or a <track>), so nothing else is fetched.
+  const absolute = (src) => {
+    let u;
+    try { u = new URL(src, location.href); } catch (e) { return null; }
+    return u.protocol === 'https:' ? u.href : null;
+  };
+  const NOT_CAPTIONS = ['chapters', 'metadata', 'descriptions'];
   const fromTracks = () => {
-    const tracks = [...document.querySelectorAll('track')].filter((x) => x.getAttribute('src'));
+    const tracks = [...document.querySelectorAll('track')].filter((x) => x.getAttribute('src') && absolute(x.getAttribute('src'))
+      && !NOT_CAPTIONS.includes(String(x.getAttribute('kind') || '').toLowerCase()));
     const t = tracks.find((x) => isEnglish(x.srclang)) || tracks.find((x) => !x.srclang); // no srclang: the course's own language
     return t ? absolute(t.getAttribute('src')) : null;
   };
@@ -65,7 +74,7 @@ globalThis.ytLearnCourseraCapture = async function (opts) {
         + '?includes=video&fields=onDemandVideos.v1(sources,subtitles,subtitlesVtt,subtitlesTxt)');
       const subs = lecture?.linked?.['onDemandVideos.v1']?.[0]?.subtitlesVtt;
       const lang = subs ? Object.keys(subs).find(isEnglish) : null;
-      return lang ? absolute(subs[lang]) : null;
+      return lang && typeof subs[lang] === 'string' ? absolute(subs[lang]) : null;
     } catch (e) {
       log('api failed', e && e.message);
       return null;
@@ -80,10 +89,19 @@ globalThis.ytLearnCourseraCapture = async function (opts) {
   const endPlayback = () => {
     if (!played || playbackEnded) return;
     playbackEnded = true;
-    try { video.pause(); } catch (e) { log('ignored', e); }
     if (restoreMuted !== null) video.muted = restoreMuted;
+    // The viewer moved to another lecture: the pause and the position belonged to the old one (the <video> may be reused).
+    if (opts.expectLessonId && lessonIdNow() !== opts.expectLessonId) return;
+    try { video.pause(); } catch (e) { log('ignored', e); }
     video.currentTime = restoreTime;
   };
+  const download = (url) => withAbort(async (signal) => {
+    const res = await fetch(url, { credentials: 'same-origin', signal });
+    if (!res.ok) throw new Error('字幕檔下載失敗（HTTP ' + res.status + '）');
+    const text = await res.text();
+    if (!/^\uFEFF?WEBVTT/.test(text)) throw new Error('字幕檔格式不對');
+    return text;
+  });
 
   try {
     const lecture = route();
@@ -100,35 +118,45 @@ globalThis.ytLearnCourseraCapture = async function (opts) {
     }
 
     /* (2) 找英文字幕：API → track → 靜音播放等 track 掛上 */
+    let vttText = null;
     let subUrl = await fromApi(lecture);
     checkNav();
-    subUrl = subUrl || fromTracks();
-    if (!subUrl) {
-      if (video.paused) {
-        restoreMuted = video.muted;
-        restoreTime = video.currentTime;
-        video.muted = true;
-        played = true;
-        Promise.resolve(video.play()).catch((e) => log('ignored', e));
-        later(endPlayback, PLAY_WINDOW_MS);
-      }
-      for (;;) {
-        checkNav();
+    if (subUrl) {
+      try {
+        vttText = await download(subUrl);
+      } catch (e) {
+        // The API's file is unusable: a <track> already on the page is the only other source worth trying.
         subUrl = fromTracks();
-        if (subUrl) break;
-        if (left() <= 0) throw new Error('逾時：' + timeoutMs / 1000 + ' 秒內沒有取得字幕，這支影片可能沒有英文字幕');
-        await sleep(pollMs);
+        if (!subUrl || left() <= 0) throw e;
+        log('api subtitle failed', e && e.message);
       }
+      checkNav();
+    } else {
+      subUrl = fromTracks();
     }
-    endPlayback();
+    if (vttText === null) {
+      if (!subUrl) {
+        if (video.paused) {
+          restoreMuted = video.muted;
+          restoreTime = video.currentTime;
+          video.muted = true;
+          played = true;
+          Promise.resolve(video.play()).catch((e) => log('ignored', e));
+          later(endPlayback, PLAY_WINDOW_MS);
+        }
+        for (;;) {
+          checkNav();
+          subUrl = fromTracks();
+          if (subUrl) break;
+          if (left() <= 0) throw new Error('逾時：' + timeoutMs / 1000 + ' 秒內沒有取得字幕，這支影片可能沒有英文字幕');
+          await sleep(pollMs);
+        }
+      }
+      endPlayback();
 
-    /* (3) 下載 VTT */
-    const vttText = await withAbort(async (signal) => {
-      const res = await fetch(subUrl, { credentials: 'same-origin', signal });
-      if (!res.ok) throw new Error('字幕檔下載失敗（HTTP ' + res.status + '）');
-      return await res.text();
-    });
-    if (!/^﻿?WEBVTT/.test(vttText)) throw new Error('字幕檔格式不對');
+      /* (3) 下載 VTT */
+      vttText = await download(subUrl);
+    }
     if (typeof globalThis.ytLearnParseVtt !== 'function') throw new Error('vtt.js 未載入');
     let events = globalThis.ytLearnParseVtt(vttText).events;
     if (!events.length) throw new Error('字幕內容為空');

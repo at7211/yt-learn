@@ -178,3 +178,47 @@ test('a failed download, a file that is no VTT and an empty one are refused', as
   await assert.rejects(capture(makePage({ tracks: [track('en')], vtt: '<html>' })), /字幕檔格式不對/);
   await assert.rejects(capture(makePage({ tracks: [track('en')], vtt: 'WEBVTT\n' })), /字幕內容為空/);
 });
+
+test('only https subtitle URLs are fetched: an http <track> and an http API entry are not', async () => {
+  const p = makePage({ tracks: [track('en', 'http://127.0.0.1:8765/x.vtt')], api: noApi, paused: false });
+  await assert.rejects(capture(p), /逾時/);
+  assert.ok(!p.calls.fetched.some((u) => u.startsWith('http://')));
+  const api = { ...LECTURE_API, onDemandLectureVideos: { linked: { 'onDemandVideos.v1': [{ subtitlesVtt: { en: 'http://example.com/a.vtt' } }] } } };
+  const q = makePage({ api, tracks: [track('en')] });
+  assert.equal((await capture(q)).events.length, 2);
+  assert.ok(!q.calls.fetched.some((u) => u.startsWith('http://')));
+});
+
+test('a chapters or metadata <track> is never taken for captions', async () => {
+  const chapters = { srclang: '', getAttribute: (k) => (k === 'src' ? '/api/chapters.vtt' : k === 'kind' ? 'chapters' : null) };
+  const p = makePage({ tracks: [chapters, track('en')], api: noApi });
+  await capture(p);
+  assert.equal(p.calls.fetched.at(-1), VTT_URL);
+  const only = makePage({ tracks: [chapters], api: noApi, paused: false });
+  await assert.rejects(capture(only), /逾時/);
+  assert.ok(!only.calls.fetched.some((u) => u.includes('chapters')));
+});
+
+test('an API subtitle file that cannot be downloaded falls back to a <track> on the page; without one the download error stands', async () => {
+  const api = { ...LECTURE_API, onDemandLectureVideos: { linked: { 'onDemandVideos.v1': [{ subtitlesVtt: { en: '/api/gone.vtt' } }] } } };
+  const p = makePage({ api, tracks: [track('en')] });
+  assert.equal((await capture(p)).events.length, 2);
+  assert.deepEqual(p.calls.fetched.slice(-2), ['https://www.coursera.org/api/gone.vtt', VTT_URL]);
+  const q = makePage({ api });
+  await assert.rejects(capture(q), /字幕檔下載失敗（HTTP 404）/);
+  assert.equal(q.calls.play, 0);
+});
+
+test('moving to another lecture during the muted play: mute is restored, the new lecture is not paused or rewound', async () => {
+  const p = makePage({ api: noApi });
+  p.video.currentTime = 600;
+  const run = capture(p);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(p.calls.play, 1);
+  p.location.pathname = '/learn/machine-learning/lecture/ZZZZZ/other';
+  p.video.currentTime = 3; // the reused <video> now shows the new lecture
+  await assert.rejects(run, /換課了/);
+  assert.equal(p.video.muted, false);
+  assert.equal(p.calls.pause, 0);
+  assert.equal(p.video.currentTime, 3);
+});

@@ -28,5 +28,6 @@ test('budget 402 gets a site-specific hint', () => {
   const j = { ok: false, code: 'budget', error: '本月 API 費用已達上限 $1.00（本機估算）' };
   assert.equal(ytLearnAddError(402, j, 'youtube'), '本月 API 費用已達上限 $1.00（本機估算）（到 yt-learn 首頁可以選擇仍要跑）');
   assert.equal(ytLearnAddError(402, j, 'udemy'), '本月 API 費用已達上限 $1.00（本機估算）（到 yt-learn 首頁調高或關閉每月上限後，再回這一頁重試）');
+  assert.equal(ytLearnAddError(402, j, 'coursera'), '本月 API 費用已達上限 $1.00（本機估算）（到 yt-learn 首頁調高或關閉每月上限後，再回這一頁重試）');
   assert.match(ytLearnAddError(500, { error: 'x' }, 'youtube'), /^加入工作失敗：/);
 });

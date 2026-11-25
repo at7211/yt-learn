@@ -1,4 +1,4 @@
-yt-learn 擷取擴充功能（v1.8.0，未封裝）。
+yt-learn 擷取擴充功能（v1.9.0，未封裝）。
 支援站點：YouTube 影片頁（https://www.youtube.com/watch?v=<id>）、Udemy 講座頁（https://www.udemy.com/course/<slug>/learn/lecture/<id>，課程 id 為 udemy.<lectureId>）、Netflix 播放頁（選擇性開啟，見下）、HelloInterview 課程頁（https://www.hellointerview.com/learn/…）與 Coursera 影片頁（https://www.coursera.org/learn/<slug>/lecture/<itemId>/<標題>，課程 id 為 coursera.<slug>.<itemId>）。五站共用同一個疊層引擎（overlay.js），站點差異都在 site.js 的轉接層（課程 id、播放器 {root, video}、廣告、隱藏原生字幕、換頁事件）。
 載入：chrome://extensions → 開啟開發人員模式 → 載入未封裝項目 → 選此 extension/ 資料夾。改過檔案後按該擴充功能的「重新載入」，並重新整理 http://127.0.0.1:8765 的分頁。
 入口一（圖示，疊層模式）：在 https://www.youtube.com/watch?v=<id> 分頁按工具列圖示 → 課程直接疊在 YouTube 播放器上（英文字幕＋當前單字橘色、繁中字幕、右側單字面板、開場 10 秒前情提要卡），再按一次關掉。這支還沒有課程時，播放器左下角出現小 pill「yt-learn：擷取字幕… → 產生課程 x% → 完成」，在目前分頁擷取字幕、等產課完成後自動疊上，不開新分頁。手動關掉後換片不會自動打開；開著時換到有課程的影片會自動疊上。
@@ -15,4 +15,4 @@ HelloInterview 注意：只支援 www.hellointerview.com/learn/ 底下有影片�
 入口二（本機首頁）：bridge.js 轉送頁面的 window.postMessage({type:'ytlearn:ping'|'ytlearn:capture', videoId})；回 ytlearn:ack 與 ytlearn:status。
 除錯：在擴充功能頁點「service worker」開 console，看 [yt-learn] 日誌。
 檔案：background.js（worker）、capture.js（MAIN world 擷取，與 bookmarklet.js 同源）、bridge.js（首頁 content script）、overlay.js（youtube.com／udemy.com／netflix.com／hellointerview.com／coursera.org 的疊層引擎 content script，全部用 createElement 建 DOM，因為 YouTube 強制 Trusted Types）、site.js（站點轉接層；Netflix 的 seek 走 hook）、overlay-state.js（疊層的純函式狀態）、vtt.js／udemy-capture.js（Udemy 字幕解析與擷取）、hellointerview-capture.js（HelloInterview 擷取，isolated world）、coursera-capture.js（Coursera 擷取，isolated world）、overlay.css（疊層樣式，抄自 web/style.css 的舞台段落）、timing.js／intro.js／dict.js／phrase.js（web/ 的逐字節複本，改一邊請同步另一邊）、ytid.js（網址解析，與 pipeline/jobs.py 同表）、netflix-manifest.js（Netflix manifest 摘要、挑軌、兩個 world 共用的訊息 validator）、netflix-hook.js（MAIN world 唯讀 hook，動態註冊）、ttml.js（Netflix TTML 封閉子集解析器，不支援的結構一律拒絕）、netflix-capture.js（isolated world；正式擷取與 probe）、netflix-enable.html／netflix-enable.js（啟用頁與診斷結果）。
-費用上限：yt-learn 首頁可設每月 API 費用上限（本機估算）。達到上限時 /add 回 402，擴充功能會顯示伺服器的訊息加一句提示：YouTube 到首頁可以選擇仍要跑；Udemy、Netflix、HelloInterview 要到首頁調高或關閉每月上限後，再回這一頁重試。
+費用上限：yt-learn 首頁可設每月 API 費用上限（本機估算）。達到上限時 /add 回 402，擴充功能會顯示伺服器的訊息加一句提示：YouTube 到首頁可以選擇仍要跑；Udemy、Netflix、HelloInterview、Coursera 要到首頁調高或關閉每月上限後，再回這一頁重試。
